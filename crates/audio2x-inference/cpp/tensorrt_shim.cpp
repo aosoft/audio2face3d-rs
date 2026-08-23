@@ -53,6 +53,8 @@ void copy_dims(const nvinfer1::Dims& dims, int64_t* out, int32_t capacity, int32
         throw std::runtime_error("dimension buffer is too small");
     for (int32_t i = 0; i < dims.nbDims; ++i) out[i] = dims.d[i];
 }
+
+void ensure_device(const trt_shim_handle* handle);
 } // namespace
 
 struct trt_shim_handle {
@@ -62,6 +64,18 @@ struct trt_shim_handle {
     TrtPtr<nvinfer1::ICudaEngine> engine;
     TrtPtr<nvinfer1::IExecutionContext> context;
 };
+
+namespace {
+void ensure_device(const trt_shim_handle* handle) {
+    if (!handle) throw std::runtime_error("TensorRT handle is null");
+    int32_t current = -1;
+    const cudaError_t status = cudaGetDevice(&current);
+    if (status != cudaSuccess)
+        throw std::runtime_error(std::string("cudaGetDevice failed: ") + cudaGetErrorString(status));
+    if (current != handle->device_id)
+        throw std::runtime_error("current CUDA device does not match TensorRT session device");
+}
+} // namespace
 
 extern "C" trt_shim_handle* trt_shim_create(const char* path, int32_t device_id,
     char* error, size_t error_capacity) {
@@ -145,6 +159,7 @@ extern "C" int32_t trt_shim_profile_count(const trt_shim_handle* h) {
 
 extern "C" int32_t trt_shim_set_profile(trt_shim_handle* h, int32_t profile, void* stream, char* error, size_t cap) {
     try {
+        ensure_device(h);
         if (!h || !h->context || profile < 0 || profile >= h->engine->getNbOptimizationProfiles()) throw std::runtime_error("invalid profile");
         if (!h->context->setOptimizationProfileAsync(profile, static_cast<cudaStream_t>(stream))) throw std::runtime_error("setOptimizationProfileAsync failed");
         return 1;
@@ -153,6 +168,7 @@ extern "C" int32_t trt_shim_set_profile(trt_shim_handle* h, int32_t profile, voi
 
 extern "C" int32_t trt_shim_set_input_shape(trt_shim_handle* h, const char* name, const int64_t* values, int32_t rank, char* error, size_t cap) {
     try {
+        ensure_device(h);
         if (!h || !h->context || !name || !values || rank < 0 || rank > nvinfer1::Dims::MAX_DIMS) throw std::runtime_error("invalid shape argument");
         nvinfer1::Dims dims{}; dims.nbDims = rank;
         for (int32_t i = 0; i < rank; ++i) dims.d[i] = values[i];
@@ -162,11 +178,11 @@ extern "C" int32_t trt_shim_set_input_shape(trt_shim_handle* h, const char* name
 }
 
 extern "C" int32_t trt_shim_set_tensor_address(trt_shim_handle* h, const char* name, void* address, char* error, size_t cap) {
-    try { if (!h || !h->context || !name || !address || !h->context->setTensorAddress(name, address)) throw std::runtime_error("setTensorAddress failed"); return 1; }
+    try { ensure_device(h); if (!h->context || !name || !address || !h->context->setTensorAddress(name, address)) throw std::runtime_error("setTensorAddress failed"); return 1; }
     catch (const std::exception& e) { error_text(error, cap, e.what()); } catch (...) { error_text(error, cap, "unknown TensorRT error"); } return 0;
 }
 
 extern "C" int32_t trt_shim_enqueue(trt_shim_handle* h, void* stream, char* error, size_t cap) {
-    try { if (!h || !h->context || !h->context->enqueueV3(static_cast<cudaStream_t>(stream))) throw std::runtime_error("enqueueV3 failed"); return 1; }
+    try { ensure_device(h); if (!h->context || !h->context->enqueueV3(static_cast<cudaStream_t>(stream))) throw std::runtime_error("enqueueV3 failed"); return 1; }
     catch (const std::exception& e) { error_text(error, cap, e.what()); } catch (...) { error_text(error, cap, "unknown TensorRT error"); } return 0;
 }
