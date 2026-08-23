@@ -1,0 +1,18 @@
+schema_version = 1
+
+[environment]
+manifest = "reference/manifest.toml"
+precision = ["fp32", "fp16"]
+
+[engine_build]
+tool = "trtexec"
+atomic_output_required = true
+command_template = ["trtexec", "--onnx=<network.onnx>", "--saveEngine=<network.trt>"]
+
+[measurement]
+status = "not-run"
+reason = "Milestone 0 records the environment and command contract; release percentile benchmarks start after correctness gates."
+warmup_required = true
+percentiles = [50, 95, 99]
+record_peak_memory = true
+separate_phases = ["build", "cache", "warmup", "steady-state", "post-process", "end-to-end"]

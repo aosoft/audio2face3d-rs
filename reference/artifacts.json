@@ -1,0 +1,348 @@
+{
+  "cases": {
+    "a2e": {
+      "files": [
+        {
+          "bytes": 125,
+          "path": "audio2emotion-sdk/samples/model/model.json",
+          "sha256": "b440470d59af100ef47cfb87bc633766320bee30979167b9bd6ad0b88e2081cd"
+        },
+        {
+          "bytes": 626,
+          "path": "audio2emotion-sdk/samples/model/model_config.json",
+          "sha256": "c61b96cf5a4bd7ee7e71717b5dd576fcd1b268fabd556049cfca7df1a0095153"
+        },
+        {
+          "bytes": 1271318264,
+          "path": "audio2emotion-sdk/samples/model/network.onnx",
+          "sha256": "92eab06c234b78ee3d5efe4762d0ac198cf39e085f942fe8e1065120e3d411b7"
+        },
+        {
+          "bytes": 1267140612,
+          "path": "audio2emotion-sdk/samples/model/network.trt",
+          "sha256": "6bd94749c8d88cc24dd323853a1186c96abda4772e25b1f0c5aac6e53c48d3fe"
+        },
+        {
+          "bytes": 133,
+          "path": "audio2emotion-sdk/samples/model/network_info.json",
+          "sha256": "e5750681125c5caf73f510d8ec57335810e18dd77c0ebba3e22cb1b6d69db280"
+        },
+        {
+          "bytes": 493,
+          "path": "audio2emotion-sdk/samples/model/trt_info.json",
+          "sha256": "4105f69b6c92c5ca34bb36d6b4d53af8b670043401bf772c355457f19a5cad6f"
+        },
+        {
+          "bytes": 1200262,
+          "path": "audio2emotion-sdk/tests/data/test_data_inference.bin",
+          "sha256": "4654fa36a58c06b91800862970e3323453c066aa11fccb281ea48b29185e9fc3"
+        },
+        {
+          "bytes": 5041692,
+          "path": "audio2emotion-sdk/tests/data/test_data_inference_model.onnx",
+          "sha256": "594b685119196f72dc71dc884ca79fecc29df17258cb1d3d455c99bf2c25fb10"
+        },
+        {
+          "bytes": 5097532,
+          "path": "audio2emotion-sdk/tests/data/test_data_inference_model.trt",
+          "sha256": "41467d904821940615cb22487d5011333264e02aea23f006bfdcc31ae5cb0dd8"
+        },
+        {
+          "bytes": 216,
+          "path": "audio2emotion-sdk/tests/data/test_data_inference_model_trt_info.json",
+          "sha256": "a2ca1ea7359346c7c8b1daa7c5d7516c1d1fb232ce9a570ab604ec115fe54384"
+        }
+      ],
+      "roots": [
+        "audio2emotion-sdk/samples/model",
+        "audio2emotion-sdk/tests/data"
+      ]
+    },
+    "diffusion": {
+      "files": [
+        {
+          "bytes": 15297809,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_skin_Claire.npz",
+          "sha256": "bcb1fde2c7384fe9ec3cf9932b0fdeeda01fe4a1e42bba3817bba14e7f1716d3"
+        },
+        {
+          "bytes": 15297809,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_skin_James.npz",
+          "sha256": "da119b5291de9d7b711ccd34c99f5a9cec001f5d1e25083c294d3c02f642691c"
+        },
+        {
+          "bytes": 15297809,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_skin_Mark.npz",
+          "sha256": "a13234c0fa07e5c3bea3b2f4ad1d5c17fcec5482285607a2c3cd79099ed81297"
+        },
+        {
+          "bytes": 4667,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_skin_config_Claire.json",
+          "sha256": "e2b508c5d17f1fb01c3a5b0292072d09e66e8c55bc23fcbe0c9aee8f8eae1713"
+        },
+        {
+          "bytes": 4667,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_skin_config_James.json",
+          "sha256": "51ff9803d97c92cadc4f1bad07331ccde3c431d301e564208f5b2071995aecf2"
+        },
+        {
+          "bytes": 4667,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_skin_config_Mark.json",
+          "sha256": "6a074ba302866485cd6c05805f7414b117b73382b6ec95a4d50b4733809ef1b0"
+        },
+        {
+          "bytes": 1147927,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_tongue_Claire.npz",
+          "sha256": "812f10c34edb6ab6f36aedfe1d59a79d8190a5a8ee0a6071382f6bae9e3413b6"
+        },
+        {
+          "bytes": 1147927,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_tongue_James.npz",
+          "sha256": "831c9d646174d84f628d5516694e00b5077cd5b2bc1dd964d817fabe68497bcc"
+        },
+        {
+          "bytes": 1147927,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_tongue_Mark.npz",
+          "sha256": "3dfd5dcdeca813df9574536750cf6d2382ec3167482f0b883e1b1eebf84fc022"
+        },
+        {
+          "bytes": 1771,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_tongue_config_Claire.json",
+          "sha256": "ace4b0b6b9be280f96a66568bd13ac4ea1fddf9c690464ab450fe339d9752e98"
+        },
+        {
+          "bytes": 1770,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_tongue_config_James.json",
+          "sha256": "54c4d9d2a17916efdc277693a6b8bd297fd3f3f63e25da4da77cfb35d66b6c1d"
+        },
+        {
+          "bytes": 1770,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/bs_tongue_config_Mark.json",
+          "sha256": "24ce53bde029f8318a0a5a6c8fa9975290537107d8917d10e5d6549f9635f6c3"
+        },
+        {
+          "bytes": 0,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/config.json",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 1268,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/model.json",
+          "sha256": "1c09d1a8fb606fa765caeb9c60cb75c72081a34c7562f5ded5afbf3579864994"
+        },
+        {
+          "bytes": 880,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/model_config_Claire.json",
+          "sha256": "0819530451ad28ef42c1a478398850dc91e32475a49f9899ed37216309107fb4"
+        },
+        {
+          "bytes": 882,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/model_config_James.json",
+          "sha256": "a8f1b3a0868611e4ec22f798877ae83f7aca293194d2d039961185f788a95030"
+        },
+        {
+          "bytes": 884,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/model_config_Mark.json",
+          "sha256": "56e2e44b1051813714ab5db70037653a4ff8d907ed45b4d72e6ab96e38ac6421"
+        },
+        {
+          "bytes": 972958,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/model_data_Claire.npz",
+          "sha256": "4f05331263fa609321335e55c20922f4d6709d33160d368c3b537f019429ea4f"
+        },
+        {
+          "bytes": 972958,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/model_data_James.npz",
+          "sha256": "23f653f88fceddda3ae137a7c2199a59ed36822f7f9681234eaad38ba7d753f3"
+        },
+        {
+          "bytes": 972958,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/model_data_Mark.npz",
+          "sha256": "8843a3a6599b263fd368ff445f4c7a9f9b4454f739271560004d1589693886cf"
+        },
+        {
+          "bytes": 724844664,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/network.onnx",
+          "sha256": "db47c2701ca849de443c9e9f25657210f829a74fc458ee6fed603a8a501253a8"
+        },
+        {
+          "bytes": 729643924,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/network.trt",
+          "sha256": "be5a5fbdb4884b80a2719ee3f74c2e561009739e19c81bd57662b35afe6c08de"
+        },
+        {
+          "bytes": 1179,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/network_info.json",
+          "sha256": "5524cdbe96a6bc89c78f06f32ae959e2302c50c663f407cb2b392c0ecac5975d"
+        },
+        {
+          "bytes": 751,
+          "path": "audio2face-sdk/samples/data/multi-diffusion/trt_info.json",
+          "sha256": "3733870f9ba19228c010bc39e39a1901e9582b31ab237cd1e8871e52ce5c3376"
+        }
+      ],
+      "roots": [
+        "audio2face-sdk/samples/data/multi-diffusion"
+      ]
+    },
+    "regression": {
+      "files": [
+        {
+          "bytes": 7815,
+          "path": "audio2face-sdk/samples/data/mark/a2f_ms_config.json",
+          "sha256": "af1a7a52bfc80d693f5d8b2c05b870180054e34dd6999285c023538abc1a8d03"
+        },
+        {
+          "bytes": 39182291,
+          "path": "audio2face-sdk/samples/data/mark/bs_skin.npz",
+          "sha256": "95fbe12499271a9c1ca0d718262fad76d6218f026a450d07006c6b70bc001cc5"
+        },
+        {
+          "bytes": 4944,
+          "path": "audio2face-sdk/samples/data/mark/bs_skin_config.json",
+          "sha256": "8692be1ea81720800d042e4985b5952bb0be3b76794f29edf0de4f9dd9c07a40"
+        },
+        {
+          "bytes": 1147669,
+          "path": "audio2face-sdk/samples/data/mark/bs_tongue.npz",
+          "sha256": "ae9f0cdade93c0e0037f9e61b125a02709b8eb133eb857d348065a847e5f0d47"
+        },
+        {
+          "bytes": 1870,
+          "path": "audio2face-sdk/samples/data/mark/bs_tongue_config.json",
+          "sha256": "dd190bb5a73598230b67c2fb56c03b3f936fc979a1ad1f90a57552781fbfb020"
+        },
+        {
+          "bytes": 0,
+          "path": "audio2face-sdk/samples/data/mark/config.json",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "bytes": 7809,
+          "path": "audio2face-sdk/samples/data/mark/golden_audio2face-3d-v2.3-mark_config.json",
+          "sha256": "452a1318443fbc5feaf22866cee894bacb77cdb34a004d9cb05aa6a4fe457c71"
+        },
+        {
+          "bytes": 1870,
+          "path": "audio2face-sdk/samples/data/mark/golden_audio2face-3d-v2.3-mark_tongue_config.json",
+          "sha256": "dd190bb5a73598230b67c2fb56c03b3f936fc979a1ad1f90a57552781fbfb020"
+        },
+        {
+          "bytes": 1319768,
+          "path": "audio2face-sdk/samples/data/mark/implicit_emo_db.npz",
+          "sha256": "ec07bdf65ea52b6c348e637021a5933b663fae52acf5ff45c11726c1057d5130"
+        },
+        {
+          "bytes": 484,
+          "path": "audio2face-sdk/samples/data/mark/model.json",
+          "sha256": "1a03fc1c3b1978e9c73c197c4fe5af90da63f1c7d65cb85750035f60608fe1fd"
+        },
+        {
+          "bytes": 984,
+          "path": "audio2face-sdk/samples/data/mark/model_config.json",
+          "sha256": "4fe4d3423857843cf524abd429f34db25db6dfd97efb31264fb36087764ad714"
+        },
+        {
+          "bytes": 203797682,
+          "path": "audio2face-sdk/samples/data/mark/model_data.npz",
+          "sha256": "03790f24942ec26796ce101c2e238eb7ff5c1bb94a6c14a840ffcd530d3a301e"
+        },
+        {
+          "bytes": 75751144,
+          "path": "audio2face-sdk/samples/data/mark/network.onnx",
+          "sha256": "dcd16d3b1affb090d4da1ba88791faa6bcd755f97c853b3b667abad9be15cb4b"
+        },
+        {
+          "bytes": 75498716,
+          "path": "audio2face-sdk/samples/data/mark/network.trt",
+          "sha256": "81d12167c8219125637aec55ec66cad50539d3e4c78a99626657b4eff4285cd9"
+        },
+        {
+          "bytes": 1015,
+          "path": "audio2face-sdk/samples/data/mark/network_info.json",
+          "sha256": "10423b97032e6f213d0d4d886a693723b74bc616e9fcb27fe52c1f14b1cd3f73"
+        },
+        {
+          "bytes": 506,
+          "path": "audio2face-sdk/samples/data/mark/trt_info.json",
+          "sha256": "b288b5bba1e9eb0a1c49db0d3e182203d303c3ff26b8a6a284a3879b01758d0a"
+        },
+        {
+          "bytes": 128044,
+          "path": "audio2face-sdk/tests/data/audio_4sec_16k_s16le.wav",
+          "sha256": "f3ee46d1ac7eaebe3489df50a3941f1bf91717aff6165e1245bae1d181226026"
+        },
+        {
+          "bytes": 739937,
+          "path": "audio2face-sdk/tests/data/test_data_audio.bin",
+          "sha256": "b221d887491ec09783a7a750cbcbc94194b32255bee20857f60a00304b22ed67"
+        },
+        {
+          "bytes": 7269,
+          "path": "audio2face-sdk/tests/data/test_data_interpolator.bin",
+          "sha256": "481820ffd62e27263e214cedffe1b1ae10236952495d5b9b99182d0b3ab2ec06"
+        },
+        {
+          "bytes": 34630,
+          "path": "audio2x-common/tests/data/test_data_inference.bin",
+          "sha256": "4224e2ba9fc3985ef106ee7bd2959988fc38cbe46828484361d6c6ae7cf6dc5f"
+        },
+        {
+          "bytes": 1455082,
+          "path": "audio2x-common/tests/data/test_data_inference_network.onnx",
+          "sha256": "3fb2ec96199bacea895cc11d629465de76771f4c7d7701ceb2aa9875bfef3434"
+        },
+        {
+          "bytes": 1486020,
+          "path": "audio2x-common/tests/data/test_data_inference_network.trt",
+          "sha256": "5caf6d0f29a5ae8f4afcba03a04ddfacc16d2f0b4b4dae2a9b1ae657c49b1daf"
+        },
+        {
+          "bytes": 1505268,
+          "path": "audio2x-common/tests/data/test_data_inference_network_batched.trt",
+          "sha256": "725740c4a0f9d3493f81df12f6b334edc5b0cd5c20b3ce7e6fd74f19df03e5b4"
+        },
+        {
+          "bytes": 245,
+          "path": "audio2x-common/tests/data/test_data_inference_network_batched_trt_info.json",
+          "sha256": "5175f8b01809a3c090139419b3b91eff89ce7152e43e8b16f437cea8212a5956"
+        },
+        {
+          "bytes": 133105,
+          "path": "audio2x-common/tests/data/test_data_io.bin",
+          "sha256": "0aa381ed3890997b294643e0c58c83ada93da50811a9b7f1bc59d20623c6b2e7"
+        },
+        {
+          "bytes": 133816,
+          "path": "audio2x-common/tests/data/test_data_io.npz",
+          "sha256": "05cd14dcee10cbbc25863d8dd66953ad40bd8e9618805eba73fee8324d2a2917"
+        },
+        {
+          "bytes": 123974,
+          "path": "audio2x-common/tests/data/test_data_io_compressed.npz",
+          "sha256": "78e1fe9377a55a7e28effdd59664db7e3c44f029dc45c8618e6ceb8efe28dd52"
+        },
+        {
+          "bytes": 215,
+          "path": "audio2x-common/tests/data/test_string_arr.npz",
+          "sha256": "eaa96c1cd55c1429f80e094df4b92d747ef720f414d98d9a994a46ccc6eeacd4"
+        }
+      ],
+      "roots": [
+        "audio2face-sdk/samples/data/mark",
+        "audio2face-sdk/tests/data",
+        "audio2x-common/tests/data"
+      ]
+    }
+  },
+  "environment": {
+    "cuda": "nvcc: NVIDIA (R) Cuda compiler driver\r\nCopyright (c) 2005-2025 NVIDIA Corporation\r\nBuilt on Tue_May_27_02:24:01_Pacific_Daylight_Time_2025\r\nCuda compilation tools, release 12.9, V12.9.86\r\nBuild cuda_12.9.r12.9/compiler.36037853_0",
+    "gpu": "NVIDIA GeForce RTX 3070 Ti Laptop GPU, 610.88, 8.6",
+    "os": "windows-x86_64",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "schema_version": 1,
+  "sources": {
+    "audio2face_sdk": "1ca0f02535ed774f5dbcd724a31cd486368dc783"
+  }
+}

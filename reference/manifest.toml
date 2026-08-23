@@ -1,0 +1,80 @@
+schema_version = 1
+
+[sources.audio2face_sdk]
+repository = "https://github.com/NVIDIA/Audio2Face-3D-SDK"
+commit = "1ca0f02535ed774f5dbcd724a31cd486368dc783"
+generator = "gen_testdata.bat"
+
+[models.regression]
+repository = "nvidia/Audio2Face-3D-v2.3-Mark"
+revision = "5451728e07378df93b04523279e134a9993ae71b"
+license = "NVIDIA Open Model License"
+fixture_case = "audio2face-sdk/samples/data/mark"
+
+[models.diffusion]
+repository = "nvidia/Audio2Face-3D-v3.0"
+revision = "b74132732fd9a9d29b237bec193ded64c9745e91"
+license = "NVIDIA Open Model License"
+fixture_case = "audio2face-sdk/samples/data/multi-diffusion"
+
+[models.audio2emotion]
+repository = "nvidia/Audio2Emotion-v2.2"
+revision = "ce1358310179ed7f6b6ea63fe4fa9de5694c1b87"
+license = "License Agreement for NVIDIA Audio2Emotion Model for Use with Audio2Face Project"
+fixture_case = "audio2emotion-sdk/samples/model"
+
+[environment]
+os = "Windows 11"
+architecture = "x86_64"
+gpu = "NVIDIA GeForce RTX 3070 Ti Laptop GPU"
+compute_capability = "8.6"
+driver = "610.88"
+cuda_toolkit = "12.9.86"
+tensorrt = "10.16.1.11"
+compiler = "MSVC 19.42.34444.0"
+cudnn_direct_dependency = false
+dependency_inspection = "dumpbin /dependents"
+
+[[runtime_dependencies]]
+component = "audio2x.dll"
+libraries = ["cudart64_12.dll", "nvinfer_10.dll", "nvinfer_plugin_10.dll", "cublas64_12.dll", "curand64_10.dll"]
+cudnn_found = false
+
+[[runtime_dependencies]]
+component = "nvinfer_10.dll"
+libraries = ["KERNEL32.dll", "USER32.dll", "SHELL32.dll", "ole32.dll", "ADVAPI32.dll"]
+cudnn_found = false
+
+[[runtime_dependencies]]
+component = "nvinfer_plugin_10.dll"
+libraries = ["nvinfer_10.dll", "KERNEL32.dll"]
+cudnn_found = false
+
+[[runs]]
+name = "audio2x-common-unit-tests"
+command = ["_build/release/audio2x-common/bin/audio2x-common-unit-tests.exe", "--gtest_brief=1"]
+working_directory = "sdk-root"
+status = "passed"
+passed = 54
+failed = 0
+
+[[runs]]
+name = "sample-a2f-executor"
+command = ["_build/release/audio2face-sdk/bin/sample-a2f-executor.exe"]
+working_directory = "sdk-root"
+status = "passed"
+note = "Regression and diffusion completed for eight tracks."
+
+[[runs]]
+name = "audio2emotion-unit-tests"
+command = ["_build/release/audio2emotion-sdk/bin/audio2emotion-unit-tests.exe", "--gtest_brief=1"]
+working_directory = "sdk-root"
+status = "known-failure"
+note = "Interactive executor tests request a batch larger than the generated TensorRT engine profile. The run was stopped after reproducing the mismatch."
+
+[reproducibility]
+command = ["cargo", "run", "--manifest-path", "reference/Cargo.toml", "--", "--sdk-root", "<sdk-root>"]
+artifact_manifest = "reference/artifacts.json"
+deterministic_sources = true
+engine_hash_deterministic = false
+engine_nondeterminism_reason = "TensorRT tactics and serialized engines depend on the GPU, driver, TensorRT version, and builder environment."
