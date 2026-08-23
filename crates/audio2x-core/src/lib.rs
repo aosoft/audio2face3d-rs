@@ -12,6 +12,7 @@ mod error;
 mod float_accumulator;
 mod model;
 mod tensor;
+mod window_progress;
 
 pub use audio_accumulator::AudioAccumulator;
 pub use emotion_accumulator::{
@@ -28,3 +29,4 @@ pub use model::{
     parse_model, parse_network,
 };
 pub use tensor::{Binding, BindingSchema, Dimension, ElementType, IoMode, Shape};
+pub use window_progress::{SampleWindow, WindowProgress, WindowProgressParameters};

@@ -12,11 +12,16 @@ pub use accumulator::{DeviceAudioAccumulatorExt, DeviceFloatAccumulatorExt};
 
 #[cfg(feature = "cuda")]
 pub use native::{
-    CublasHandle, CudaEvent, CudaModule, CudaStream, CurandHandle, DeviceBuffer, DeviceView,
-    GpuDevice,
+    CublasFence, CublasHandle, CudaEvent, CudaModule, CudaStream, CurandHandle, DeviceBuffer,
+    DeviceView, GpuDevice, PcaDimensions,
 };
 
 use audio2x_core::{Audio2xError, Result};
+
+#[cfg(feature = "cuda")]
+fn audio2x_core_checked_i32(value: usize, field: &'static str) -> Result<i32> {
+    audio2x_core::checked_i32(value, field)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceId(i32);

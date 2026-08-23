@@ -223,6 +223,13 @@ pub struct CublasHandle {
     _not_send_sync: PhantomData<*mut ()>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PcaDimensions {
+    pub shape_size: usize,
+    pub shape_count: usize,
+    pub batch_size: usize,
+}
+
 impl CublasHandle {
     pub fn new(stream: &CudaStream) -> Result<Self> {
         stream.device.make_current()?;
@@ -240,6 +247,110 @@ impl CublasHandle {
             _stream: PhantomData,
             _not_send_sync: PhantomData,
         })
+    }
+
+    /// Enqueues column-major PCA reconstruction `Y = shapes * coefficients`.
+    ///
+    /// The returned fence borrows all device allocations, this handle, and the
+    /// stream until synchronization, preventing asynchronous use-after-free.
+    pub fn pca_reconstruct<'a>(
+        &'a self,
+        shapes: &'a DeviceBuffer<f32>,
+        coefficients: &'a DeviceBuffer<f32>,
+        output: &'a mut DeviceBuffer<f32>,
+        dimensions: PcaDimensions,
+        stream: &'a CudaStream,
+    ) -> Result<CublasFence<'a>> {
+        let PcaDimensions {
+            shape_size,
+            shape_count,
+            batch_size,
+        } = dimensions;
+        ensure_same_device(self.device.id(), stream.device_id())?;
+        ensure_same_device(self.device.id(), shapes.device_id())?;
+        ensure_same_device(self.device.id(), coefficients.device_id())?;
+        ensure_same_device(self.device.id(), output.device_id())?;
+        let matrix_len =
+            shape_size
+                .checked_mul(shape_count)
+                .ok_or(Audio2xError::IntegerOverflow {
+                    field: "pca_matrix",
+                    value: shape_count,
+                    target: "usize",
+                })?;
+        let coefficients_len =
+            shape_count
+                .checked_mul(batch_size)
+                .ok_or(Audio2xError::IntegerOverflow {
+                    field: "pca_coefficients",
+                    value: batch_size,
+                    target: "usize",
+                })?;
+        let output_len =
+            shape_size
+                .checked_mul(batch_size)
+                .ok_or(Audio2xError::IntegerOverflow {
+                    field: "pca_output",
+                    value: batch_size,
+                    target: "usize",
+                })?;
+        if shapes.len() != matrix_len
+            || coefficients.len() != coefficients_len
+            || output.len() != output_len
+        {
+            return Err(Audio2xError::InvalidSchema(
+                "PCA buffer dimensions do not match".into(),
+            ));
+        }
+        let m = crate::audio2x_core_checked_i32(shape_size, "pca_shape_size")?;
+        let n = crate::audio2x_core_checked_i32(batch_size, "pca_batch_size")?;
+        let k = crate::audio2x_core_checked_i32(shape_count, "pca_shape_count")?;
+        let alpha = 1.0_f32;
+        let beta = 0.0_f32;
+        self.device.make_current()?;
+        // SAFETY: validated allocations cover column-major A(m*k), B(k*n), C(m*n),
+        // and the returned fence holds every owner until the recorded event completes.
+        unsafe {
+            cudarc::cublas::result::sgemm(
+                self.raw,
+                cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+                cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+                m,
+                n,
+                k,
+                &alpha,
+                shapes.pointer as usize as *const f32,
+                m,
+                coefficients.pointer as usize as *const f32,
+                k,
+                &beta,
+                output.pointer as usize as *mut f32,
+                m,
+            )
+            .map_err(|error| Audio2xError::CudaUnavailable(format!("cuBLAS SGEMM: {error:?}")))?;
+        }
+        let event = stream.create_event()?;
+        event.record(stream)?;
+        Ok(CublasFence {
+            event,
+            _resources: PhantomData,
+        })
+    }
+}
+
+pub struct CublasFence<'a> {
+    event: CudaEvent,
+    _resources: PhantomData<(
+        &'a CublasHandle,
+        &'a CudaStream,
+        &'a DeviceBuffer<f32>,
+        &'a mut DeviceBuffer<f32>,
+    )>,
+}
+
+impl CublasFence<'_> {
+    pub fn synchronize(&self) -> Result<()> {
+        self.event.synchronize()
     }
 }
 
@@ -521,5 +632,39 @@ mod tests {
         let stream = device.create_stream().unwrap();
         let _blas = CublasHandle::new(&stream).unwrap();
         let _rand = CurandHandle::new(&stream).unwrap();
+    }
+
+    #[test]
+    fn pca_reconstruction_matches_column_major_product() {
+        let device = GpuDevice::new(0).unwrap();
+        let stream = device.create_stream().unwrap();
+        let handle = CublasHandle::new(&stream).unwrap();
+        let mut shapes = device.allocate::<f32>(6).unwrap();
+        let mut coefficients = device.allocate::<f32>(4).unwrap();
+        let mut output = device.allocate::<f32>(6).unwrap();
+        shapes
+            .copy_from(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &stream)
+            .unwrap();
+        coefficients
+            .copy_from(&[1.0, 2.0, 3.0, 4.0], &stream)
+            .unwrap();
+        handle
+            .pca_reconstruct(
+                &shapes,
+                &coefficients,
+                &mut output,
+                PcaDimensions {
+                    shape_size: 3,
+                    shape_count: 2,
+                    batch_size: 2,
+                },
+                &stream,
+            )
+            .unwrap()
+            .synchronize()
+            .unwrap();
+        let mut host = [0.0; 6];
+        output.copy_to(&mut host, &stream).unwrap();
+        assert_eq!(host, [9.0, 12.0, 15.0, 19.0, 26.0, 33.0]);
     }
 }
