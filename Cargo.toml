@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/audio2x-core",
+    "crates/audio2x-cuda",
+    "crates/audio2x-inference",
+    "crates/audio2face",
+    "crates/audio2emotion",
+    "crates/audio2x",
+]
+exclude = ["reference"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+audio2x-core = { path = "crates/audio2x-core" }
+audio2x-cuda = { path = "crates/audio2x-cuda", default-features = false }
+audio2x-inference = { path = "crates/audio2x-inference" }
+audio2face = { path = "crates/audio2face" }
+audio2emotion = { path = "crates/audio2emotion" }
+thiserror = "2.0"
+tracing = "0.1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"

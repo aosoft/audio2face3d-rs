@@ -1,0 +1,22 @@
+[package]
+name = "audio2x-inference"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+cuda = ["audio2x-cuda/cuda"]
+tensorrt = ["cuda"]
+
+[dependencies]
+audio2x-core.workspace = true
+audio2x-cuda.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+cc = "1.2"
+
+[lints]
+workspace = true

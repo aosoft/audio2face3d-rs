@@ -1,0 +1,22 @@
+[package]
+name = "audio2x"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["face", "emotion"]
+face = ["dep:audio2face"]
+emotion = ["dep:audio2emotion"]
+cuda = ["audio2x-cuda/cuda", "audio2x-inference/cuda", "audio2face?/cuda", "audio2emotion?/cuda"]
+tensorrt = ["cuda", "audio2x-inference/tensorrt"]
+
+[dependencies]
+audio2x-core.workspace = true
+audio2x-cuda.workspace = true
+audio2x-inference.workspace = true
+audio2face = { workspace = true, optional = true }
+audio2emotion = { workspace = true, optional = true }
+
+[lints]
+workspace = true

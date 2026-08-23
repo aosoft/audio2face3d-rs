@@ -1,0 +1,17 @@
+[package]
+name = "audio2emotion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+cuda = ["audio2x-cuda/cuda", "audio2x-inference/cuda"]
+
+[dependencies]
+audio2x-core.workspace = true
+audio2x-cuda.workspace = true
+audio2x-inference.workspace = true
+
+[lints]
+workspace = true

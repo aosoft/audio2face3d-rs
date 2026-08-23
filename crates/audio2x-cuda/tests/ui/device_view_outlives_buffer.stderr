@@ -1,0 +1,8 @@
+error[E0515]: cannot return value referencing local variable `buffer`
+ --> tests/ui/device_view_outlives_buffer.rs:6:5
+  |
+6 |     buffer.view()
+  |     ------^^^^^^^
+  |     |
+  |     returns a value referencing data owned by the current function
+  |     `buffer` is borrowed here
