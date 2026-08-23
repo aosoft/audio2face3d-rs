@@ -17,5 +17,8 @@ cudarc = { version = "0.19", optional = true, features = ["driver", "cublas", "c
 [dev-dependencies]
 trybuild = "1.0"
 
+[build-dependencies]
+cc = "1.2"
+
 [lints]
 workspace = true

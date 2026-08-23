@@ -216,6 +216,93 @@ impl Drop for CudaModule {
     }
 }
 
+impl CudaModule {
+    /// Looks up a kernel entry point in this module.
+    ///
+    /// The returned function borrows the module, so it cannot outlive the
+    /// loaded CUDA code that owns the native function handle.
+    pub fn function(&self, name: &str) -> Result<CudaFunction<'_>> {
+        self.device.make_current()?;
+        let name = CString::new(name).map_err(|_| {
+            Audio2xError::CudaUnavailable("CUDA function name contains a NUL byte".into())
+        })?;
+        let mut raw = ptr::null_mut();
+        // SAFETY: the module is live, the name is NUL terminated, and raw is a
+        // valid output pointer.
+        unsafe {
+            check(
+                cuModuleGetFunction(&mut raw, self.raw, name.as_ptr()),
+                "cuModuleGetFunction",
+            )?
+        };
+        Ok(CudaFunction {
+            module: self,
+            raw,
+            _not_send_sync: PhantomData,
+        })
+    }
+}
+
+/// A kernel entry point borrowed from a loaded [`CudaModule`].
+#[derive(Debug)]
+pub struct CudaFunction<'module> {
+    module: &'module CudaModule,
+    raw: CUfunction,
+    _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl CudaFunction<'_> {
+    pub fn device_id(&self) -> DeviceId {
+        self.module.device.id()
+    }
+
+    /// Enqueues this kernel on `stream` using CUDA's raw parameter ABI.
+    ///
+    /// `grid` and `block` are `(x, y, z)` dimensions. CUDA reports invalid or
+    /// unsupported launch dimensions through the returned error.
+    ///
+    /// # Safety
+    ///
+    /// Every entry in `kernel_params` must point to suitably aligned storage
+    /// containing one kernel argument with the exact type and order declared by
+    /// the PTX/CUDA entry point. Any referenced host argument storage must live
+    /// until `cuLaunchKernel` returns. Device pointers encoded by those
+    /// arguments must belong to this function's CUDA context and remain valid
+    /// until all launched work completes. The caller must also prevent mutable
+    /// aliasing and data races involving those allocations for that duration.
+    pub unsafe fn launch_raw(
+        &self,
+        grid: (u32, u32, u32),
+        block: (u32, u32, u32),
+        shared_memory_bytes: u32,
+        stream: &CudaStream,
+        kernel_params: &mut [*mut std::ffi::c_void],
+    ) -> Result<()> {
+        ensure_same_device(self.device_id(), stream.device_id())?;
+        self.module.device.make_current()?;
+        // SAFETY: argument ABI, allocation ownership, and asynchronous
+        // lifetimes are delegated to the caller as documented above.
+        unsafe {
+            check(
+                cuLaunchKernel(
+                    self.raw,
+                    grid.0,
+                    grid.1,
+                    grid.2,
+                    block.0,
+                    block.1,
+                    block.2,
+                    shared_memory_bytes,
+                    stream.raw,
+                    kernel_params.as_mut_ptr(),
+                    ptr::null_mut(),
+                ),
+                "cuLaunchKernel",
+            )
+        }
+    }
+}
+
 pub struct CublasHandle {
     device: Rc<GpuDevice>,
     raw: cudarc::cublas::sys::cublasHandle_t,
@@ -257,6 +344,23 @@ impl CublasHandle {
         &'a self,
         shapes: &'a DeviceBuffer<f32>,
         coefficients: &'a DeviceBuffer<f32>,
+        output: &'a mut DeviceBuffer<f32>,
+        dimensions: PcaDimensions,
+        stream: &'a CudaStream,
+    ) -> Result<CublasFence<'a>> {
+        self.pca_reconstruct_views(
+            shapes.view(),
+            coefficients.view(),
+            output,
+            dimensions,
+            stream,
+        )
+    }
+
+    pub fn pca_reconstruct_views<'a>(
+        &'a self,
+        shapes: DeviceView<'a, f32>,
+        coefficients: DeviceView<'a, f32>,
         output: &'a mut DeviceBuffer<f32>,
         dimensions: PcaDimensions,
         stream: &'a CudaStream,
@@ -490,6 +594,18 @@ impl<T> DeviceBuffer<T> {
     /// before returning. Consequently the host slice and allocation need no
     /// additional lifetime guard after a successful return.
     pub fn copy_from(&mut self, source: &[T], stream: &CudaStream) -> Result<()> {
+        // SAFETY: synchronization below keeps source alive until the transfer completes.
+        unsafe { self.copy_from_async(source, stream)? };
+        stream.synchronize()
+    }
+
+    /// Enqueues a complete host-to-device copy without synchronization.
+    ///
+    /// # Safety
+    ///
+    /// `source` and this allocation must remain alive and must not be mutated
+    /// until all preceding work on `stream` has completed.
+    pub unsafe fn copy_from_async(&mut self, source: &[T], stream: &CudaStream) -> Result<()> {
         ensure_same_device(self.device.id(), stream.device_id())?;
         if source.len() != self.len {
             return Err(Audio2xError::InvalidSchema(format!(
@@ -499,8 +615,8 @@ impl<T> DeviceBuffer<T> {
             )));
         }
         self.device.make_current()?;
-        // SAFETY: source and destination cover the validated byte count; synchronization
-        // before return keeps the host slice alive for the complete asynchronous copy.
+        // SAFETY: source and destination cover the validated byte count; their
+        // asynchronous lifetime is delegated to the caller.
         unsafe {
             check(
                 cuMemcpyHtoDAsync_v2(
@@ -510,9 +626,8 @@ impl<T> DeviceBuffer<T> {
                     stream.raw,
                 ),
                 "cuMemcpyHtoDAsync",
-            )?;
+            )
         }
-        stream.synchronize()
     }
 
     /// Copies this complete allocation to host memory and synchronizes before
@@ -600,11 +715,77 @@ impl<T> DeviceView<'_, T> {
     pub const fn as_raw(&self) -> CUdeviceptr {
         self.pointer
     }
+
+    pub fn slice(&self, offset: usize, len: usize) -> Result<DeviceView<'_, T>> {
+        let end = offset
+            .checked_add(len)
+            .ok_or(Audio2xError::IntegerOverflow {
+                field: "device_view_end",
+                value: len,
+                target: "usize",
+            })?;
+        if end > self.len {
+            return Err(Audio2xError::InvalidSchema(format!(
+                "device view range {offset}..{end} exceeds length {}",
+                self.len
+            )));
+        }
+        let byte_offset =
+            offset
+                .checked_mul(size_of::<T>())
+                .ok_or(Audio2xError::IntegerOverflow {
+                    field: "device_view_byte_offset",
+                    value: offset,
+                    target: "usize",
+                })?;
+        let pointer = self
+            .pointer
+            .checked_add(byte_offset as u64)
+            .ok_or_else(|| Audio2xError::InvalidSchema("device view pointer overflow".into()))?;
+        Ok(DeviceView {
+            pointer,
+            len,
+            device: self.device,
+            _owner: PhantomData,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ADD_ONE_PTX: &str = r#"
+.version 6.0
+.target sm_50
+.address_size 64
+
+.visible .entry add_one(
+    .param .u64 values,
+    .param .u32 count
+)
+{
+    .reg .pred %p;
+    .reg .b32 %r<5>;
+    .reg .b64 %rd<3>;
+
+    ld.param.u64 %rd1, [values];
+    ld.param.u32 %r1, [count];
+    mov.u32 %r2, %tid.x;
+    mov.u32 %r3, %ctaid.x;
+    mov.u32 %r4, %ntid.x;
+    mad.lo.s32 %r2, %r3, %r4, %r2;
+    setp.ge.u32 %p, %r2, %r1;
+    @%p bra DONE;
+    mul.wide.u32 %rd2, %r2, 4;
+    add.s64 %rd2, %rd1, %rd2;
+    ld.global.u32 %r3, [%rd2];
+    add.u32 %r3, %r3, 1;
+    st.global.u32 [%rd2], %r3;
+DONE:
+    ret;
+}
+"#;
 
     #[test]
     fn stream_event_orders_device_memory() {
@@ -666,5 +847,44 @@ mod tests {
         let mut host = [0.0; 6];
         output.copy_to(&mut host, &stream).unwrap();
         assert_eq!(host, [9.0, 12.0, 15.0, 19.0, 26.0, 33.0]);
+    }
+
+    #[test]
+    fn launches_named_ptx_function_on_stream() {
+        let device = GpuDevice::new(0).unwrap();
+        let stream = device.create_stream().unwrap();
+        let module = device.load_module(ADD_ONE_PTX).unwrap();
+        let function = module.function("add_one").unwrap();
+        let mut values = device.allocate::<u32>(5).unwrap();
+        values.copy_from(&[10, 20, 30, 40, 50], &stream).unwrap();
+
+        let mut pointer = values.view().as_raw();
+        let mut count = u32::try_from(values.len()).unwrap();
+        let mut params = [
+            (&mut pointer as *mut CUdeviceptr).cast(),
+            (&mut count as *mut u32).cast(),
+        ];
+        // SAFETY: params exactly match add_one(u64, u32); values belongs to the
+        // same device and copy_to synchronizes before values is released.
+        unsafe {
+            function
+                .launch_raw((1, 1, 1), (32, 1, 1), 0, &stream, &mut params)
+                .unwrap();
+        }
+
+        let mut output = [0; 5];
+        values.copy_to(&mut output, &stream).unwrap();
+        assert_eq!(output, [11, 21, 31, 41, 51]);
+    }
+
+    #[test]
+    fn device_view_slice_checks_bounds_and_offsets_pointer() {
+        let device = GpuDevice::new(0).unwrap();
+        let values = device.allocate::<f32>(8).unwrap();
+        let view = values.view();
+        let slice = view.slice(3, 2).unwrap();
+        assert_eq!(slice.len(), 2);
+        assert_eq!(slice.as_raw(), view.as_raw() + 3 * size_of::<f32>() as u64);
+        assert!(view.slice(7, 2).is_err());
     }
 }

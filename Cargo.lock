@@ -46,6 +46,7 @@ name = "audio2x-cuda"
 version = "0.1.0"
 dependencies = [
  "audio2x-core",
+ "cc",
  "cudarc",
  "tracing",
  "trybuild",

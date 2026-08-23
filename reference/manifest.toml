@@ -107,3 +107,16 @@ reference_test_h2d_operations = 3
 reference_test_d2h_operations = 2
 unexpected_host_round_trip = false
 host_synchronization_contract = "Only explicit fixture upload/download, completion fence wait, and TensorRT lifecycle operations synchronize the host."
+
+[validation.milestone4.regression]
+model = "audio2face-3d-v2.3-mark"
+track_boundaries = [1, 2, 32]
+real_engine_single_track = true
+real_engine_batch_two = true
+cpu_gpu_postprocess_parity = true
+callback_interrupt = true
+wait_and_resume = true
+drop_watermark = true
+device_output_fence = true
+host_round_trip_inside_device_postprocess = false
+test_command = "cargo test --workspace --all-features"

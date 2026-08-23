@@ -12,8 +12,8 @@ pub use accumulator::{DeviceAudioAccumulatorExt, DeviceFloatAccumulatorExt};
 
 #[cfg(feature = "cuda")]
 pub use native::{
-    CublasFence, CublasHandle, CudaEvent, CudaModule, CudaStream, CurandHandle, DeviceBuffer,
-    DeviceView, GpuDevice, PcaDimensions,
+    CublasFence, CublasHandle, CudaEvent, CudaFunction, CudaModule, CudaStream, CurandHandle,
+    DeviceBuffer, DeviceView, GpuDevice, PcaDimensions,
 };
 
 use audio2x_core::{Audio2xError, Result};
@@ -21,6 +21,16 @@ use audio2x_core::{Audio2xError, Result};
 #[cfg(feature = "cuda")]
 fn audio2x_core_checked_i32(value: usize, field: &'static str) -> Result<i32> {
     audio2x_core::checked_i32(value, field)
+}
+
+#[cfg(feature = "cuda")]
+pub fn regression_postprocess_ptx() -> &'static str {
+    include_str!(env!("AUDIO2X_REGRESSION_POSTPROCESS_PTX"))
+}
+
+#[cfg(feature = "cuda")]
+pub fn regression_jaw_ptx() -> &'static str {
+    include_str!(env!("AUDIO2X_REGRESSION_JAW_PTX"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
