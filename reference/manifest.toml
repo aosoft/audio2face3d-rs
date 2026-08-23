@@ -136,3 +136,20 @@ philox_gpu_track_isolation = true
 normal_distribution_statistical_test = true
 geometry_postprocess = ["skin", "tongue", "jaw", "eyes"]
 test_command = "cargo test --workspace --all-features"
+
+[validation.milestone6.blendshape]
+factory_flag = "useGpuSolver"
+factory_paths = ["BlendshapeSolver", "BlendshapeSolverGPU"]
+executor_consumers = ["regular skin/tongue", "interactive skin/tongue"]
+reference_datasets = ["Mark skin 52", "Mark tongue 16", "test 180"]
+reference_sync_async_tests = 12
+reference_sync_async_passed = 12
+distributed_configs_parsed = 12
+cpu_box_constrained_reconstruction = true
+cpu_callback_order_count = 100
+gpu_admm_updates_per_pass = 4
+gpu_device_output_fence = true
+gpu_reset_replay = true
+pose_mask_active_cancel_symmetry_boundaries = true
+multiplier_offset_prepare_preserved = true
+test_command = "cargo test --workspace --all-features"

@@ -311,6 +311,12 @@ pub struct CublasHandle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CublasTranspose {
+    None,
+    Transpose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PcaDimensions {
     pub shape_size: usize,
     pub shape_count: usize,
@@ -334,6 +340,81 @@ impl CublasHandle {
             _stream: PhantomData,
             _not_send_sync: PhantomData,
         })
+    }
+
+    /// Enqueues column-major `y = alpha * op(A) * x + beta * y`.
+    ///
+    /// This low-level operation intentionally does not create a completion
+    /// event, so several cuBLAS and kernel operations can form one pipeline.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain this handle, `matrix`, `input`, `output`, and
+    /// `stream` until the queued operation completes. It must also prevent any
+    /// conflicting access to the output during that interval.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn enqueue_matrix_vector(
+        &self,
+        matrix: DeviceView<'_, f32>,
+        input: DeviceView<'_, f32>,
+        output: &mut DeviceBuffer<f32>,
+        rows: usize,
+        columns: usize,
+        transpose: CublasTranspose,
+        alpha: f32,
+        beta: f32,
+        stream: &CudaStream,
+    ) -> Result<()> {
+        ensure_same_device(self.device.id(), stream.device_id())?;
+        ensure_same_device(self.device.id(), matrix.device_id())?;
+        ensure_same_device(self.device.id(), input.device_id())?;
+        ensure_same_device(self.device.id(), output.device_id())?;
+        let matrix_len = rows
+            .checked_mul(columns)
+            .ok_or(Audio2xError::IntegerOverflow {
+                field: "matrix_vector_matrix",
+                value: columns,
+                target: "usize",
+            })?;
+        let (input_len, output_len, operation) = match transpose {
+            CublasTranspose::None => (
+                columns,
+                rows,
+                cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+            ),
+            CublasTranspose::Transpose => (
+                rows,
+                columns,
+                cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+            ),
+        };
+        if matrix.len() != matrix_len || input.len() != input_len || output.len() != output_len {
+            return Err(Audio2xError::InvalidSchema(
+                "cuBLAS matrix-vector dimensions do not match".into(),
+            ));
+        }
+        let m = crate::audio2x_core_checked_i32(rows, "matrix_vector_rows")?;
+        let n = crate::audio2x_core_checked_i32(columns, "matrix_vector_columns")?;
+        self.device.make_current()?;
+        // SAFETY: dimensions and device ownership were validated. The caller
+        // provides the asynchronous resource lifetime and aliasing invariant.
+        unsafe {
+            cudarc::cublas::result::sgemv(
+                self.raw,
+                operation,
+                m,
+                n,
+                &alpha,
+                matrix.pointer as usize as *const f32,
+                m,
+                input.pointer as usize as *const f32,
+                1,
+                &beta,
+                output.pointer as usize as *mut f32,
+                1,
+            )
+            .map_err(|error| Audio2xError::CudaUnavailable(format!("cuBLAS SGEMV: {error:?}")))
+        }
     }
 
     /// Enqueues column-major PCA reconstruction `Y = shapes * coefficients`.

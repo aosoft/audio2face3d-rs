@@ -12,8 +12,8 @@ pub use accumulator::{DeviceAudioAccumulatorExt, DeviceFloatAccumulatorExt};
 
 #[cfg(feature = "cuda")]
 pub use native::{
-    CublasFence, CublasHandle, CudaEvent, CudaFunction, CudaModule, CudaStream, CurandFence,
-    CurandHandle, DeviceBuffer, DeviceView, GpuDevice, PcaDimensions,
+    CublasFence, CublasHandle, CublasTranspose, CudaEvent, CudaFunction, CudaModule, CudaStream,
+    CurandFence, CurandHandle, DeviceBuffer, DeviceView, GpuDevice, PcaDimensions,
 };
 
 use audio2x_core::{Audio2xError, Result};
@@ -31,6 +31,11 @@ pub fn regression_postprocess_ptx() -> &'static str {
 #[cfg(feature = "cuda")]
 pub fn regression_jaw_ptx() -> &'static str {
     include_str!(env!("AUDIO2X_REGRESSION_JAW_PTX"))
+}
+
+#[cfg(feature = "cuda")]
+pub fn blendshape_solver_ptx() -> &'static str {
+    include_str!(env!("AUDIO2X_BLENDSHAPE_SOLVER_PTX"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

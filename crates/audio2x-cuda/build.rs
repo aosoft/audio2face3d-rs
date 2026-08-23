@@ -13,6 +13,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AUDIO2X_CUDA_HOST_COMPILER");
     println!("cargo:rerun-if-changed=cuda/regression_postprocess.cu");
     println!("cargo:rerun-if-changed=cuda/regression_jaw.cu");
+    println!("cargo:rerun-if-changed=cuda/blendshape_solver.cu");
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
     }
@@ -87,6 +88,24 @@ fn main() {
     println!(
         "cargo:rustc-env=AUDIO2X_REGRESSION_JAW_PTX={}",
         jaw_output.display()
+    );
+    let blendshape_output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
+        .join("blendshape_solver.ptx");
+    let status = Command::new(&nvcc)
+        .arg("--ptx")
+        .arg("--std=c++17")
+        .arg("--allow-unsupported-compiler")
+        .arg(format!("--compiler-bindir={}", host_compiler_dir.display()))
+        .arg(format!("--gpu-architecture=compute_{compute}"))
+        .arg("cuda/blendshape_solver.cu")
+        .arg("--output-file")
+        .arg(&blendshape_output)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to launch {}: {error}", nvcc.display()));
+    assert!(status.success(), "CUDA blendshape PTX compilation failed");
+    println!(
+        "cargo:rustc-env=AUDIO2X_BLENDSHAPE_SOLVER_PTX={}",
+        blendshape_output.display()
     );
 }
 

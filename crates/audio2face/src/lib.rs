@@ -1,6 +1,7 @@
 //! Audio2Face pipeline components.
 
 mod animator;
+mod blendshape;
 #[cfg(feature = "cuda")]
 mod device_noise;
 #[cfg(feature = "cuda")]
@@ -10,6 +11,8 @@ mod diffusion_executor;
 #[cfg(feature = "tensorrt")]
 mod diffusion_tensorrt_backend;
 mod executor;
+#[cfg(feature = "cuda")]
+mod gpu_blendshape;
 mod jaw;
 mod pca;
 mod postprocess;
@@ -20,6 +23,10 @@ mod tensorrt_backend;
 pub use animator::{
     EyesAnimator, EyesAnimatorParams, EyesRotation, SkinAnimator, SkinAnimatorParams,
     TongueAnimator, TongueAnimatorParams,
+};
+pub use blendshape::{
+    BlendshapeData, BlendshapeSolverKind, BlendshapeSolverParameters, CpuBlendshapeJobRunner,
+    CpuBlendshapeSolver,
 };
 #[cfg(feature = "cuda")]
 pub use device_noise::GpuPhiloxNoise;
@@ -42,6 +49,8 @@ pub use executor::{
     MAX_REGRESSION_TRACKS, PumpStatus, RegressionBackend, RegressionCallbackMetadata,
     RegressionExecutor, RegressionExecutorState, RegressionTrack,
 };
+#[cfg(feature = "cuda")]
+pub use gpu_blendshape::{GpuBlendshapeSolveFence, GpuBlendshapeSolver};
 pub use jaw::{JawParameters, JawTransform, rigid_transform};
 pub use pca::PcaReconstruction;
 pub use postprocess::{

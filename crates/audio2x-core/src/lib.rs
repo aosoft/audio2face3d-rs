@@ -7,6 +7,7 @@
 //! logged.
 
 mod audio_accumulator;
+mod blendshape;
 mod emotion_accumulator;
 mod error;
 mod float_accumulator;
@@ -15,6 +16,9 @@ mod tensor;
 mod window_progress;
 
 pub use audio_accumulator::AudioAccumulator;
+pub use blendshape::{
+    BlendshapeConfig, BlendshapeConfigRoot, load_blendshape_config, parse_blendshape_config,
+};
 pub use emotion_accumulator::{
     EmotionAccumulator, EmotionAccumulatorError, EmotionAccumulatorState, Timestamp,
 };
