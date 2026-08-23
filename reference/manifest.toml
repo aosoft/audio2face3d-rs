@@ -120,3 +120,19 @@ drop_watermark = true
 device_output_fence = true
 host_round_trip_inside_device_postprocess = false
 test_command = "cargo test --workspace --all-features"
+
+[validation.milestone5.diffusion]
+model = "audio2face-3d-v3.2-multi-diffusion"
+engine_sha256 = "be5a5fbdb4884b80a2719ee3f74c2e561009739e19c81bd57662b35afe6c08de"
+bindings = ["emotion", "identity", "input_latents", "noise", "window", "output_latents", "prediction"]
+real_engine_single_track = true
+multi_frame_callback_order = "frame-major-then-track"
+recurrent_swap_copy_reset = true
+skipped_track_state_preserved = true
+callback_stop_is_track_local = true
+philox_cpu_replay = true
+philox_gpu_replay = true
+philox_gpu_track_isolation = true
+normal_distribution_statistical_test = true
+geometry_postprocess = ["skin", "tongue", "jaw", "eyes"]
+test_command = "cargo test --workspace --all-features"

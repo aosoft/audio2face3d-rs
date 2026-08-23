@@ -478,8 +478,10 @@ pub struct CurandHandle {
 impl CurandHandle {
     pub fn new(stream: &CudaStream) -> Result<Self> {
         stream.device.make_current()?;
-        let raw = cudarc::curand::result::create_generator()
-            .map_err(|error| Audio2xError::CudaUnavailable(format!("cuRAND create: {error:?}")))?;
+        let raw = cudarc::curand::result::create_generator_kind(
+            cudarc::curand::sys::curandRngType_t::CURAND_RNG_PSEUDO_PHILOX4_32_10,
+        )
+        .map_err(|error| Audio2xError::CudaUnavailable(format!("cuRAND create: {error:?}")))?;
         // SAFETY: generator and stream are live and owned by the retained context.
         unsafe {
             cudarc::curand::result::set_stream(raw, stream.raw.cast()).map_err(|error| {
@@ -492,6 +494,81 @@ impl CurandHandle {
             _stream: PhantomData,
             _not_send_sync: PhantomData,
         })
+    }
+
+    /// Resets the generator to an absolute element offset in its Philox stream.
+    pub fn set_offset(&mut self, offset: u64) -> Result<()> {
+        self.device.make_current()?;
+        // SAFETY: `raw` is exclusively owned and remains allocated for this call.
+        unsafe {
+            cudarc::curand::result::set_offset(self.raw, offset).map_err(|error| {
+                Audio2xError::CudaUnavailable(format!("cuRAND set offset: {error:?}"))
+            })
+        }
+    }
+
+    pub fn set_seed(&mut self, seed: u64) -> Result<()> {
+        self.device.make_current()?;
+        // SAFETY: `raw` is exclusively owned and is a pseudo-random generator.
+        unsafe {
+            cudarc::curand::result::set_seed(self.raw, seed).map_err(|error| {
+                Audio2xError::CudaUnavailable(format!("cuRAND set seed: {error:?}"))
+            })
+        }
+    }
+
+    /// Enqueues standard-normal generation into a device allocation.
+    ///
+    /// cuRAND requires an even number of `f32` values. The returned fence
+    /// retains the generator, stream and output allocation until completion.
+    pub fn generate_normal<'a>(
+        &'a mut self,
+        output: &'a mut DeviceBuffer<f32>,
+        stream: &'a CudaStream,
+    ) -> Result<CurandFence<'a>> {
+        ensure_same_device(self.device.id(), stream.device_id())?;
+        ensure_same_device(self.device.id(), output.device_id())?;
+        if output.is_empty() || output.len() % 2 != 0 {
+            return Err(Audio2xError::InvalidSchema(
+                "cuRAND normal output length must be non-zero and even".into(),
+            ));
+        }
+        self.device.make_current()?;
+        // SAFETY: output owns `len` writable f32 elements and the returned
+        // fence prevents generator, stream, or allocation destruction.
+        unsafe {
+            cudarc::curand::result::generate::normal_f32(
+                self.raw,
+                output.pointer as usize as *mut f32,
+                output.len,
+                0.0,
+                1.0,
+            )
+            .map_err(|error| {
+                Audio2xError::CudaUnavailable(format!("cuRAND normal generation: {error:?}"))
+            })?;
+        }
+        let event = stream.create_event()?;
+        event.record(stream)?;
+        Ok(CurandFence {
+            event,
+            _resources: PhantomData,
+        })
+    }
+}
+
+pub struct CurandFence<'a> {
+    event: CudaEvent,
+    _resources: PhantomData<(
+        &'a mut CurandHandle,
+        &'a CudaStream,
+        &'a mut DeviceBuffer<f32>,
+    )>,
+}
+
+impl CurandFence<'_> {
+    pub fn synchronize(&self) -> Result<()> {
+        self.event.synchronize()
     }
 }
 
@@ -813,6 +890,50 @@ DONE:
         let stream = device.create_stream().unwrap();
         let _blas = CublasHandle::new(&stream).unwrap();
         let _rand = CurandHandle::new(&stream).unwrap();
+    }
+
+    #[test]
+    fn philox_reset_replays_device_noise() {
+        let device = GpuDevice::new(0).unwrap();
+        let stream = device.create_stream().unwrap();
+        let mut generator = CurandHandle::new(&stream).unwrap();
+        let mut values = device.allocate::<f32>(1024).unwrap();
+        generator
+            .generate_normal(&mut values, &stream)
+            .unwrap()
+            .synchronize()
+            .unwrap();
+        let mut first = vec![0.0; values.len()];
+        values.copy_to(&mut first, &stream).unwrap();
+        generator.set_offset(0).unwrap();
+        generator
+            .generate_normal(&mut values, &stream)
+            .unwrap()
+            .synchronize()
+            .unwrap();
+        let mut replay = vec![0.0; values.len()];
+        values.copy_to(&mut replay, &stream).unwrap();
+        assert_eq!(first, replay);
+    }
+
+    #[test]
+    fn philox_device_noise_has_standard_normal_statistics() {
+        let device = GpuDevice::new(0).unwrap();
+        let stream = device.create_stream().unwrap();
+        let mut generator = CurandHandle::new(&stream).unwrap();
+        let mut values = device.allocate::<f32>(100_000).unwrap();
+        generator
+            .generate_normal(&mut values, &stream)
+            .unwrap()
+            .synchronize()
+            .unwrap();
+        let mut host = vec![0.0; values.len()];
+        values.copy_to(&mut host, &stream).unwrap();
+        let mean = host.iter().sum::<f32>() / host.len() as f32;
+        let variance =
+            host.iter().map(|value| (value - mean).powi(2)).sum::<f32>() / host.len() as f32;
+        assert!(mean.abs() < 0.02, "mean={mean}");
+        assert!((variance - 1.0).abs() < 0.03, "variance={variance}");
     }
 
     #[test]

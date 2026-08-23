@@ -106,6 +106,10 @@ impl SkinAnimator {
         })
     }
 
+    pub fn neutral_pose(&self) -> &[f32] {
+        &self.neutral_pose
+    }
+
     pub fn reset(&mut self) {
         self.lower.stages = None;
         self.upper.stages = None;
@@ -168,6 +172,10 @@ impl TongueAnimator {
             params,
             neutral_pose,
         })
+    }
+
+    pub fn neutral_pose(&self) -> &[f32] {
+        &self.neutral_pose
     }
 
     pub fn animate(&self, input: &[f32]) -> Result<Vec<f32>> {

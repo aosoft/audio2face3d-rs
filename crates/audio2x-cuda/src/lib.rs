@@ -12,8 +12,8 @@ pub use accumulator::{DeviceAudioAccumulatorExt, DeviceFloatAccumulatorExt};
 
 #[cfg(feature = "cuda")]
 pub use native::{
-    CublasFence, CublasHandle, CudaEvent, CudaFunction, CudaModule, CudaStream, CurandHandle,
-    DeviceBuffer, DeviceView, GpuDevice, PcaDimensions,
+    CublasFence, CublasHandle, CudaEvent, CudaFunction, CudaModule, CudaStream, CurandFence,
+    CurandHandle, DeviceBuffer, DeviceView, GpuDevice, PcaDimensions,
 };
 
 use audio2x_core::{Audio2xError, Result};
