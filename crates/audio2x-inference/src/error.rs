@@ -18,7 +18,7 @@ pub enum InferenceError {
         expected: i32,
         actual: i32,
     },
-    #[error("binding {name} has {actual} elements, expected {expected}")]
+    #[error("binding {name} has {actual} bytes, expected {expected}")]
     SizeMismatch {
         name: String,
         actual: usize,

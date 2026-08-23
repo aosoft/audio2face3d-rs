@@ -23,6 +23,8 @@ audio2face = { path = "crates/audio2face" }
 audio2emotion = { path = "crates/audio2emotion" }
 thiserror = "2.0"
 tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

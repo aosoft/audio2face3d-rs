@@ -78,3 +78,32 @@ artifact_manifest = "reference/artifacts.json"
 deterministic_sources = true
 engine_hash_deterministic = false
 engine_nondeterminism_reason = "TensorRT tactics and serialized engines depend on the GPU, driver, TensorRT version, and builder environment."
+
+[validation.milestone2.cpp_reference]
+fixture_sha256 = "4224e2ba9fc3985ef106ee7bd2959988fc38cbe46828484361d6c6ae7cf6dc5f"
+engine_sha256 = "5caf6d0f29a5ae8f4afcba03a04ddfacc16d2f0b4b4dae2a9b1ae657c49b1daf"
+absolute_tolerance = 0.001
+all_elements_match = true
+
+[validation.milestone2.a2f_fp32]
+model = "audio2face-3d-v2.3-mark"
+engine_sha256 = "81d12167c8219125637aec55ec66cad50539d3e4c78a99626657b4eff4285cd9"
+named_multi_io = true
+dynamic_batch = true
+enqueue_succeeded = true
+
+[validation.milestone2.a2f_fp16]
+model = "audio2face-3d-v2.3-mark"
+engine_sha256 = "65513d7e8224387c4d049dcc3dab3695965af6b2f4ec086be65b96a49748707d"
+build_flag = "--fp16"
+dynamic_batch = true
+enqueue_succeeded = true
+note = "TensorRT retained FP32 I/O and selected FP16 internally, with precision-sensitive layernorm operations promoted to FP32."
+
+[validation.milestone2.profiler]
+tool = "Nsight Systems 2025.1.3"
+trace = ["cuda", "nvtx"]
+reference_test_h2d_operations = 3
+reference_test_d2h_operations = 2
+unexpected_host_round_trip = false
+host_synchronization_contract = "Only explicit fixture upload/download, completion fence wait, and TensorRT lifecycle operations synchronize the host."

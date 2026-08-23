@@ -17,14 +17,29 @@ typedef struct trt_shim_tensor_info {
     int32_t rank;
 } trt_shim_tensor_info;
 
+typedef struct trt_shim_environment_info {
+    int32_t tensorrt_major, tensorrt_minor, tensorrt_patch;
+    int32_t cuda_runtime_version, cuda_driver_version;
+    int32_t compute_capability_major, compute_capability_minor;
+} trt_shim_environment_info;
+
 typedef enum trt_shim_profile_selector {
     TRT_SHIM_PROFILE_MIN = 0,
     TRT_SHIM_PROFILE_OPT = 1,
     TRT_SHIM_PROFILE_MAX = 2,
 } trt_shim_profile_selector;
 
+/* Logger entries are retained by the session until destruction. */
+int32_t trt_shim_log_count(const trt_shim_handle* handle);
+int32_t trt_shim_log_message(const trt_shim_handle* handle, int32_t index,
+    char* message, size_t message_capacity, size_t* required_size,
+    int32_t* severity, char* error, size_t error_capacity);
+
 trt_shim_handle* trt_shim_create(const char* engine_path, int32_t device_id,
     char* error, size_t error_capacity);
+int32_t trt_shim_environment(const trt_shim_handle* handle,
+    trt_shim_environment_info* info, char* gpu_name, size_t gpu_name_capacity,
+    size_t* required_size, char* error, size_t error_capacity);
 void trt_shim_destroy(trt_shim_handle* handle);
 
 int32_t trt_shim_tensor_count(const trt_shim_handle* handle);

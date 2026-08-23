@@ -12,9 +12,14 @@ mod session;
 
 #[cfg(feature = "tensorrt")]
 pub use session::{
-    BindingBuffer, DeviceBindings, InferenceFence, RuntimeTensorShape, TensorRtSession,
+    BindingBuffer, DeviceBindings, EngineEnvironment, InferenceFence, RuntimeTensorShape,
+    TensorRtLogMessage, TensorRtSession,
 };
 
 mod engine;
+mod metadata;
 
 pub use engine::{EngineBuildRequest, EngineBuilder, EngineError, ShapeProfile};
+pub use metadata::{
+    Compatibility, CompatibilityIssue, EngineMetadata, IoTensorMetadata, ProfileMetadata,
+};

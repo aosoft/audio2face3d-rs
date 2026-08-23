@@ -12,8 +12,39 @@ pub struct TensorInfo {
     pub location: i32,
     pub rank: i32,
 }
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct EnvironmentInfo {
+    pub tensorrt_major: i32,
+    pub tensorrt_minor: i32,
+    pub tensorrt_patch: i32,
+    pub cuda_runtime_version: i32,
+    pub cuda_driver_version: i32,
+    pub compute_capability_major: i32,
+    pub compute_capability_minor: i32,
+}
 
 unsafe extern "C" {
+    pub fn trt_shim_log_count(session: *const TrtSessionHandle) -> i32;
+    pub fn trt_shim_log_message(
+        session: *const TrtSessionHandle,
+        index: i32,
+        message: *mut c_char,
+        message_cap: usize,
+        required: *mut usize,
+        severity: *mut i32,
+        error: *mut c_char,
+        error_cap: usize,
+    ) -> i32;
+    pub fn trt_shim_environment(
+        session: *const TrtSessionHandle,
+        info: *mut EnvironmentInfo,
+        gpu_name: *mut c_char,
+        gpu_name_cap: usize,
+        required: *mut usize,
+        error: *mut c_char,
+        error_cap: usize,
+    ) -> i32;
     pub fn trt_shim_create(
         path: *const c_char,
         device: i32,

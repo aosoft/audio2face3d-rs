@@ -103,6 +103,7 @@ pub enum EngineError {
     ExistingTarget(PathBuf),
     EmptyOutput(PathBuf),
     TrtFailed(i32),
+    Validation(String),
     Io(io::Error),
 }
 
@@ -114,6 +115,7 @@ impl fmt::Display for EngineError {
             Self::ExistingTarget(p) => write!(f, "engine target already exists: {}", p.display()),
             Self::EmptyOutput(p) => write!(f, "trtexec produced an empty engine: {}", p.display()),
             Self::TrtFailed(c) => write!(f, "trtexec failed with exit code {c}"),
+            Self::Validation(message) => write!(f, "generated engine validation failed: {message}"),
             Self::Io(e) => e.fmt(f),
         }
     }
@@ -130,22 +132,35 @@ impl From<io::Error> for EngineError {
 #[derive(Clone, Debug)]
 pub struct EngineBuilder {
     pub executable: PathBuf,
+    /// Atomically replace an existing engine after the new file validates.
+    pub replace_existing: bool,
 }
 
 impl Default for EngineBuilder {
     fn default() -> Self {
         Self {
             executable: PathBuf::from("trtexec"),
+            replace_existing: false,
         }
     }
 }
 
 impl EngineBuilder {
     pub fn build(&self, request: &EngineBuildRequest) -> Result<(), EngineError> {
+        self.build_validated(request, |_| Ok(()))
+    }
+
+    /// Builds to a same-directory temporary file and invokes `validate` before
+    /// the file becomes visible at the final path.
+    pub fn build_validated(
+        &self,
+        request: &EngineBuildRequest,
+        validate: impl FnOnce(&Path) -> Result<(), EngineError>,
+    ) -> Result<(), EngineError> {
         if !request.onnx.is_file() {
             return Err(EngineError::MissingOnnx(request.onnx.clone()));
         }
-        if request.engine.exists() {
+        if request.engine.exists() && !self.replace_existing {
             return Err(EngineError::ExistingTarget(request.engine.clone()));
         }
         let parent = request.engine.parent().unwrap_or_else(|| Path::new("."));
@@ -157,7 +172,25 @@ impl EngineBuilder {
             let _ = fs::remove_file(&temp);
             return Err(EngineError::TrtFailed(status.code().unwrap_or(-1)));
         }
-        install_new_engine(&temp, &request.engine)
+        if let Err(error) = validate(&temp) {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        install_engine(&temp, &request.engine, self.replace_existing)
+    }
+
+    /// Builds and deserializes the temporary engine before atomically installing it.
+    #[cfg(feature = "tensorrt")]
+    pub fn build_tensorrt_validated(
+        &self,
+        request: &EngineBuildRequest,
+        device: std::rc::Rc<audio2x_cuda::GpuDevice>,
+    ) -> Result<(), EngineError> {
+        self.build_validated(request, |temporary| {
+            crate::TensorRtSession::load(std::rc::Rc::clone(&device), temporary)
+                .map(|_| ())
+                .map_err(|error| EngineError::Validation(error.to_string()))
+        })
     }
 }
 
@@ -168,19 +201,19 @@ fn temporary_path(target: &Path) -> PathBuf {
 }
 
 /// Verify and atomically install a freshly generated, non-empty file.
-fn install_new_engine(temp: &Path, target: &Path) -> Result<(), EngineError> {
+fn install_engine(temp: &Path, target: &Path, replace_existing: bool) -> Result<(), EngineError> {
     let metadata = fs::metadata(temp)?;
     if metadata.len() == 0 {
         let _ = fs::remove_file(temp);
         return Err(EngineError::EmptyOutput(temp.to_path_buf()));
     }
-    if target.exists() {
+    if target.exists() && !replace_existing {
         return Err(EngineError::ExistingTarget(target.to_path_buf()));
     }
     let file = OpenOptions::new().read(true).write(true).open(temp)?;
     file.sync_all()?;
     drop(file);
-    fs::rename(temp, target)?;
+    atomic_install(temp, target, replace_existing)?;
     if let Some(parent) = target.parent() {
         // Best effort: directory fsync is unsupported on some Windows filesystems.
         if let Ok(dir) = File::open(parent) {
@@ -188,6 +221,49 @@ fn install_new_engine(temp: &Path, target: &Path) -> Result<(), EngineError> {
         }
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_install(temp: &Path, target: &Path, replace_existing: bool) -> io::Result<()> {
+    if !replace_existing && target.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "engine target exists",
+        ));
+    }
+    fs::rename(temp, target)
+}
+
+#[cfg(windows)]
+fn atomic_install(temp: &Path, target: &Path, replace_existing: bool) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, destination: *const u16, flags: u32) -> i32;
+    }
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    let existing = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = target
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let flags = MOVEFILE_WRITE_THROUGH
+        | if replace_existing {
+            MOVEFILE_REPLACE_EXISTING
+        } else {
+            0
+        };
+    // SAFETY: both paths are NUL-terminated UTF-16 buffers valid for this call.
+    if unsafe { MoveFileExW(existing.as_ptr(), destination.as_ptr(), flags) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -230,10 +306,28 @@ mod tests {
         let target = root.join("new.trt");
         fs::write(&temp, []).unwrap();
         assert!(matches!(
-            install_new_engine(&temp, &target),
+            install_engine(&temp, &target, false),
             Err(EngineError::EmptyOutput(_))
         ));
         assert!(!target.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validated_replace_preserves_old_target_until_install() {
+        let root = std::env::temp_dir().join(format!(
+            "audio2x-engine-replace-test-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let temp = root.join("new.partial");
+        let target = root.join("network.trt");
+        fs::write(&target, b"old").unwrap();
+        fs::write(&temp, b"new").unwrap();
+        install_engine(&temp, &target, true).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(!temp.exists());
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -169,6 +169,23 @@ impl CudaStream {
             _not_send_sync: PhantomData,
         })
     }
+
+    /// Enqueues a zero-fill for an arbitrary device allocation.
+    ///
+    /// # Safety
+    ///
+    /// `pointer..pointer + bytes` must be a writable allocation owned by this
+    /// stream's CUDA context and must remain alive until the stream completes.
+    pub unsafe fn memset_device_zero(&self, pointer: u64, bytes: usize) -> Result<()> {
+        self.device.make_current()?;
+        // SAFETY: the caller guarantees pointer validity, ownership, and lifetime.
+        unsafe {
+            check(
+                cuMemsetD8Async(pointer, 0, bytes, self.raw),
+                "cuMemsetD8Async",
+            )
+        }
+    }
 }
 
 impl Drop for CudaStream {

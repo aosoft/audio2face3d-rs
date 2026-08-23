@@ -53,9 +53,10 @@ impl<'a> DeviceBindings<'a> {
         buffer: BindingBuffer<'a>,
     ) -> Result<(), InferenceError> {
         let name = name.into();
-        if self.values.insert(name.clone(), buffer).is_some() {
+        if self.values.contains_key(&name) {
             return Err(InferenceError::DuplicateBinding(name));
         }
+        self.values.insert(name, buffer);
         Ok(())
     }
     pub fn set_input_shape(
@@ -84,6 +85,22 @@ pub struct TensorRtSession {
 pub struct RuntimeTensorShape {
     pub name: String,
     pub dimensions: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TensorRtLogMessage {
+    pub severity: i32,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineEnvironment {
+    pub tensorrt_version: (i32, i32, i32),
+    pub cuda_runtime_version: i32,
+    pub cuda_driver_version: i32,
+    pub gpu_name: String,
+    pub compute_capability: (i32, i32),
+    pub profile_count: usize,
 }
 
 impl TensorRtSession {
@@ -120,6 +137,36 @@ impl TensorRtSession {
     }
     pub const fn profile_count(&self) -> usize {
         self.profile_count
+    }
+
+    pub fn logs(&self) -> Result<Vec<TensorRtLogMessage>, InferenceError> {
+        // SAFETY: the session handle is live and log_count is read-only.
+        let count = unsafe { ffi::trt_shim_log_count(self.handle.as_ptr()) };
+        if count < 0 {
+            return Err(InferenceError::Native {
+                operation: "log_count",
+                message: "invalid TensorRT handle".into(),
+            });
+        }
+        (0..count)
+            .map(|index| log_message(self.handle, index))
+            .collect()
+    }
+
+    pub fn environment(&self) -> Result<EngineEnvironment, InferenceError> {
+        let (info, gpu_name) = environment(self.handle)?;
+        Ok(EngineEnvironment {
+            tensorrt_version: (
+                info.tensorrt_major,
+                info.tensorrt_minor,
+                info.tensorrt_patch,
+            ),
+            cuda_runtime_version: info.cuda_runtime_version,
+            cuda_driver_version: info.cuda_driver_version,
+            gpu_name,
+            compute_capability: (info.compute_capability_major, info.compute_capability_minor),
+            profile_count: self.profile_count,
+        })
     }
 
     /// Resolves every input and output dimension for one optimization profile.
@@ -232,6 +279,18 @@ impl TensorRtSession {
         bindings: &'b DeviceBindings<'b>,
         stream: &'b CudaStream,
     ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
+        self.enqueue_with_postprocess(profile, bindings, stream, |_| Ok(()))
+    }
+
+    /// Queues inference and then `postprocess` on the same CUDA stream before
+    /// recording the completion event held by the returned fence.
+    pub fn enqueue_with_postprocess<'s, 'b>(
+        &'s mut self,
+        profile: usize,
+        bindings: &'b DeviceBindings<'b>,
+        stream: &'b CudaStream,
+        postprocess: impl FnOnce(&CudaStream) -> Result<(), InferenceError>,
+    ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
         self.validate_profile_stream(profile, stream)?;
         for name in bindings.values.keys() {
             if self.schema.get(name).is_none() {
@@ -245,7 +304,11 @@ impl TensorRtSession {
             ffi::trt_shim_set_profile(self.handle.as_ptr(), profile as i32, stream.as_raw(), e, n)
         })?;
         self.apply_input_shapes(bindings)?;
-        for binding in self.schema.bindings() {
+        // SAFETY: all dynamic input shapes have been applied to the live context.
+        call("infer_shapes", |e, n| unsafe {
+            ffi::trt_shim_infer_shapes(self.handle.as_ptr(), e, n)
+        })?;
+        for (index, binding) in self.schema.bindings().iter().enumerate() {
             let buffer = bindings
                 .values
                 .get(&binding.name)
@@ -274,6 +337,36 @@ impl TensorRtSession {
                     binding.name
                 )));
             }
+            let runtime_shape = context_dims(
+                self.handle,
+                i32::try_from(index).map_err(|_| {
+                    InferenceError::InvalidBinding("tensor index exceeds i32".into())
+                })?,
+            )?;
+            let elements = runtime_shape.iter().try_fold(1_usize, |count, value| {
+                let value = usize::try_from(*value).map_err(|_| {
+                    InferenceError::InvalidBinding(format!(
+                        "unresolved dimension for {}",
+                        binding.name
+                    ))
+                })?;
+                count.checked_mul(value).ok_or_else(|| {
+                    InferenceError::InvalidBinding(format!(
+                        "element count overflow for {}",
+                        binding.name
+                    ))
+                })
+            })?;
+            let expected_bytes = elements.checked_mul(width).ok_or_else(|| {
+                InferenceError::InvalidBinding(format!("byte size overflow for {}", binding.name))
+            })?;
+            if buffer.bytes != expected_bytes {
+                return Err(InferenceError::SizeMismatch {
+                    name: binding.name.clone(),
+                    actual: buffer.bytes,
+                    expected: expected_bytes,
+                });
+            }
             // SAFETY: the buffer borrow is held by the returned fence.
             call("set_tensor_address", |e, n| unsafe {
                 ffi::trt_shim_set_tensor_address(
@@ -289,6 +382,7 @@ impl TensorRtSession {
         call("enqueue", |e, n| unsafe {
             ffi::trt_shim_enqueue(self.handle.as_ptr(), stream.as_raw(), e, n)
         })?;
+        postprocess(stream)?;
         let event = stream.create_event().map_err(InferenceError::Cuda)?;
         event.record(stream).map_err(InferenceError::Cuda)?;
         Ok(InferenceFence {
@@ -367,6 +461,97 @@ fn tensor_name(
     Ok(unsafe { CStr::from_ptr(name.as_ptr()) }
         .to_string_lossy()
         .into_owned())
+}
+
+fn log_message(
+    handle: NonNull<ffi::TrtSessionHandle>,
+    index: i32,
+) -> Result<TensorRtLogMessage, InferenceError> {
+    let mut required = 0;
+    let mut severity = 0;
+    let mut error = [0; ERROR_CAPACITY];
+    // SAFETY: handle and scalar output pointers are valid; this is a size query.
+    let ok = unsafe {
+        ffi::trt_shim_log_message(
+            handle.as_ptr(),
+            index,
+            std::ptr::null_mut(),
+            0,
+            &mut required,
+            &mut severity,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if ok != 1 || required == 0 {
+        return Err(native_error("log_message_size", &error));
+    }
+    let mut message = vec![0; required];
+    // SAFETY: message has the exact capacity reported by the preceding query.
+    let ok = unsafe {
+        ffi::trt_shim_log_message(
+            handle.as_ptr(),
+            index,
+            message.as_mut_ptr(),
+            message.len(),
+            &mut required,
+            &mut severity,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if ok != 1 {
+        return Err(native_error("log_message", &error));
+    }
+    // SAFETY: the successful shim call wrote a NUL-terminated string.
+    let message = unsafe { CStr::from_ptr(message.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    Ok(TensorRtLogMessage { severity, message })
+}
+
+fn environment(
+    handle: NonNull<ffi::TrtSessionHandle>,
+) -> Result<(ffi::EnvironmentInfo, String), InferenceError> {
+    let mut info = ffi::EnvironmentInfo::default();
+    let mut required = 0;
+    let mut error = [0; ERROR_CAPACITY];
+    // SAFETY: handle and scalar output pointers are valid; this is a size query.
+    let ok = unsafe {
+        ffi::trt_shim_environment(
+            handle.as_ptr(),
+            &mut info,
+            std::ptr::null_mut(),
+            0,
+            &mut required,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if ok != 1 || required == 0 {
+        return Err(native_error("environment_size", &error));
+    }
+    let mut name = vec![0; required];
+    // SAFETY: name has exactly the capacity reported by the size query.
+    let ok = unsafe {
+        ffi::trt_shim_environment(
+            handle.as_ptr(),
+            &mut info,
+            name.as_mut_ptr(),
+            name.len(),
+            &mut required,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if ok != 1 {
+        return Err(native_error("environment", &error));
+    }
+    // SAFETY: the successful shim call wrote a NUL-terminated GPU name.
+    let name = unsafe { CStr::from_ptr(name.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    Ok((info, name))
 }
 fn dims_call(
     handle: NonNull<ffi::TrtSessionHandle>,
@@ -539,6 +724,33 @@ fn read_metadata(
 mod tests {
     use super::*;
 
+    fn read_reference_tensors(path: &Path) -> HashMap<String, Vec<f32>> {
+        let bytes = std::fs::read(path).unwrap();
+        let mut offset = 0;
+        let read_u32 = |offset: &mut usize| {
+            let end = *offset + 4;
+            let value = u32::from_le_bytes(bytes[*offset..end].try_into().unwrap());
+            *offset = end;
+            value as usize
+        };
+        let count = read_u32(&mut offset);
+        let mut tensors = HashMap::new();
+        for _ in 0..count {
+            let name_len = read_u32(&mut offset);
+            let name = String::from_utf8(bytes[offset..offset + name_len].to_vec()).unwrap();
+            offset += name_len;
+            let len = read_u32(&mut offset);
+            let values = bytes[offset..offset + len * 4]
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                .collect();
+            offset += len * 4;
+            tensors.insert(name, values);
+        }
+        assert_eq!(offset, bytes.len());
+        tensors
+    }
+
     #[test]
     fn loads_real_engine_metadata_when_configured() {
         let Some(path) = std::env::var_os("AUDIO2X_TEST_ENGINE") else {
@@ -549,6 +761,10 @@ mod tests {
         let session = TensorRtSession::load(device, Path::new(&path)).unwrap();
         assert!(!session.metadata().bindings().is_empty());
         assert!(session.profile_count() > 0);
+        let environment = session.environment().unwrap();
+        assert_eq!(environment.profile_count, session.profile_count());
+        assert!(!environment.gpu_name.is_empty());
+        assert!(environment.tensorrt_version.0 >= 10);
     }
 
     #[test]
@@ -590,6 +806,14 @@ mod tests {
             .iter()
             .map(|spec| device.allocate::<u8>(spec.4).unwrap())
             .collect::<Vec<_>>();
+        let output_index = session
+            .metadata()
+            .bindings()
+            .iter()
+            .position(|binding| binding.mode == IoMode::Output)
+            .unwrap();
+        let output_pointer = buffers[output_index].view().as_raw();
+        let output_bytes = specs[output_index].4;
         let mut bindings = DeviceBindings::new();
         for (spec, buffer) in specs.iter().zip(&buffers) {
             bindings
@@ -602,10 +826,19 @@ mod tests {
             }
         }
         session
-            .enqueue(0, &bindings, &stream)
+            .enqueue_with_postprocess(0, &bindings, &stream, |same_stream| {
+                // SAFETY: this output allocation belongs to the same device and
+                // is kept alive through the completion fence below.
+                unsafe { same_stream.memset_device_zero(output_pointer, output_bytes) }
+                    .map_err(InferenceError::Cuda)
+            })
             .unwrap()
             .synchronize()
             .unwrap();
+        drop(bindings);
+        let mut output = vec![1_u8; output_bytes];
+        buffers[output_index].copy_to(&mut output, &stream).unwrap();
+        assert!(output.iter().all(|value| *value == 0));
     }
 
     #[test]
@@ -668,5 +901,93 @@ mod tests {
             .unwrap()
             .synchronize()
             .unwrap();
+    }
+
+    #[test]
+    fn matches_cpp_reference_fixture_when_configured() {
+        let (Some(engine), Some(fixture)) = (
+            std::env::var_os("AUDIO2X_REFERENCE_ENGINE"),
+            std::env::var_os("AUDIO2X_REFERENCE_TENSORS"),
+        ) else {
+            eprintln!("skipped: AUDIO2X_REFERENCE_ENGINE/TENSORS are not configured");
+            return;
+        };
+        let expected = read_reference_tensors(Path::new(&fixture));
+        let device = GpuDevice::new(0).unwrap();
+        let stream = device.create_stream().unwrap();
+        let mut session = TensorRtSession::load(Rc::clone(&device), Path::new(&engine)).unwrap();
+        let specs = session
+            .metadata()
+            .bindings()
+            .iter()
+            .map(|binding| {
+                let len = expected.get(&binding.name).unwrap().len();
+                (
+                    binding.name.clone(),
+                    binding.mode,
+                    binding.element_type,
+                    len,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut buffers = specs
+            .iter()
+            .map(|spec| device.allocate::<f32>(spec.3).unwrap())
+            .collect::<Vec<_>>();
+        for (spec, buffer) in specs.iter().zip(&mut buffers) {
+            if spec.1 == IoMode::Input {
+                buffer
+                    .copy_from(expected.get(&spec.0).unwrap(), &stream)
+                    .unwrap();
+            }
+        }
+        let mut bindings = DeviceBindings::new();
+        for (spec, buffer) in specs.iter().zip(&buffers) {
+            bindings
+                .insert(&spec.0, BindingBuffer::from_view(buffer.view(), spec.2))
+                .unwrap();
+        }
+        session
+            .enqueue(0, &bindings, &stream)
+            .unwrap()
+            .synchronize()
+            .unwrap();
+        drop(bindings);
+        for (spec, buffer) in specs.iter().zip(&buffers) {
+            if spec.1 == IoMode::Output {
+                let mut actual = vec![0.0; spec.3];
+                buffer.copy_to(&mut actual, &stream).unwrap();
+                for (index, (actual, expected)) in actual
+                    .iter()
+                    .zip(expected.get(&spec.0).unwrap())
+                    .enumerate()
+                {
+                    assert!(
+                        (actual - expected).abs() <= 1.0e-3,
+                        "{}[{index}]: {actual} != {expected}",
+                        spec.0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_a_stream_from_another_device_when_available() {
+        let Some(engine) = std::env::var_os("AUDIO2X_TEST_ENGINE") else {
+            eprintln!("skipped: AUDIO2X_TEST_ENGINE is not configured");
+            return;
+        };
+        let first = GpuDevice::new(0).unwrap();
+        let Ok(second) = GpuDevice::new(1) else {
+            eprintln!("skipped: only one CUDA device is available");
+            return;
+        };
+        let stream = second.create_stream().unwrap();
+        let mut session = TensorRtSession::load(first, Path::new(&engine)).unwrap();
+        let error = session
+            .resolve_shapes(0, &DeviceBindings::new(), &stream)
+            .unwrap_err();
+        assert!(matches!(error, InferenceError::DeviceMismatch { .. }));
     }
 }
