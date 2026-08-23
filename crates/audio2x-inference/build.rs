@@ -45,11 +45,30 @@ fn main() {
         "TensorRT NvInfer.h is missing"
     );
     let library = first_directory(&tensorrt, &["lib", "lib64", "lib/x64", "cuda/lib"]);
-    let compiler = cc::Build::new().cpp(true).get_compiler();
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .file("cpp/tensorrt_shim.cpp")
+        .include(cuda.join("include"))
+        .include(tensorrt.join("include"))
+        .warnings(true);
+    if build.get_compiler().is_like_msvc() {
+        build.flag("/std:c++17").flag("/EHsc");
+    } else {
+        build.flag("-std=c++17");
+    }
+    let compiler = build.get_compiler();
     println!(
         "cargo:warning=TensorRT host compiler: {}",
         compiler.path().display()
     );
     println!("cargo:rustc-link-search=native={}", library.display());
+    let cuda_library = first_directory(&cuda, &["lib/x64", "lib64", "lib"]);
+    println!("cargo:rustc-link-search=native={}", cuda_library.display());
     println!("cargo:rustc-link-lib=dylib=nvinfer_10");
+    println!("cargo:rustc-link-lib=dylib=nvinfer_plugin_10");
+    println!("cargo:rustc-link-lib=dylib=cudart");
+    println!("cargo:rerun-if-changed=cpp/tensorrt_shim.h");
+    println!("cargo:rerun-if-changed=cpp/tensorrt_shim.cpp");
+    build.compile("audio2x_tensorrt_shim");
 }

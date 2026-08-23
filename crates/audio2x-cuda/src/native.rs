@@ -144,6 +144,14 @@ impl CudaStream {
         self.device.id()
     }
 
+    /// Returns the native CUDA stream handle for FFI interoperability.
+    ///
+    /// The returned handle is borrowed from this object and must not be
+    /// destroyed. Any queued work must complete before this stream is dropped.
+    pub fn as_raw(&self) -> *mut std::ffi::c_void {
+        self.raw.cast()
+    }
+
     pub fn synchronize(&self) -> Result<()> {
         self.device.make_current()?;
         // SAFETY: raw is owned by this object and remains valid for the call.
