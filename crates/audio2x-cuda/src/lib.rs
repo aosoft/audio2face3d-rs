@@ -38,6 +38,11 @@ pub fn blendshape_solver_ptx() -> &'static str {
     include_str!(env!("AUDIO2X_BLENDSHAPE_SOLVER_PTX"))
 }
 
+#[cfg(feature = "cuda")]
+pub fn emotion_postprocess_ptx() -> &'static str {
+    include_str!(env!("AUDIO2X_EMOTION_POSTPROCESS_PTX"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceId(i32);
 

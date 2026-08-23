@@ -14,6 +14,7 @@ fn main() {
     println!("cargo:rerun-if-changed=cuda/regression_postprocess.cu");
     println!("cargo:rerun-if-changed=cuda/regression_jaw.cu");
     println!("cargo:rerun-if-changed=cuda/blendshape_solver.cu");
+    println!("cargo:rerun-if-changed=cuda/emotion_postprocess.cu");
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
     }
@@ -106,6 +107,24 @@ fn main() {
     println!(
         "cargo:rustc-env=AUDIO2X_BLENDSHAPE_SOLVER_PTX={}",
         blendshape_output.display()
+    );
+    let emotion_output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
+        .join("emotion_postprocess.ptx");
+    let status = Command::new(&nvcc)
+        .arg("--ptx")
+        .arg("--std=c++17")
+        .arg("--allow-unsupported-compiler")
+        .arg(format!("--compiler-bindir={}", host_compiler_dir.display()))
+        .arg(format!("--gpu-architecture=compute_{compute}"))
+        .arg("cuda/emotion_postprocess.cu")
+        .arg("--output-file")
+        .arg(&emotion_output)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to launch {}: {error}", nvcc.display()));
+    assert!(status.success(), "CUDA emotion PTX compilation failed");
+    println!(
+        "cargo:rustc-env=AUDIO2X_EMOTION_POSTPROCESS_PTX={}",
+        emotion_output.display()
     );
 }
 
