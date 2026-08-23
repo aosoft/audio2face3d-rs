@@ -3,7 +3,12 @@
 pub mod build_config;
 
 #[cfg(feature = "cuda")]
+mod accumulator;
+#[cfg(feature = "cuda")]
 mod native;
+
+#[cfg(feature = "cuda")]
+pub use accumulator::{DeviceAudioAccumulatorExt, DeviceFloatAccumulatorExt};
 
 #[cfg(feature = "cuda")]
 pub use native::{
