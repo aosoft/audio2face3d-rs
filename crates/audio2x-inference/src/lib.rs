@@ -11,7 +11,9 @@ mod ffi;
 mod session;
 
 #[cfg(feature = "tensorrt")]
-pub use session::{BindingBuffer, DeviceBindings, InferenceFence, TensorRtSession};
+pub use session::{
+    BindingBuffer, DeviceBindings, InferenceFence, RuntimeTensorShape, TensorRtSession,
+};
 
 mod engine;
 

@@ -177,6 +177,33 @@ extern "C" int32_t trt_shim_set_input_shape(trt_shim_handle* h, const char* name
     } catch (const std::exception& e) { error_text(error, cap, e.what()); } catch (...) { error_text(error, cap, "unknown TensorRT error"); } return 0;
 }
 
+extern "C" int32_t trt_shim_infer_shapes(trt_shim_handle* h, char* error, size_t cap) {
+    try {
+        ensure_device(h);
+        if (!h->context) throw std::runtime_error("execution context is null");
+        const int32_t missing = h->context->inferShapes(0, nullptr);
+        if (missing < 0) throw std::runtime_error("inferShapes failed");
+        if (missing != 0) throw std::runtime_error("not all input dimensions are specified");
+        return 1;
+    } catch (const std::exception& e) { error_text(error, cap, e.what()); }
+      catch (...) { error_text(error, cap, "unknown TensorRT error"); }
+    return 0;
+}
+
+extern "C" int32_t trt_shim_context_tensor_dims(const trt_shim_handle* h, int32_t index,
+    int64_t* dims, int32_t capacity, int32_t* rank, char* error, size_t cap) {
+    try {
+        ensure_device(h);
+        if (!h->context || index < 0 || index >= h->engine->getNbIOTensors())
+            throw std::runtime_error("invalid tensor index");
+        const char* name = h->engine->getIOTensorName(index);
+        copy_dims(h->context->getTensorShape(name), dims, capacity, rank);
+        return 1;
+    } catch (const std::exception& e) { error_text(error, cap, e.what()); }
+      catch (...) { error_text(error, cap, "unknown TensorRT error"); }
+    return 0;
+}
+
 extern "C" int32_t trt_shim_set_tensor_address(trt_shim_handle* h, const char* name, void* address, char* error, size_t cap) {
     try { ensure_device(h); if (!h->context || !name || !address || !h->context->setTensorAddress(name, address)) throw std::runtime_error("setTensorAddress failed"); return 1; }
     catch (const std::exception& e) { error_text(error, cap, e.what()); } catch (...) { error_text(error, cap, "unknown TensorRT error"); } return 0;

@@ -79,6 +79,13 @@ pub struct TensorRtSession {
     schema: BindingSchema,
     profile_count: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTensorShape {
+    pub name: String,
+    pub dimensions: Vec<usize>,
+}
+
 impl TensorRtSession {
     pub fn load(device: Rc<GpuDevice>, engine: &Path) -> Result<Self, InferenceError> {
         let path = CString::new(engine.to_string_lossy().as_bytes())
@@ -115,14 +122,61 @@ impl TensorRtSession {
         self.profile_count
     }
 
-    /// Queues inference without a host synchronization. The returned fence
-    /// keeps the mutable session, stream, and every binding buffer borrowed.
-    pub fn enqueue<'s, 'b>(
-        &'s mut self,
+    /// Resolves every input and output dimension for one optimization profile.
+    ///
+    /// This mutates the execution context and therefore requires exclusive
+    /// access to the session. No host/device tensor data is transferred.
+    pub fn resolve_shapes(
+        &mut self,
         profile: usize,
-        bindings: &'b DeviceBindings<'b>,
-        stream: &'b CudaStream,
-    ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
+        bindings: &DeviceBindings<'_>,
+        stream: &CudaStream,
+    ) -> Result<Vec<RuntimeTensorShape>, InferenceError> {
+        self.validate_profile_stream(profile, stream)?;
+        // SAFETY: session and stream are live and belong to the validated device.
+        call("set_profile", |e, n| unsafe {
+            ffi::trt_shim_set_profile(self.handle.as_ptr(), profile as i32, stream.as_raw(), e, n)
+        })?;
+        self.apply_input_shapes(bindings)?;
+        // SAFETY: every dynamic input shape was applied immediately above.
+        call("infer_shapes", |e, n| unsafe {
+            ffi::trt_shim_infer_shapes(self.handle.as_ptr(), e, n)
+        })?;
+        self.schema
+            .bindings()
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                let raw = context_dims(
+                    self.handle,
+                    i32::try_from(index).map_err(|_| {
+                        InferenceError::InvalidBinding("tensor index exceeds i32".into())
+                    })?,
+                )?;
+                let dimensions = raw
+                    .into_iter()
+                    .map(|value| {
+                        usize::try_from(value).map_err(|_| {
+                            InferenceError::InvalidBinding(format!(
+                                "unresolved dimension for {}",
+                                binding.name
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(RuntimeTensorShape {
+                    name: binding.name.clone(),
+                    dimensions,
+                })
+            })
+            .collect()
+    }
+
+    fn validate_profile_stream(
+        &self,
+        profile: usize,
+        stream: &CudaStream,
+    ) -> Result<(), InferenceError> {
         if stream.device_id() != self.device.id() {
             return Err(InferenceError::DeviceMismatch {
                 name: "stream".into(),
@@ -135,6 +189,50 @@ impl TensorRtSession {
                 "profile {profile} is out of range"
             )));
         }
+        Ok(())
+    }
+
+    fn apply_input_shapes(&mut self, bindings: &DeviceBindings<'_>) -> Result<(), InferenceError> {
+        for binding in self.schema.bindings().iter().filter(|binding| {
+            binding.mode == IoMode::Input
+                && binding
+                    .shape
+                    .dimensions()
+                    .iter()
+                    .any(|d| matches!(d, Dimension::Dynamic { .. }))
+        }) {
+            let shape = bindings
+                .shapes
+                .get(&binding.name)
+                .ok_or_else(|| InferenceError::MissingShape(binding.name.clone()))?;
+            let rank = i32::try_from(shape.len())
+                .map_err(|_| InferenceError::InvalidBinding("shape rank exceeds i32".into()))?;
+            let name = CString::new(binding.name.as_str())
+                .map_err(|_| InferenceError::InvalidBinding(binding.name.clone()))?;
+            // SAFETY: name and shape storage remain valid during the call.
+            call("set_input_shape", |e, n| unsafe {
+                ffi::trt_shim_set_input_shape(
+                    self.handle.as_ptr(),
+                    name.as_ptr(),
+                    shape.as_ptr(),
+                    rank,
+                    e,
+                    n,
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Queues inference without a host synchronization. The returned fence
+    /// keeps the mutable session, stream, and every binding buffer borrowed.
+    pub fn enqueue<'s, 'b>(
+        &'s mut self,
+        profile: usize,
+        bindings: &'b DeviceBindings<'b>,
+        stream: &'b CudaStream,
+    ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
+        self.validate_profile_stream(profile, stream)?;
         for name in bindings.values.keys() {
             if self.schema.get(name).is_none() {
                 return Err(InferenceError::InvalidBinding(format!(
@@ -146,6 +244,7 @@ impl TensorRtSession {
         call("set_profile", |e, n| unsafe {
             ffi::trt_shim_set_profile(self.handle.as_ptr(), profile as i32, stream.as_raw(), e, n)
         })?;
+        self.apply_input_shapes(bindings)?;
         for binding in self.schema.bindings() {
             let buffer = bindings
                 .values
@@ -166,31 +265,6 @@ impl TensorRtSession {
             }
             let name = CString::new(binding.name.as_str())
                 .map_err(|_| InferenceError::InvalidBinding(binding.name.clone()))?;
-            if binding.mode == IoMode::Input
-                && binding
-                    .shape
-                    .dimensions()
-                    .iter()
-                    .any(|d| matches!(d, Dimension::Dynamic { .. }))
-            {
-                let shape = bindings
-                    .shapes
-                    .get(&binding.name)
-                    .ok_or_else(|| InferenceError::MissingShape(binding.name.clone()))?;
-                let rank = i32::try_from(shape.len())
-                    .map_err(|_| InferenceError::InvalidBinding("shape rank exceeds i32".into()))?;
-                // SAFETY: name and shape storage remain valid during the call.
-                call("set_input_shape", |e, n| unsafe {
-                    ffi::trt_shim_set_input_shape(
-                        self.handle.as_ptr(),
-                        name.as_ptr(),
-                        shape.as_ptr(),
-                        rank,
-                        e,
-                        n,
-                    )
-                })?;
-            }
             let width = binding.element_type.byte_width().ok_or_else(|| {
                 InferenceError::InvalidBinding(format!("unsupported dtype for {}", binding.name))
             })?;
@@ -337,6 +411,46 @@ fn dims_call(
     }
     Ok(dims)
 }
+
+fn context_dims(
+    handle: NonNull<ffi::TrtSessionHandle>,
+    index: i32,
+) -> Result<Vec<i64>, InferenceError> {
+    let mut rank = 0;
+    let mut error = [0; ERROR_CAPACITY];
+    // SAFETY: handle is live and the first call only queries required rank.
+    let ok = unsafe {
+        ffi::trt_shim_context_tensor_dims(
+            handle.as_ptr(),
+            index,
+            std::ptr::null_mut(),
+            0,
+            &mut rank,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if ok != 1 || rank < 0 {
+        return Err(native_error("context_tensor_rank", &error));
+    }
+    let mut dimensions = vec![0; rank as usize];
+    // SAFETY: dimensions has exactly the capacity reported by the shim.
+    let ok = unsafe {
+        ffi::trt_shim_context_tensor_dims(
+            handle.as_ptr(),
+            index,
+            dimensions.as_mut_ptr(),
+            rank,
+            &mut rank,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if ok != 1 {
+        return Err(native_error("context_tensor_dimensions", &error));
+    }
+    Ok(dimensions)
+}
 fn read_metadata(
     handle: NonNull<ffi::TrtSessionHandle>,
 ) -> Result<(BindingSchema, usize), InferenceError> {
@@ -355,7 +469,7 @@ fn read_metadata(
         let name = tensor_name(handle, index)?;
         let mut info = ffi::TensorInfo::default();
         let raw = dims_call(handle, index, None, &mut info)?;
-        let min = if info.io_mode == 0 && raw.iter().any(|v| *v < 0) {
+        let min = if info.io_mode == 1 && raw.iter().any(|v| *v < 0) {
             Some(dims_call(
                 handle,
                 index,
@@ -406,7 +520,7 @@ fn read_metadata(
         };
         bindings.push(Binding {
             name,
-            mode: if info.io_mode == 0 {
+            mode: if info.io_mode == 1 {
                 IoMode::Input
             } else {
                 IoMode::Output
@@ -486,6 +600,68 @@ mod tests {
                     .set_input_shape(&spec.0, spec.3.iter().map(|v| *v as i64).collect())
                     .unwrap();
             }
+        }
+        session
+            .enqueue(0, &bindings, &stream)
+            .unwrap()
+            .synchronize()
+            .unwrap();
+    }
+
+    #[test]
+    fn resolves_dynamic_output_shapes_when_configured() {
+        let Some(path) = std::env::var_os("AUDIO2X_TEST_DYNAMIC_ENGINE") else {
+            eprintln!("skipped: AUDIO2X_TEST_DYNAMIC_ENGINE is not configured");
+            return;
+        };
+        let device = GpuDevice::new(0).unwrap();
+        let stream = device.create_stream().unwrap();
+        let mut session = TensorRtSession::load(Rc::clone(&device), Path::new(&path)).unwrap();
+        let mut bindings = DeviceBindings::new();
+        for binding in session.metadata().bindings() {
+            if binding.mode == IoMode::Input {
+                let shape = binding
+                    .shape
+                    .dimensions()
+                    .iter()
+                    .map(|dimension| match dimension {
+                        Dimension::Fixed(value) => *value as i64,
+                        Dimension::Batch => 1,
+                        Dimension::Dynamic { min, .. } => *min as i64,
+                    })
+                    .collect();
+                bindings.set_input_shape(&binding.name, shape).unwrap();
+            }
+        }
+        let resolved = session.resolve_shapes(0, &bindings, &stream).unwrap();
+        assert_eq!(resolved.len(), session.metadata().bindings().len());
+        assert!(
+            resolved
+                .iter()
+                .all(|tensor| tensor.dimensions.iter().all(|value| *value > 0))
+        );
+        let specs = session
+            .metadata()
+            .bindings()
+            .iter()
+            .map(|binding| {
+                let shape = resolved
+                    .iter()
+                    .find(|tensor| tensor.name == binding.name)
+                    .unwrap();
+                let bytes = shape.dimensions.iter().product::<usize>()
+                    * binding.element_type.byte_width().unwrap();
+                (binding.name.clone(), binding.element_type, bytes)
+            })
+            .collect::<Vec<_>>();
+        let buffers = specs
+            .iter()
+            .map(|spec| device.allocate::<u8>(spec.2).unwrap())
+            .collect::<Vec<_>>();
+        for (spec, buffer) in specs.iter().zip(&buffers) {
+            bindings
+                .insert(&spec.0, BindingBuffer::from_view(buffer.view(), spec.1))
+                .unwrap();
         }
         session
             .enqueue(0, &bindings, &stream)

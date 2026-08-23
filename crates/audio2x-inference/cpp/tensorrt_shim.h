@@ -43,6 +43,11 @@ int32_t trt_shim_set_profile(trt_shim_handle* handle, int32_t profile_index,
     void* cuda_stream, char* error, size_t error_capacity);
 int32_t trt_shim_set_input_shape(trt_shim_handle* handle, const char* name,
     const int64_t* dimensions, int32_t rank, char* error, size_t error_capacity);
+int32_t trt_shim_infer_shapes(trt_shim_handle* handle,
+    char* error, size_t error_capacity);
+int32_t trt_shim_context_tensor_dims(const trt_shim_handle* handle, int32_t index,
+    int64_t* dimensions, int32_t dimension_capacity, int32_t* rank,
+    char* error, size_t error_capacity);
 int32_t trt_shim_set_tensor_address(trt_shim_handle* handle, const char* name,
     void* address, char* error, size_t error_capacity);
 int32_t trt_shim_enqueue(trt_shim_handle* handle, void* cuda_stream,

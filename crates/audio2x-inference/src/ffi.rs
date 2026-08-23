@@ -68,6 +68,20 @@ unsafe extern "C" {
         error: *mut c_char,
         error_cap: usize,
     ) -> i32;
+    pub fn trt_shim_infer_shapes(
+        session: *mut TrtSessionHandle,
+        error: *mut c_char,
+        error_cap: usize,
+    ) -> i32;
+    pub fn trt_shim_context_tensor_dims(
+        session: *const TrtSessionHandle,
+        index: i32,
+        dims: *mut i64,
+        dims_cap: i32,
+        rank: *mut i32,
+        error: *mut c_char,
+        error_cap: usize,
+    ) -> i32;
     pub fn trt_shim_set_tensor_address(
         session: *mut TrtSessionHandle,
         name: *const c_char,
