@@ -80,10 +80,15 @@ impl ProgressHandler for TerminalDownloadProgress {
                 total_files,
                 total_bytes,
             } => {
-                state.total_files = *total_files;
-                state.total_bytes = *total_bytes;
-                state.started = true;
-                state.render(self.interactive, self.output_enabled, "Downloading", false);
+                // Snapshot download emits its aggregate Start first and then
+                // reuses the handler for nested per-file downloads. Preserve
+                // the aggregate totals instead of replacing them with 1 file.
+                if !state.started {
+                    state.total_files = *total_files;
+                    state.total_bytes = *total_bytes;
+                    state.started = true;
+                    state.render(self.interactive, self.output_enabled, "Downloading", false);
+                }
             }
             DownloadEvent::Progress { files } => {
                 for file in files {
@@ -217,5 +222,32 @@ mod tests {
         assert_eq!(state.total_files, 2);
         assert!(state.line("Downloading").contains("40.0%"));
         assert!(state.line("Downloading").contains("0/2 files"));
+    }
+
+    #[test]
+    fn nested_file_start_does_not_replace_snapshot_totals() {
+        let progress = TerminalDownloadProgress::with_settings(false, false);
+        progress.on_progress(&ProgressEvent::Download(DownloadEvent::Start {
+            total_files: 24,
+            total_bytes: 1_000_000,
+        }));
+        progress.on_progress(&ProgressEvent::Download(DownloadEvent::Start {
+            total_files: 1,
+            total_bytes: 884,
+        }));
+        progress.on_progress(&ProgressEvent::Download(DownloadEvent::Progress {
+            files: vec![FileProgress {
+                filename: "README.md".into(),
+                bytes_completed: 884,
+                total_bytes: 884,
+                status: FileStatus::Complete,
+            }],
+        }));
+
+        let state = progress.state.lock().unwrap();
+        assert_eq!(state.total_files, 24);
+        assert_eq!(state.total_bytes, 1_000_000);
+        assert!(state.line("Downloading").contains("0.1%"));
+        assert!(state.line("Downloading").contains("1/24 files"));
     }
 }
