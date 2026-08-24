@@ -11,7 +11,7 @@ pub use audio2x_cuda as cuda;
 pub use audio2x_inference as inference;
 pub use benchmark::{BenchmarkPhase, BenchmarkReport, BenchmarkRunner, Percentiles};
 pub use model::{Audio2xModel, ModelKind, ModelParameters};
-pub use runtime::{DownloadFailure, ModelDownloadRequest, RuntimeDiscovery};
+pub use runtime::RuntimeDiscovery;
 #[cfg(all(feature = "face", feature = "emotion", feature = "tensorrt"))]
 pub use session::{
     CallbackMetadata, PipelineOptions, PipelineOutput, PipelineStatus, TensorRtPipeline,

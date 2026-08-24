@@ -2,7 +2,6 @@
 name = "audio2x-core"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true

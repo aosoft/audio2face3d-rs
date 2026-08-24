@@ -25,21 +25,23 @@ export LD_LIBRARY_PATH="$CUDA_PATH/lib64:$TENSORRT_ROOT_DIR/lib:$LD_LIBRARY_PATH
 Check runtime discovery before loading a model:
 
 ```sh
-cargo run -p audio2x --bin audio2x-model -- doctor
+cargo run -p audio2x-model-tool -- doctor
 ```
 
 ## Explicit model acquisition
 
-First accept the applicable NVIDIA model license, install the Hugging Face `hf` CLI, and configure its access token. Downloads are explicit and never happen from `build.rs` or model loading:
+First accept the applicable NVIDIA model license and configure a Hugging Face access token. Downloads are explicit and never happen from `build.rs` or model loading:
 
 ```sh
 export HF_TOKEN=...
-cargo run -p audio2x --bin audio2x-model -- download nvidia/Audio2Face-3D-v2.3-Mark 5451728e07378df93b04523279e134a9993ae71b ./models/mark
-cargo run -p audio2x --bin audio2x-model -- download nvidia/Audio2Face-3D-v3.0 b74132732fd9a9d29b237bec193ded64c9745e91 ./models/diffusion
-cargo run -p audio2x --bin audio2x-model -- download nvidia/Audio2Emotion-v2.2 ce1358310179ed7f6b6ea63fe4fa9de5694c1b87 ./models/emotion
+cargo run -p audio2x-model-tool -- download nvidia/Audio2Face-3D-v2.3-Mark 5451728e07378df93b04523279e134a9993ae71b ./models/mark
+cargo run -p audio2x-model-tool -- download nvidia/Audio2Face-3D-v3.0 b74132732fd9a9d29b237bec193ded64c9745e91 ./models/diffusion
+cargo run -p audio2x-model-tool -- download nvidia/Audio2Emotion-v2.2 ce1358310179ed7f6b6ea63fe4fa9de5694c1b87 ./models/emotion
 ```
 
-An absent token is reported before launching the CLI. HTTP 401/403, gated-repository, and token failures are reported as authentication failures instead of generic model-load errors.
+The dedicated Rust tool uses the Hugging Face Hub API directly; it does not launch Python or the `hf` CLI. An absent token is reported before any network request. HTTP 401/403, gated-repository, revision, and rate-limit failures are reported as structured download errors.
+
+Each download is staged in a sibling temporary directory, checked for the Audio2X model files, and atomically installed. The tool writes `.audio2x-source.json` with the repository, immutable revision, and `network.onnx` SHA-256. The downloaded descriptor already names `network.trt`; generate that environment-specific engine with `audio2x-engine` and the profiles in the downloaded `trt_info.json` before running a sample.
 
 ## Samples
 

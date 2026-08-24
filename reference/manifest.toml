@@ -186,6 +186,12 @@ real_engine_samples = ["audio2x-regression", "audio2x-diffusion", "audio2x-emoti
 runtime_discovery = ["Windows", "Linux"]
 model_download_is_explicit = true
 gated_auth_diagnostic = true
+model_download_client = "hf-hub 1.0.0"
+python_required_for_download = false
+external_hf_cli_required = false
+download_revision_is_full_commit = true
+download_install_is_atomic = true
+download_records_onnx_sha256 = true
 
 [validation.milestone8.benchmark]
 result_manifest = "reference/benchmark.toml"

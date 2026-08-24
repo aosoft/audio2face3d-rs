@@ -1,0 +1,18 @@
+[package]
+name = "audio2x-model-tool"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+audio2x.workspace = true
+hf-hub.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[[bin]]
+name = "audio2x-model"
+path = "src/main.rs"
+
+[lints]
+workspace = true

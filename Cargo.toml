@@ -7,13 +7,13 @@ members = [
     "crates/audio2face",
     "crates/audio2emotion",
     "crates/audio2x",
+    "crates/audio2x-model-tool",
 ]
 exclude = ["reference"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
 
 [workspace.dependencies]
 audio2x-core = { path = "crates/audio2x-core" }
@@ -21,6 +21,9 @@ audio2x-cuda = { path = "crates/audio2x-cuda", default-features = false }
 audio2x-inference = { path = "crates/audio2x-inference" }
 audio2face = { path = "crates/audio2face" }
 audio2emotion = { path = "crates/audio2emotion" }
+audio2x = { path = "crates/audio2x", default-features = false }
+hf-hub = { version = "1.0.0", features = ["blocking", "rustls-tls"] }
+sha2 = "0.11"
 thiserror = "2.0"
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
