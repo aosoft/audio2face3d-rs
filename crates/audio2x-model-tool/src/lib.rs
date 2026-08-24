@@ -19,6 +19,69 @@ const REQUIRED_MODEL_FILES: &[&str] = &[
     "trt_info.json",
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelPreset {
+    pub name: &'static str,
+    pub repository: &'static str,
+    pub revision: &'static str,
+    pub output_directory: &'static str,
+}
+
+pub const MODEL_PRESETS: &[ModelPreset] = &[
+    ModelPreset {
+        name: "diffusion",
+        repository: "nvidia/Audio2Face-3D-v3.0",
+        revision: "b74132732fd9a9d29b237bec193ded64c9745e91",
+        output_directory: "diffusion",
+    },
+    ModelPreset {
+        name: "claire",
+        repository: "nvidia/Audio2Face-3D-v2.3.1-Claire",
+        revision: "a46eafb067adfdd7cc8f5c7941586b309004561c",
+        output_directory: "claire",
+    },
+    ModelPreset {
+        name: "james",
+        repository: "nvidia/Audio2Face-3D-v2.3.1-James",
+        revision: "327d000d9f76e370014a9b7467b23ea36846b680",
+        output_directory: "james",
+    },
+    ModelPreset {
+        name: "mark",
+        repository: "nvidia/Audio2Face-3D-v2.3-Mark",
+        revision: "5451728e07378df93b04523279e134a9993ae71b",
+        output_directory: "mark",
+    },
+    ModelPreset {
+        name: "emotion",
+        repository: "nvidia/Audio2Emotion-v2.2",
+        revision: "ce1358310179ed7f6b6ea63fe4fa9de5694c1b87",
+        output_directory: "emotion",
+    },
+];
+
+impl ModelPreset {
+    pub fn request(
+        self,
+        output_root: impl AsRef<Path>,
+        token_environment: impl Into<String>,
+    ) -> ModelDownloadRequest {
+        ModelDownloadRequest {
+            repository: self.repository.into(),
+            revision: self.revision.into(),
+            output: output_root.as_ref().join(self.output_directory),
+            token_environment: token_environment.into(),
+        }
+    }
+}
+
+pub fn model_preset(name: &str) -> Option<ModelPreset> {
+    MODEL_PRESETS
+        .iter()
+        .copied()
+        .find(|preset| preset.name == name)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelDownloadRequest {
     pub repository: String,
@@ -255,6 +318,27 @@ mod tests {
             output,
             token_environment: "AUDIO2X_TEST_TOKEN_THAT_IS_NOT_SET".into(),
         }
+    }
+
+    #[test]
+    fn presets_pin_all_original_model_repositories() {
+        assert_eq!(MODEL_PRESETS.len(), 5);
+        for preset in MODEL_PRESETS {
+            assert_eq!(preset.revision.len(), 40);
+            assert!(
+                preset
+                    .revision
+                    .bytes()
+                    .all(|value| value.is_ascii_hexdigit())
+            );
+            let request = preset.request("models", "TOKEN");
+            assert_eq!(
+                request.output,
+                Path::new("models").join(preset.output_directory)
+            );
+            assert_eq!(model_preset(preset.name), Some(*preset));
+        }
+        assert_eq!(model_preset("unknown"), None);
     }
 
     fn test_root(name: &str) -> PathBuf {

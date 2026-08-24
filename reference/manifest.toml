@@ -192,6 +192,8 @@ external_hf_cli_required = false
 download_revision_is_full_commit = true
 download_install_is_atomic = true
 download_records_onnx_sha256 = true
+download_catalog_presets = ["diffusion", "claire", "james", "mark", "emotion"]
+download_catalog_supports_all = true
 
 [validation.milestone8.benchmark]
 result_manifest = "reference/benchmark.toml"

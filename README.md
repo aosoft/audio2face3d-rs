@@ -34,10 +34,12 @@ First accept the applicable NVIDIA model license and configure a Hugging Face ac
 
 ```sh
 export HF_TOKEN=...
-cargo run -p audio2x-model-tool -- download nvidia/Audio2Face-3D-v2.3-Mark 5451728e07378df93b04523279e134a9993ae71b ./models/mark
-cargo run -p audio2x-model-tool -- download nvidia/Audio2Face-3D-v3.0 b74132732fd9a9d29b237bec193ded64c9745e91 ./models/diffusion
-cargo run -p audio2x-model-tool -- download nvidia/Audio2Emotion-v2.2 ce1358310179ed7f6b6ea63fe4fa9de5694c1b87 ./models/emotion
+cargo run -p audio2x-model-tool -- list
+cargo run -p audio2x-model-tool -- download mark
+cargo run -p audio2x-model-tool -- download all
 ```
+
+The built-in catalog covers `diffusion`, `claire`, `james`, `mark`, and `emotion`. It pins the repository and full commit revision and installs under `./models/<preset>` by default. Pass a different output root and token environment after the preset when needed. Arbitrary immutable revisions remain available through `download-revision <owner/repository> <revision> <output> [token-env]`.
 
 The dedicated Rust tool uses the Hugging Face Hub API directly; it does not launch Python or the `hf` CLI. An absent token is reported before any network request. HTTP 401/403, gated-repository, revision, and rate-limit failures are reported as structured download errors.
 
