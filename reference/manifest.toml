@@ -232,6 +232,33 @@ emotion_engine_sha256 = "8cd4069ab13928d678981aec4a401478f04924eb84a2d0b6c4a069d
 emotion_engine_peak_builder_gpu_mib = 3002
 emotion_engine_runtime_load_and_inference = true
 
+[validation.milestone8.cpp_engine_compatibility]
+reference_onnx = "audio2x-common/tests/data/test_data_inference_network.onnx"
+rust_reference_builder = "audio2x-engine"
+rust_reference_fixed_engine_sha256 = "5caf6d0f29a5ae8f4afcba03a04ddfacc16d2f0b4b4dae2a9b1ae657c49b1daf"
+rust_reference_dynamic_engine_sha256 = "485073120c9ecc529b4f8dfd25f500e42371a08e0f0f261866adf3313849de24"
+rust_reference_dynamic_batch_profile = [1, 8, 128]
+rust_reference_fixture_absolute_tolerance = 0.001
+rust_reference_fixed_all_elements_match = true
+rust_reference_dynamic_all_elements_match = true
+cpp_reference_test = "InferenceEngine.Inference"
+cpp_reference_test_passed = true
+cpp_reference_test_engine_profiles = ["fixed-1", "dynamic-1-8-128"]
+rust_model_builder = "audio2x-model"
+cpp_a2f_default_models = ["mark", "diffusion"]
+cpp_a2f_default_mark_engine_sha256 = "52e6fc7004ec253d592309a06499afbe96268ba1fabbe16c54069de3d439bc24"
+cpp_a2f_default_diffusion_engine_sha256 = "b84a708e1f208ad412d52229c05e60afaa36055bd6feea8dd16c5f6ff3e36575"
+cpp_a2f_default_eight_track_sample_passed = true
+cpp_a2f_fp16_models = ["mark"]
+cpp_a2f_fp16_engine_sha256 = "c62e9aa5da1f14adcfc02f6bab82a4dcd1ebb2e6c90587eba9ebccb7a96ea9e8"
+cpp_a2f_fp16_eight_track_sample_passed = true
+cpp_a2e_default_engine_sha256 = "b232dae5ec825ed7d3a84dccb855d754043bb396c9d0c7a6849757ab8f403e8d"
+cpp_a2e_low_level_inference_sample_passed = true
+cpp_a2e_regular_executor_completed = true
+cpp_a2e_interactive_executor_requested_batch = 128
+cpp_a2e_interactive_executor_engine_max_batch = 64
+cpp_a2e_interactive_executor_rejected_over_profile_batch = true
+
 [validation.milestone8.benchmark]
 result_manifest = "reference/benchmark.toml"
 phases = ["build", "cache", "warmup", "steady-state", "post-process", "end-to-end"]

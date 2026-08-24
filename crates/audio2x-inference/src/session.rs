@@ -751,6 +751,60 @@ mod tests {
         tensors
     }
 
+    fn reference_input_shape(shape: &Shape, element_count: usize) -> Vec<i64> {
+        let mut variable_axis = None;
+        let mut fixed_product = 1_usize;
+        for (axis, dimension) in shape.dimensions().iter().enumerate() {
+            match dimension {
+                Dimension::Fixed(value) => {
+                    fixed_product = fixed_product.checked_mul(*value).unwrap();
+                }
+                Dimension::Batch | Dimension::Dynamic { .. } => {
+                    assert!(
+                        variable_axis.replace(axis).is_none(),
+                        "reference fixture cannot infer multiple dynamic dimensions"
+                    );
+                }
+            }
+        }
+
+        let variable_value = if variable_axis.is_some() {
+            assert_eq!(element_count % fixed_product, 0);
+            element_count / fixed_product
+        } else {
+            assert_eq!(element_count, fixed_product);
+            1
+        };
+        assert!(variable_value > 0);
+
+        shape
+            .dimensions()
+            .iter()
+            .map(|dimension| {
+                let value = match dimension {
+                    Dimension::Fixed(value) => *value,
+                    Dimension::Batch => variable_value,
+                    Dimension::Dynamic { min, max } => {
+                        assert!((*min..=*max).contains(&variable_value));
+                        variable_value
+                    }
+                };
+                i64::try_from(value).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn infers_reference_input_shape_from_fixture_element_count() {
+        let shape = Shape::new(vec![
+            Dimension::Dynamic { min: 1, max: 128 },
+            Dimension::Fixed(1),
+            Dimension::Fixed(8320),
+        ])
+        .unwrap();
+        assert_eq!(reference_input_shape(&shape, 8320), [1, 1, 8320]);
+    }
+
     #[test]
     fn loads_real_engine_metadata_when_configured() {
         let Some(path) = std::env::var_os("AUDIO2X_TEST_ENGINE") else {
@@ -926,13 +980,14 @@ mod tests {
                     binding.name.clone(),
                     binding.mode,
                     binding.element_type,
+                    binding.shape.clone(),
                     len,
                 )
             })
             .collect::<Vec<_>>();
         let mut buffers = specs
             .iter()
-            .map(|spec| device.allocate::<f32>(spec.3).unwrap())
+            .map(|spec| device.allocate::<f32>(spec.4).unwrap())
             .collect::<Vec<_>>();
         for (spec, buffer) in specs.iter().zip(&mut buffers) {
             if spec.1 == IoMode::Input {
@@ -946,6 +1001,11 @@ mod tests {
             bindings
                 .insert(&spec.0, BindingBuffer::from_view(buffer.view(), spec.2))
                 .unwrap();
+            if spec.1 == IoMode::Input {
+                bindings
+                    .set_input_shape(&spec.0, reference_input_shape(&spec.3, spec.4))
+                    .unwrap();
+            }
         }
         session
             .enqueue(0, &bindings, &stream)
@@ -955,7 +1015,7 @@ mod tests {
         drop(bindings);
         for (spec, buffer) in specs.iter().zip(&buffers) {
             if spec.1 == IoMode::Output {
-                let mut actual = vec![0.0; spec.3];
+                let mut actual = vec![0.0; spec.4];
                 buffer.copy_to(&mut actual, &stream).unwrap();
                 for (index, (actual, expected)) in actual
                     .iter()

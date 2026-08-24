@@ -40,3 +40,18 @@ ONNX, configuration, input, golden, and intermediate NPZ/BIN artifacts from
 both sample and generated test-data directories are hashed. TensorRT engine
 hashes are recorded but are environment-specific and must be validated
 numerically after regeneration.
+
+Validate a Rust-generated engine against the matching C++ tensor fixture by
+pointing the TensorRT test at both artifacts:
+
+```powershell
+$env:AUDIO2X_REFERENCE_ENGINE = '<Rust-generated-engine>'
+$env:AUDIO2X_REFERENCE_TENSORS = '<Audio2Face-3D-SDK>\_data\generated\audio2x-common\tests\data\test_data_inference.bin'
+cargo test -p audio2x-inference --features tensorrt `
+  session::tests::matches_cpp_reference_fixture_when_configured -- --exact
+```
+
+The engine must be generated from the fixture's corresponding
+`test_data_inference_network.onnx`. The test derives its single dynamic input
+dimension from each fixture tensor, runs inference, and compares every output
+element with an absolute tolerance of `1e-3`.
