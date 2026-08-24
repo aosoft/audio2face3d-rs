@@ -9,7 +9,7 @@ pub struct GpuPhiloxNoise {
 
 impl GpuPhiloxNoise {
     pub fn new(stream: &CudaStream, tracks: usize, size: usize, seed: u64) -> Result<Self> {
-        if tracks == 0 || size == 0 || size % 2 != 0 {
+        if tracks == 0 || size == 0 || !size.is_multiple_of(2) {
             return Err(invalid(
                 "GPU Philox track count and even noise size must be non-zero",
             ));

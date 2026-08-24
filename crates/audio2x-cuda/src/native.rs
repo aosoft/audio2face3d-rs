@@ -609,7 +609,7 @@ impl CurandHandle {
     ) -> Result<CurandFence<'a>> {
         ensure_same_device(self.device.id(), stream.device_id())?;
         ensure_same_device(self.device.id(), output.device_id())?;
-        if output.is_empty() || output.len() % 2 != 0 {
+        if output.is_empty() || !output.len().is_multiple_of(2) {
             return Err(Audio2xError::InvalidSchema(
                 "cuRAND normal output length must be non-zero and even".into(),
             ));

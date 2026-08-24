@@ -20,7 +20,7 @@ pub struct BlendshapeData {
 
 impl BlendshapeData {
     pub fn validate(&self) -> Result<()> {
-        if self.neutral_pose.is_empty() || self.neutral_pose.len() % 3 != 0 {
+        if self.neutral_pose.is_empty() || !self.neutral_pose.len().is_multiple_of(3) {
             return Err(invalid(
                 "blendshape neutral pose must contain complete xyz vertices",
             ));

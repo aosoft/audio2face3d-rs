@@ -84,8 +84,8 @@ impl DiffusionContract {
             || parameters.num_diffusion_steps == 0
             || parameters.num_gru_layers == 0
             || parameters.gru_latent_dim == 0
-            || parameters.skin_size % 3 != 0
-            || parameters.tongue_size % 3 != 0
+            || !parameters.skin_size.is_multiple_of(3)
+            || !parameters.tongue_size.is_multiple_of(3)
             || audio.buffer_len == 0
             || audio.samplerate == 0
         {
@@ -386,7 +386,7 @@ pub struct PhiloxNoise {
 
 impl PhiloxNoise {
     pub fn new(tracks: usize, size: usize, seed: u64) -> Result<Self> {
-        if tracks == 0 || size == 0 || size % 2 != 0 {
+        if tracks == 0 || size == 0 || !size.is_multiple_of(2) {
             return Err(invalid(
                 "Philox track count and even noise size must be non-zero",
             ));

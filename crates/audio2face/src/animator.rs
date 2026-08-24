@@ -72,7 +72,7 @@ impl SkinAnimator {
         lip_open_pose_delta: Vec<f32>,
         eye_close_pose_delta: Vec<f32>,
     ) -> Result<Self> {
-        if neutral_pose.is_empty() || neutral_pose.len() % 3 != 0 {
+        if neutral_pose.is_empty() || !neutral_pose.len().is_multiple_of(3) {
             return Err(invalid("skin neutral pose must contain XYZ vertices"));
         }
         if lip_open_pose_delta.len() != neutral_pose.len()
@@ -165,7 +165,7 @@ pub struct TongueAnimator {
 
 impl TongueAnimator {
     pub fn new(params: TongueAnimatorParams, neutral_pose: Vec<f32>) -> Result<Self> {
-        if neutral_pose.is_empty() || neutral_pose.len() % 3 != 0 {
+        if neutral_pose.is_empty() || !neutral_pose.len().is_multiple_of(3) {
             return Err(invalid("tongue neutral pose must contain XYZ vertices"));
         }
         Ok(Self {
@@ -226,7 +226,7 @@ pub struct EyesAnimator {
 
 impl EyesAnimator {
     pub fn new(params: EyesAnimatorParams, saccade_rotation: Vec<f32>) -> Result<Self> {
-        if saccade_rotation.is_empty() || saccade_rotation.len() % 2 != 0 {
+        if saccade_rotation.is_empty() || !saccade_rotation.len().is_multiple_of(2) {
             return Err(invalid("saccade rotation must contain XY pairs"));
         }
         let mut this = Self {

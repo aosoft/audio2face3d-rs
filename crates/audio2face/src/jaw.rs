@@ -168,7 +168,7 @@ pub fn rigid_transform(to_pose: &[f32], from_pose: &[f32]) -> Result<[f32; 16]> 
 }
 
 fn validate_pose(name: &str, pose: &[f32]) -> Result<()> {
-    if pose.is_empty() || pose.len() % 3 != 0 {
+    if pose.is_empty() || !pose.len().is_multiple_of(3) {
         return Err(Audio2xError::InvalidSchema(format!(
             "{name} size must be a non-zero multiple of 3"
         )));

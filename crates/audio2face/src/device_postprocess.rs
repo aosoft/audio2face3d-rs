@@ -91,7 +91,7 @@ impl GpuRegressionPostprocessor {
         {
             return Err(invalid("skin animator pose lengths must match"));
         }
-        if model.saccade_rotation.is_empty() || model.saccade_rotation.len() % 2 != 0 {
+        if model.saccade_rotation.is_empty() || !model.saccade_rotation.len().is_multiple_of(2) {
             return Err(invalid("saccade rotation must contain XY pairs"));
         }
         let track_count = tracks.len();
@@ -444,7 +444,8 @@ impl GpuRegressionPostprocessFence<'_> {
 }
 
 fn validate_pose(name: &str, values: &[f32]) -> Result<()> {
-    if values.is_empty() || values.len() % 3 != 0 || values.iter().any(|v| !v.is_finite()) {
+    if values.is_empty() || !values.len().is_multiple_of(3) || values.iter().any(|v| !v.is_finite())
+    {
         Err(invalid(format!("{name} must contain finite XYZ vertices")))
     } else {
         Ok(())
