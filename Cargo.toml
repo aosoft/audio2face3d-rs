@@ -22,6 +22,7 @@ audio2x-inference = { path = "crates/audio2x-inference" }
 audio2face = { path = "crates/audio2face" }
 audio2emotion = { path = "crates/audio2emotion" }
 audio2x = { path = "crates/audio2x", default-features = false }
+clap = { version = "4.5", features = ["derive"] }
 hf-hub = { version = "1.0.0", features = ["blocking", "rustls-tls"] }
 sha2 = "0.11"
 thiserror = "2.0"

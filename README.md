@@ -28,6 +28,14 @@ Check runtime discovery before loading a model:
 cargo run -p audio2x-model-tool -- doctor
 ```
 
+The model tool uses `clap` for argument parsing. Top-level help, command-specific options, accepted values, defaults, and the package version are available directly from the CLI:
+
+```sh
+cargo run -p audio2x-model-tool -- --help
+cargo run -p audio2x-model-tool -- engine --help
+cargo run -p audio2x-model-tool -- --version
+```
+
 ## Explicit model acquisition
 
 First accept the applicable NVIDIA model license and configure a Hugging Face access token. Downloads are explicit and never happen from `build.rs` or model loading:
