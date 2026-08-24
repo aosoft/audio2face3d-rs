@@ -91,6 +91,8 @@ pub struct ModelEngineBuildRequest {
     pub model_directory: PathBuf,
     pub precision: EnginePrecision,
     pub device_id: u32,
+    /// Overrides `MAX_BATCH_SIZE`; `OPT_BATCH_SIZE` is clamped when needed.
+    pub max_batch_size: Option<u64>,
     pub replace: bool,
     pub trtexec: PathBuf,
 }
@@ -134,12 +136,19 @@ impl ModelEngineBuildRequest {
 
         let mut staging = EngineStagingDirectory::create(&self.model_directory, self.precision)?;
         let staged_engine = staging.path().join(&plan.engine_name);
+        let mut build_arguments = plan.arguments.clone();
+        if !build_arguments
+            .iter()
+            .any(|value| value == "--skipInference")
+        {
+            build_arguments.push("--skipInference".into());
+        }
         build(&EngineBuildRequest {
             onnx: plan.onnx.clone(),
             engine: staged_engine.clone(),
             device_id: self.device_id,
             profiles: Vec::new(),
-            extra_args: plan.arguments.clone(),
+            extra_args: build_arguments,
         })?;
         let engine_metadata = fs::metadata(&staged_engine)?;
         if engine_metadata.len() == 0 {
@@ -166,6 +175,7 @@ impl ModelEngineBuildRequest {
             trt_info: self.model_directory.join(&plan.trt_info_name),
             provenance: self.model_directory.join(&plan.provenance_name),
             precision: self.precision,
+            max_batch_size: plan.max_batch_size,
             engine_sha256,
             disposition: if had_existing {
                 EngineBuildDisposition::Replaced
@@ -191,6 +201,7 @@ pub struct EngineBuildReceipt {
     pub trt_info: PathBuf,
     pub provenance: PathBuf,
     pub precision: EnginePrecision,
+    pub max_batch_size: Option<u64>,
     pub engine_sha256: String,
     pub disposition: EngineBuildDisposition,
 }
@@ -200,6 +211,7 @@ struct BuildPlan {
     model_directory: PathBuf,
     onnx: PathBuf,
     precision: EnginePrecision,
+    max_batch_size: Option<u64>,
     engine_name: String,
     model_name: String,
     trt_info_name: String,
@@ -234,6 +246,19 @@ impl BuildPlan {
         }
 
         let mut trt_info = TrtBuildInfo::load(&trt_info_path)?;
+        if let Some(max_batch_size) = request.max_batch_size {
+            if max_batch_size == 0 {
+                return Err(ModelEngineFailure::InvalidMaxBatchSize(max_batch_size));
+            }
+            let maximum = trt_info
+                .defaults
+                .get_mut("MAX_BATCH_SIZE")
+                .ok_or(ModelEngineFailure::MissingMaxBatchDefault)?;
+            *maximum = max_batch_size;
+            if let Some(optimum) = trt_info.defaults.get_mut("OPT_BATCH_SIZE") {
+                *optimum = (*optimum).min(max_batch_size);
+            }
+        }
         let base_arguments = trt_info.arguments()?;
         if let Some(argument) = base_arguments
             .iter()
@@ -254,6 +279,7 @@ impl BuildPlan {
             model_directory: request.model_directory.clone(),
             onnx,
             precision: request.precision,
+            max_batch_size: trt_info.defaults.get("MAX_BATCH_SIZE").copied(),
             engine_name,
             model_name: request.precision.model_name(),
             trt_info_name: request.precision.trt_info_name(),
@@ -382,6 +408,7 @@ fn verify_existing(
         trt_info: plan.model_directory.join(&plan.trt_info_name),
         provenance: provenance_path,
         precision: plan.precision,
+        max_batch_size: plan.max_batch_size,
         engine_sha256,
         disposition: EngineBuildDisposition::VerifiedExisting,
     })
@@ -656,6 +683,10 @@ pub enum ModelEngineFailure {
     MissingNetworkPath(PathBuf),
     #[error("base trt_info.json already selects precision with `{0}`")]
     SourcePrecisionArgument(String),
+    #[error("maximum engine batch size must be greater than zero: {0}")]
+    InvalidMaxBatchSize(u64),
+    #[error("trt_info.json has no MAX_BATCH_SIZE default to override")]
+    MissingMaxBatchDefault,
     #[error("TensorRT executable was not found: {0}; set TRTEXEC or add trtexec to PATH")]
     ExecutableNotFound(String),
     #[error(
@@ -728,7 +759,7 @@ mod tests {
         .unwrap();
         fs::write(
             directory.join("trt_info.json"),
-            br#"{"trt_build_param":{"batch":["--minShapes=input:1x2","--optShapes=input:{OPT}x2","--maxShapes=input:{MAX}x2"]},"defaults":{"OPT":8,"MAX":32}}"#,
+            br#"{"trt_build_param":{"batch":["--minShapes=input:1x2","--optShapes=input:{OPT_BATCH_SIZE}x2","--maxShapes=input:{MAX_BATCH_SIZE}x2"]},"defaults":{"OPT_BATCH_SIZE":8,"MAX_BATCH_SIZE":32}}"#,
         )
         .unwrap();
     }
@@ -742,6 +773,7 @@ mod tests {
             model_directory: directory.to_owned(),
             precision,
             device_id: 0,
+            max_batch_size: None,
             replace,
             trtexec: PathBuf::from("unused-by-test"),
         }
@@ -770,6 +802,7 @@ mod tests {
         let receipt = request
             .execute_with(&plan, identity.clone(), |build| {
                 assert!(build.extra_args.contains(&"--fp16".into()));
+                assert!(build.extra_args.contains(&"--skipInference".into()));
                 fs::write(&build.engine, b"engine")?;
                 Ok(())
             })
@@ -862,5 +895,18 @@ mod tests {
                 BuildPlan::load(&request(&directory, precision, false)).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn max_batch_override_clamps_optimum_and_expands_profiles() {
+        let root = test_root("max-batch");
+        write_source(&root);
+        let mut request = request(&root, EnginePrecision::Default, false);
+        request.max_batch_size = Some(4);
+        let plan = BuildPlan::load(&request).unwrap();
+        assert_eq!(plan.max_batch_size, Some(4));
+        assert!(plan.arguments.contains(&"--optShapes=input:4x2".into()));
+        assert!(plan.arguments.contains(&"--maxShapes=input:4x2".into()));
+        fs::remove_dir_all(root).unwrap();
     }
 }

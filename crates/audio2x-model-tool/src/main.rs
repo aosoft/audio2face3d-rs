@@ -185,6 +185,7 @@ fn print_receipt(receipt: &DownloadReceipt) {
 struct EngineOptions {
     precision: EnginePrecision,
     device_id: u32,
+    max_batch_size: Option<u64>,
     replace: bool,
 }
 
@@ -195,9 +196,13 @@ fn take_engine_options(
     let precision = take_option(arguments, "--precision=")?
         .map_or(Ok(EnginePrecision::Default), |value| value.parse())?;
     let device_id = take_option(arguments, "--device=")?.map_or(Ok(0), |value| value.parse())?;
+    let max_batch_size = take_option(arguments, "--max-batch=")?
+        .map(|value| value.parse())
+        .transpose()?;
     Ok(EngineOptions {
         precision,
         device_id,
+        max_batch_size,
         replace,
     })
 }
@@ -208,6 +213,7 @@ fn build_preset_engine(
     options: EngineOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let model_directory = output_root.join(preset.output_directory);
+    let max_batch_size = preset_max_batch_size(preset, options.max_batch_size);
     println!("building {} engine ({})", preset.name, options.precision);
     let trtexec = std::env::var_os("TRTEXEC")
         .map(PathBuf::from)
@@ -216,12 +222,17 @@ fn build_preset_engine(
         model_directory,
         precision: options.precision,
         device_id: options.device_id,
+        max_batch_size,
         replace: options.replace,
         trtexec,
     }
     .execute()?;
     print_engine_receipt(&receipt);
     Ok(())
+}
+
+fn preset_max_batch_size(preset: ModelPreset, requested: Option<u64>) -> Option<u64> {
+    requested.or_else(|| (preset.name == "emotion").then_some(32))
 }
 
 fn print_engine_receipt(receipt: &EngineBuildReceipt) {
@@ -232,6 +243,9 @@ fn print_engine_receipt(receipt: &EngineBuildReceipt) {
     };
     println!("engine: {} ({status})", receipt.engine.display());
     println!("precision: {}", receipt.precision);
+    if let Some(max_batch_size) = receipt.max_batch_size {
+        println!("max batch size: {max_batch_size}");
+    }
     println!("engine sha256: {}", receipt.engine_sha256);
     println!("model descriptor: {}", receipt.model_descriptor.display());
 }
@@ -277,7 +291,7 @@ fn reject_extra_arguments(
 }
 
 fn usage() -> &'static str {
-    "usage: audio2x-model doctor | list | download <preset|all> [output-root] [token-env] [--force] | download-revision <owner/repository> <40-character-revision> <output> [token-env] [--force] | engine <preset|all> [output-root] [--precision=default|fp16|fp32] [--device=N] [--replace] | prepare <preset|all> [output-root] [token-env] [--precision=default|fp16|fp32] [--device=N] [--force] [--replace]"
+    "usage: audio2x-model doctor | list | download <preset|all> [output-root] [token-env] [--force] | download-revision <owner/repository> <40-character-revision> <output> [token-env] [--force] | engine <preset|all> [output-root] [--precision=default|fp16|fp32] [--device=N] [--max-batch=N] [--replace] | prepare <preset|all> [output-root] [token-env] [--precision=default|fp16|fp32] [--device=N] [--max-batch=N] [--force] [--replace]"
 }
 
 #[cfg(test)]
@@ -303,12 +317,23 @@ mod tests {
             "mark".into(),
             "--precision=fp16".into(),
             "--device=2".into(),
+            "--max-batch=16".into(),
             "--replace".into(),
         ];
         let options = take_engine_options(&mut arguments).unwrap();
         assert_eq!(options.precision, EnginePrecision::Fp16);
         assert_eq!(options.device_id, 2);
+        assert_eq!(options.max_batch_size, Some(16));
         assert!(options.replace);
         assert_eq!(arguments, ["mark"]);
+    }
+
+    #[test]
+    fn emotion_preset_caps_batch_without_overriding_an_explicit_value() {
+        let emotion = model_preset("emotion").unwrap();
+        let mark = model_preset("mark").unwrap();
+        assert_eq!(preset_max_batch_size(emotion, None), Some(32));
+        assert_eq!(preset_max_batch_size(emotion, Some(16)), Some(16));
+        assert_eq!(preset_max_batch_size(mark, None), None);
     }
 }

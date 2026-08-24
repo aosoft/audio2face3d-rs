@@ -206,6 +206,13 @@ engine_matching_output_is_skipped = true
 engine_replace_is_transactional = true
 engine_provenance_includes = ["onnx-sha256", "engine-sha256", "precision", "expanded-arguments", "device", "trtexec-sha256", "trtexec-version", "cuda-toolkit", "gpu-driver"]
 python_required_for_engine_generation = false
+emotion_engine_max_batch = 32
+engine_max_batch_override = true
+engine_build_skips_trtexec_inference = true
+emotion_engine_build_validated = true
+emotion_engine_sha256 = "8cd4069ab13928d678981aec4a401478f04924eb84a2d0b6c4a069d5369698a2"
+emotion_engine_peak_builder_gpu_mib = 3002
+emotion_engine_runtime_load_and_inference = true
 
 [validation.milestone8.benchmark]
 result_manifest = "reference/benchmark.toml"

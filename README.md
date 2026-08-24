@@ -61,6 +61,7 @@ Generate an environment-specific TensorRT engine from a downloaded preset with t
 cargo run -p audio2x-model-tool -- engine mark
 cargo run -p audio2x-model-tool -- engine mark --precision=fp16
 cargo run -p audio2x-model-tool -- engine mark --precision=fp32 --device=0
+cargo run -p audio2x-model-tool -- engine emotion --max-batch=32
 ```
 
 `default` matches the original SDK's standard build: FP32 is available and TensorRT may use TF32. `fp16` enables mixed FP16/FP32 execution. Explicit `fp32` disables TF32. The generated artifacts are:
@@ -72,6 +73,8 @@ cargo run -p audio2x-model-tool -- engine mark --precision=fp32 --device=0
 | `fp32` | `network_fp32.trt` | `trt_info_fp32.json` | `model_fp32.json` |
 
 The FP16 names match the original SDK. ONNX is only an engine-build input; runtime samples load the generated model descriptor and its referenced `.trt` file.
+
+The Audio2Emotion preset caps `MAX_BATCH_SIZE` at 32 because the Rust runtime supports at most 32 emotion tracks and the distributed value of 128 can require more than 8 GiB while TensorRT selects tactics. `--max-batch=N` overrides the preset policy; `OPT_BATCH_SIZE` is clamped when it exceeds that value. The tool passes `--skipInference` because this command builds an engine rather than benchmarking it.
 
 The tool records the ONNX and engine hashes, expanded arguments, device, `trtexec` binary hash/version, CUDA toolkit, and GPU/driver identity in a precision-specific `.audio2x-engine*.json` sidecar. A matching existing engine is verified and skipped. A mismatch is preserved and reported; use `--replace` to stage, validate, and replace the selected precision's complete artifact set with rollback on installation failure.
 
