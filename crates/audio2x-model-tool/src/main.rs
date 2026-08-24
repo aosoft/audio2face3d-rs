@@ -213,7 +213,6 @@ fn build_preset_engine(
     options: EngineOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let model_directory = output_root.join(preset.output_directory);
-    let max_batch_size = preset_max_batch_size(preset, options.max_batch_size);
     println!("building {} engine ({})", preset.name, options.precision);
     let trtexec = std::env::var_os("TRTEXEC")
         .map(PathBuf::from)
@@ -222,17 +221,13 @@ fn build_preset_engine(
         model_directory,
         precision: options.precision,
         device_id: options.device_id,
-        max_batch_size,
+        max_batch_size: options.max_batch_size,
         replace: options.replace,
         trtexec,
     }
     .execute()?;
     print_engine_receipt(&receipt);
     Ok(())
-}
-
-fn preset_max_batch_size(preset: ModelPreset, requested: Option<u64>) -> Option<u64> {
-    requested.or_else(|| (preset.name == "emotion").then_some(32))
 }
 
 fn print_engine_receipt(receipt: &EngineBuildReceipt) {
@@ -326,14 +321,5 @@ mod tests {
         assert_eq!(options.max_batch_size, Some(16));
         assert!(options.replace);
         assert_eq!(arguments, ["mark"]);
-    }
-
-    #[test]
-    fn emotion_preset_caps_batch_without_overriding_an_explicit_value() {
-        let emotion = model_preset("emotion").unwrap();
-        let mark = model_preset("mark").unwrap();
-        assert_eq!(preset_max_batch_size(emotion, None), Some(32));
-        assert_eq!(preset_max_batch_size(emotion, Some(16)), Some(16));
-        assert_eq!(preset_max_batch_size(mark, None), None);
     }
 }

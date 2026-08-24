@@ -4,8 +4,6 @@ use audio2x_core::{
     WindowProgressParameters,
 };
 
-pub const MAX_EMOTION_TRACKS: usize = 32;
-
 fn invalid(message: impl Into<String>) -> Audio2xError {
     Audio2xError::InvalidSchema(message.into())
 }
@@ -92,6 +90,11 @@ impl ClassifierContract {
 }
 
 pub trait ClassifierBackend {
+    /// Maximum batch accepted by the backend, when it has a finite profile.
+    fn max_batch_size(&self) -> Option<usize> {
+        None
+    }
+
     fn infer(&mut self, track: usize, audio: &[f32]) -> Result<Vec<f32>>;
 
     fn infer_batch(&mut self, inputs: &[(usize, Vec<f32>)]) -> Result<Vec<Vec<f32>>> {
@@ -145,10 +148,8 @@ impl EmotionExecutor {
         parameters: EmotionPostProcessParameters,
         track_count: usize,
     ) -> Result<Self> {
-        if !(1..=MAX_EMOTION_TRACKS).contains(&track_count) {
-            return Err(invalid(format!(
-                "emotion track count must be in 1..={MAX_EMOTION_TRACKS}"
-            )));
+        if track_count == 0 {
+            return Err(invalid("emotion track count must be non-zero"));
         }
         if contract.emotion_length != data.inference_emotion_length {
             return Err(invalid(
@@ -215,6 +216,14 @@ impl EmotionExecutor {
     {
         if tracks.len() != self.processors.len() {
             return Err(invalid("emotion executor track count mismatch"));
+        }
+        if let Some(maximum) = backend.max_batch_size()
+            && self.processors.len() > maximum
+        {
+            return Err(invalid(format!(
+                "emotion track count {} exceeds classifier engine maximum batch size {maximum}",
+                self.processors.len()
+            )));
         }
         let mut pending = Vec::new();
         let mut incomplete = false;
@@ -368,6 +377,52 @@ mod tests {
         assert_eq!(contract.frame_timestamp(1).unwrap(), 2);
         assert_eq!(contract.frames_per_inference(), 2);
         assert!(ClassifierContract::new(2, 16, 3, 1, 1, 1).is_err());
+    }
+
+    #[test]
+    fn executor_track_count_is_not_artificially_capped() {
+        let (data, parameters) = processor_data();
+        assert!(EmotionExecutor::new(contract(0), data.clone(), parameters.clone(), 0).is_err());
+        assert!(EmotionExecutor::new(contract(0), data, parameters, 128).is_ok());
+    }
+
+    #[test]
+    fn executor_obeys_backend_batch_profile() {
+        struct LimitedBackend;
+
+        impl ClassifierBackend for LimitedBackend {
+            fn max_batch_size(&self) -> Option<usize> {
+                Some(1)
+            }
+
+            fn infer(&mut self, _track: usize, _audio: &[f32]) -> Result<Vec<f32>> {
+                Ok(vec![0.0; 3])
+            }
+        }
+
+        let (data, parameters) = processor_data();
+        let mut executor = EmotionExecutor::new(contract(0), data, parameters, 2).unwrap();
+        let first = audio();
+        let second = audio();
+        let tracks = [
+            EmotionTrack {
+                audio: &first,
+                preferred_emotions: None,
+                input_strength: 1.0,
+            },
+            EmotionTrack {
+                audio: &second,
+                preferred_emotions: None,
+                input_strength: 1.0,
+            },
+        ];
+        assert!(
+            executor
+                .execute(&tracks, &mut LimitedBackend, |_, _| true)
+                .unwrap_err()
+                .to_string()
+                .contains("maximum batch size 1")
+        );
     }
 
     #[test]

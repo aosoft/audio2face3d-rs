@@ -50,14 +50,27 @@ impl GpuEmotionPostProcessor {
         parameters: &[EmotionPostProcessParameters],
     ) -> Result<Self> {
         data.validate()?;
-        if parameters.is_empty() || parameters.len() > 32 {
-            return Err(invalid("GPU emotion track count must be in 1..=32"));
+        if parameters.is_empty() {
+            return Err(invalid("GPU emotion track count must be non-zero"));
         }
+        u32::try_from(parameters.len())
+            .map_err(|_| invalid("GPU emotion track count exceeds CUDA index range"))?;
         for value in parameters {
             value.validate(&data)?;
         }
-        let parameter_stride = PARAMETER_PREFIX + data.output_emotion_length;
-        let state_stride = 1 + data.inference_emotion_length + 3 * data.output_emotion_length;
+        let parameter_stride = PARAMETER_PREFIX
+            .checked_add(data.output_emotion_length)
+            .ok_or_else(|| invalid("GPU emotion parameter stride overflow"))?;
+        let state_stride = data
+            .output_emotion_length
+            .checked_mul(3)
+            .and_then(|value| value.checked_add(data.inference_emotion_length))
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| invalid("GPU emotion state stride overflow"))?;
+        let state_elements = state_stride
+            .checked_mul(parameters.len())
+            .ok_or_else(|| invalid("GPU emotion state allocation overflow"))?;
+        let active_words = parameters.len().div_ceil(u64::BITS as usize);
         let correspondence = data
             .emotion_correspondence
             .iter()
@@ -75,13 +88,13 @@ impl GpuEmotionPostProcessor {
             correspondence: upload(device, stream, &correspondence)?,
             parameters: upload(device, stream, &packed)?,
             preferred: upload(device, stream, &preferred)?,
-            state: device.allocate(state_stride * parameters.len())?,
-            active: device.allocate(1)?,
+            state: device.allocate(state_elements)?,
+            active: device.allocate(active_words)?,
             parameter_stride,
             state_stride,
             track_count: parameters.len(),
         };
-        result.active.copy_from(&[0], stream)?;
+        result.active.copy_from(&vec![0; active_words], stream)?;
         result.reset_all(stream)?;
         Ok(result)
     }
@@ -150,7 +163,8 @@ impl GpuEmotionPostProcessor {
         let function = self.module.function("emotion_postprocess_reset")?;
         let mut state = self.state.view().as_raw();
         let mut state_stride = self.state_stride as u64;
-        let mut track_count = self.track_count as u32;
+        let mut track_count = u32::try_from(self.track_count)
+            .map_err(|_| invalid("GPU emotion track count exceeds CUDA index range"))?;
         let mut arguments = params![state, state_stride, track_count];
         // SAFETY: the ABI matches the kernel and state has track_count strides.
         unsafe {
@@ -188,19 +202,28 @@ impl GpuEmotionPostProcessor {
         {
             return Err(invalid("GPU emotion input/output layout is too small"));
         }
-        let mut active_bits = 0_u64;
+        let mut active_bits = vec![0_u64; self.active.len()];
         for &track in active_tracks {
-            if track >= self.track_count || active_bits & (1_u64 << track) != 0 {
+            if track >= self.track_count {
                 return Err(invalid("GPU emotion active track is invalid or duplicated"));
             }
-            active_bits |= 1_u64 << track;
+            let word = track / u64::BITS as usize;
+            let bit = 1_u64 << (track % u64::BITS as usize);
+            if active_bits[word] & bit != 0 {
+                return Err(invalid("GPU emotion active track is invalid or duplicated"));
+            }
+            active_bits[word] |= bit;
         }
         let set = self.module.function("emotion_postprocess_set")?;
-        let mut active_pointer = self.active.view().as_raw();
-        let mut active_value = active_bits;
-        let mut set_arguments = params![active_pointer, active_value];
-        // SAFETY: the scalar ABI matches and active owns one writable u64.
-        unsafe { set.launch_raw((1, 1, 1), (1, 1, 1), 0, stream, &mut set_arguments)? };
+        for (word, value) in active_bits.into_iter().enumerate() {
+            let mut active_pointer = self.active.view().as_raw();
+            let mut active_word = u32::try_from(word)
+                .map_err(|_| invalid("GPU emotion active mask exceeds CUDA index range"))?;
+            let mut active_value = value;
+            let mut set_arguments = params![active_pointer, active_word, active_value];
+            // SAFETY: the scalar ABI matches and active owns the indexed writable u64.
+            unsafe { set.launch_raw((1, 1, 1), (1, 1, 1), 0, stream, &mut set_arguments)? };
+        }
 
         let path = self.selected_path();
         let function = self.module.function(match path {
@@ -220,7 +243,8 @@ impl GpuEmotionPostProcessor {
         let mut active = self.active.view().as_raw();
         let mut input_length = self.data.inference_emotion_length as u32;
         let mut output_length = self.data.output_emotion_length as u32;
-        let mut track_count = self.track_count as u32;
+        let mut track_count = u32::try_from(self.track_count)
+            .map_err(|_| invalid("GPU emotion track count exceeds CUDA index range"))?;
         let mut arguments = params![
             output_pointer,
             output_stride,
@@ -432,6 +456,65 @@ mod tests {
         drop(fence);
         output.copy_to(&mut actual, &stream).unwrap();
         assert_close(&actual[..3], &first_expected);
+    }
+
+    #[test]
+    fn active_mask_and_packed_input_cross_u64_boundaries() {
+        let Ok(device) = GpuDevice::new(0) else {
+            return;
+        };
+        let stream = device.create_stream().unwrap();
+        let data = EmotionPostProcessData {
+            inference_emotion_length: 3,
+            output_emotion_length: 3,
+            emotion_correspondence: vec![0, 1, 2],
+        };
+        let parameters = EmotionPostProcessParameters {
+            max_emotions: 3,
+            beginning_emotion: vec![0.0; 3],
+            preferred_emotion: vec![0.0; 3],
+            live_blend_coefficient: 0.0,
+            live_transition_time: 0.0,
+            fixed_dt: 1.0 / 30.0,
+            emotion_strength: 1.0,
+            ..EmotionPostProcessParameters::default()
+        };
+        let active_tracks = [0, 63, 64, 127];
+        let packed_input = active_tracks
+            .iter()
+            .flat_map(|track| [*track as f32 / 64.0, 0.25, -(*track as f32) / 128.0])
+            .collect::<Vec<_>>();
+        let expected = packed_input
+            .chunks_exact(3)
+            .map(|input| {
+                EmotionPostProcessor::new(data.clone(), parameters.clone())
+                    .unwrap()
+                    .process(input)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut gpu =
+            GpuEmotionPostProcessor::new(&device, &stream, data, &vec![parameters; 128]).unwrap();
+        let input = upload(&device, &stream, &packed_input).unwrap();
+        let mut output = device.allocate::<f32>(128 * 3).unwrap();
+        output.copy_from(&vec![-1.0; 128 * 3], &stream).unwrap();
+
+        let fence = gpu
+            .enqueue(&input, 3, &mut output, 3, &active_tracks, &stream)
+            .unwrap();
+        fence.synchronize().unwrap();
+        drop(fence);
+
+        let mut actual = vec![0.0; 128 * 3];
+        output.copy_to(&mut actual, &stream).unwrap();
+        for (packed, track) in active_tracks.into_iter().enumerate() {
+            assert_close(&actual[track * 3..track * 3 + 3], &expected[packed]);
+        }
+        for track in 0..128 {
+            if !active_tracks.contains(&track) {
+                assert_eq!(&actual[track * 3..track * 3 + 3], &[-1.0; 3]);
+            }
+        }
     }
 
     fn assert_close(actual: &[f32], expected: &[f32]) {

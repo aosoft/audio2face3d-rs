@@ -4,8 +4,12 @@ namespace {
 
 __device__ unsigned int packed_track_index(const unsigned long long* active, unsigned int track)
 {
-    const unsigned long long before = track == 0 ? 0ULL : (active[0] & ((1ULL << track) - 1ULL));
-    return __popcll(before);
+    const unsigned int word = track / 64U;
+    unsigned int packed = 0;
+    for (unsigned int i = 0; i < word; ++i) packed += __popcll(active[i]);
+    const unsigned int remaining = track % 64U;
+    const unsigned long long before = active[word] & ((1ULL << remaining) - 1ULL);
+    return packed + __popcll(before);
 }
 
 __device__ void process_track(
@@ -17,7 +21,7 @@ __device__ void process_track(
     const unsigned long long* active, unsigned int input_length,
     unsigned int output_length, unsigned int track)
 {
-    if ((active[0] & (1ULL << track)) == 0) return;
+    if ((active[track / 64U] & (1ULL << (track % 64U))) == 0) return;
     const unsigned int packed = packed_track_index(active, track);
     const float* source = input + packed * input_stride;
     float* target = output + track * output_stride;
@@ -100,9 +104,9 @@ __device__ void process_track(
 } // namespace
 
 extern "C" __global__ void emotion_postprocess_set(
-    unsigned long long* destination, unsigned long long value)
+    unsigned long long* destination, unsigned int word, unsigned long long value)
 {
-    if (blockIdx.x == 0 && threadIdx.x == 0) destination[0] = value;
+    if (blockIdx.x == 0 && threadIdx.x == 0) destination[word] = value;
 }
 
 extern "C" __global__ void emotion_postprocess_reset(

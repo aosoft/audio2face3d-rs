@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 pub struct TensorRtClassifierBackend {
     contract: ClassifierContract,
+    max_batch_size: usize,
     device: Rc<GpuDevice>,
     session: TensorRtSession,
     stream: CudaStream,
@@ -20,30 +21,54 @@ impl TensorRtClassifierBackend {
     ) -> Result<Self> {
         let session = TensorRtSession::load(Rc::clone(&device), engine).map_err(inference_error)?;
         validate_schema(session.metadata(), &contract)?;
+        let max_batch_size = classifier_max_batch_size(session.metadata())?;
         let stream = device.create_stream()?;
         Ok(Self {
             contract,
+            max_batch_size,
             device,
             session,
             stream,
         })
     }
 
+    pub const fn max_batch_size(&self) -> usize {
+        self.max_batch_size
+    }
+
+    pub fn validate_track_count(&self, track_count: usize) -> Result<()> {
+        if track_count == 0 || track_count > self.max_batch_size {
+            return Err(invalid(format!(
+                "emotion track count {track_count} is outside classifier engine batch range 1..={}",
+                self.max_batch_size
+            )));
+        }
+        Ok(())
+    }
+
     fn run_batch(&mut self, inputs: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
-        if inputs.is_empty()
-            || inputs
-                .iter()
-                .any(|input| input.len() != self.contract.buffer_length)
+        if inputs.is_empty() || inputs.len() > self.max_batch_size {
+            return Err(invalid(format!(
+                "invalid classifier inference batch {}; engine accepts at most {}",
+                inputs.len(),
+                self.max_batch_size
+            )));
+        }
+        if inputs
+            .iter()
+            .any(|input| input.len() != self.contract.buffer_length)
         {
-            return Err(invalid("invalid classifier inference batch"));
+            return Err(invalid("invalid classifier inference input dimensions"));
         }
         let batch = inputs.len();
-        let mut audio = self
-            .device
-            .allocate::<f32>(batch * self.contract.buffer_length)?;
-        let output = self
-            .device
-            .allocate::<f32>(batch * self.contract.emotion_length)?;
+        let audio_elements = batch
+            .checked_mul(self.contract.buffer_length)
+            .ok_or_else(|| invalid("classifier input allocation overflow"))?;
+        let output_elements = batch
+            .checked_mul(self.contract.emotion_length)
+            .ok_or_else(|| invalid("classifier output allocation overflow"))?;
+        let mut audio = self.device.allocate::<f32>(audio_elements)?;
+        let output = self.device.allocate::<f32>(output_elements)?;
         let host = inputs.iter().flatten().copied().collect::<Vec<_>>();
         audio.copy_from(&host, &self.stream)?;
         let mut bindings = DeviceBindings::new();
@@ -62,7 +87,11 @@ impl TensorRtClassifierBackend {
         bindings
             .set_input_shape(
                 "input_values",
-                vec![batch as i64, self.contract.buffer_length as i64],
+                vec![
+                    i64::try_from(batch).map_err(|_| invalid("classifier batch exceeds i64"))?,
+                    i64::try_from(self.contract.buffer_length)
+                        .map_err(|_| invalid("classifier buffer length exceeds i64"))?,
+                ],
             )
             .map_err(inference_error)?;
         self.session
@@ -70,7 +99,7 @@ impl TensorRtClassifierBackend {
             .map_err(inference_error)?
             .synchronize()
             .map_err(inference_error)?;
-        let mut host = vec![0.0; batch * self.contract.emotion_length];
+        let mut host = vec![0.0; output_elements];
         output.copy_to(&mut host, &self.stream)?;
         Ok(host
             .chunks_exact(self.contract.emotion_length)
@@ -80,6 +109,10 @@ impl TensorRtClassifierBackend {
 }
 
 impl ClassifierBackend for TensorRtClassifierBackend {
+    fn max_batch_size(&self) -> Option<usize> {
+        Some(self.max_batch_size)
+    }
+
     fn infer(&mut self, _track: usize, audio: &[f32]) -> Result<Vec<f32>> {
         self.run_batch(&[audio.to_vec()])?
             .pop()
@@ -93,6 +126,22 @@ impl ClassifierBackend for TensorRtClassifierBackend {
                 .map(|(_, audio)| audio.clone())
                 .collect::<Vec<_>>(),
         )
+    }
+}
+
+fn classifier_max_batch_size(schema: &BindingSchema) -> Result<usize> {
+    let input = schema
+        .get("input_values")
+        .ok_or_else(|| invalid("classifier input_values binding is missing"))?;
+    match input.shape.dimensions().first() {
+        Some(Dimension::Fixed(value)) => Ok(*value),
+        Some(Dimension::Dynamic { max, .. }) => Ok(*max),
+        Some(Dimension::Batch) => Err(invalid(
+            "classifier engine batch dimension has no finite profile maximum",
+        )),
+        None => Err(invalid(
+            "classifier input_values batch dimension is missing",
+        )),
     }
 }
 
@@ -143,6 +192,26 @@ fn invalid(message: impl Into<String>) -> Audio2xError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use audio2x_core::{Binding, Shape};
+
+    #[test]
+    fn reads_maximum_batch_from_engine_profile_schema() {
+        let schema = BindingSchema::new(vec![Binding {
+            name: "input_values".into(),
+            mode: IoMode::Input,
+            element_type: ElementType::F32,
+            shape: Shape::new(vec![
+                Dimension::Dynamic { min: 1, max: 128 },
+                Dimension::Dynamic {
+                    min: 16000,
+                    max: 60000,
+                },
+            ])
+            .unwrap(),
+        }])
+        .unwrap();
+        assert_eq!(classifier_max_batch_size(&schema).unwrap(), 128);
+    }
 
     #[test]
     fn runs_installed_classifier_when_configured() {
@@ -160,6 +229,17 @@ mod tests {
             contract,
         )
         .unwrap();
+        if let Ok(expected) = std::env::var("AUDIO2X_TEST_EMOTION_MAX_BATCH") {
+            assert_eq!(backend.max_batch_size(), expected.parse::<usize>().unwrap());
+        }
+        let invalid_batch = vec![Vec::new(); backend.max_batch_size() + 1];
+        assert!(
+            backend
+                .run_batch(&invalid_batch)
+                .unwrap_err()
+                .to_string()
+                .contains("accepts at most")
+        );
         let output = backend.infer(0, &vec![0.0; buffer_length]).unwrap();
         assert_eq!(output.len(), 6);
         assert!(output.iter().all(|value| value.is_finite()));

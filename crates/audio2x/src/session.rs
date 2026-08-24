@@ -227,6 +227,7 @@ impl TensorRtPipeline {
                 )?;
                 let backend =
                     TensorRtClassifierBackend::load(device, model.engine_path(), contract.clone())?;
+                backend.validate_track_count(options.track_count)?;
                 let tracks = (0..options.track_count)
                     .map(|_| {
                         Ok(EmotionOwnedTrack {

@@ -12,7 +12,7 @@ mod tensorrt_backend;
 pub use binder::EmotionBinder;
 pub use executor::{
     ClassifierBackend, ClassifierContract, EmotionCallbackMetadata, EmotionExecutionStatus,
-    EmotionExecutor, EmotionTrack, MAX_EMOTION_TRACKS,
+    EmotionExecutor, EmotionTrack,
 };
 #[cfg(feature = "cuda")]
 pub use gpu_postprocess::{
