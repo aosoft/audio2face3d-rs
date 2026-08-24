@@ -1,8 +1,13 @@
+mod progress;
+
 use audio2x::RuntimeDiscovery;
 use audio2x_model_tool::{
     DownloadReceipt, MODEL_PRESETS, ModelDownloadRequest, ModelPreset, model_preset,
 };
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use progress::TerminalDownloadProgress;
 
 const DEFAULT_OUTPUT_ROOT: &str = "models";
 const DEFAULT_TOKEN_ENVIRONMENT: &str = "HF_TOKEN";
@@ -72,8 +77,8 @@ fn run_arguments(
                 revision,
                 output: PathBuf::from(output),
                 token_environment,
-            }
-            .execute()?;
+            };
+            let receipt = execute_download(&receipt)?;
             print_receipt(&receipt);
         }
         _ => return Err(usage().into()),
@@ -87,9 +92,21 @@ fn download_preset(
     token_environment: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("downloading {} ({})", preset.name, preset.repository);
-    let receipt = preset.request(output_root, token_environment).execute()?;
+    let request = preset.request(output_root, token_environment);
+    let receipt = execute_download(&request)?;
     print_receipt(&receipt);
     Ok(())
+}
+
+fn execute_download(
+    request: &ModelDownloadRequest,
+) -> Result<DownloadReceipt, Box<dyn std::error::Error>> {
+    let progress = Arc::new(TerminalDownloadProgress::new());
+    let result = request.execute_with_progress(Arc::clone(&progress));
+    if result.is_err() {
+        progress.failed();
+    }
+    Ok(result?)
 }
 
 fn print_receipt(receipt: &DownloadReceipt) {

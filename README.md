@@ -43,6 +43,8 @@ The built-in catalog covers `diffusion`, `claire`, `james`, `mark`, and `emotion
 
 The dedicated Rust tool uses the Hugging Face Hub API directly; it does not launch Python or the `hf` CLI. An absent token is reported before any network request. HTTP 401/403, gated-repository, revision, and rate-limit failures are reported as structured download errors.
 
+During a download the tool reports overall bytes, percentage, completed files, and transfer rate. Interactive terminals reuse one line; redirected output emits periodic log lines instead.
+
 Each download is staged in a sibling temporary directory, checked for the Audio2X model files, and atomically installed. The tool writes `.audio2x-source.json` with the repository, immutable revision, and `network.onnx` SHA-256. The downloaded descriptor already names `network.trt`; generate that environment-specific engine with `audio2x-engine` and the profiles in the downloaded `trt_info.json` before running a sample.
 
 ## Samples

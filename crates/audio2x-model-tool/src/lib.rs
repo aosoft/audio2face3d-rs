@@ -1,6 +1,6 @@
 //! Rust-native model acquisition for Audio2X.
 
-use hf_hub::{HFClient, HFClientSync, HFError, split_id};
+use hf_hub::{HFClient, HFClientSync, HFError, progress::Progress, split_id};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -103,6 +103,20 @@ impl ModelDownloadRequest {
     /// external Hugging Face CLI. The completed snapshot becomes visible at
     /// `output` only after its required files and ONNX digest are validated.
     pub fn execute(&self) -> Result<DownloadReceipt, DownloadFailure> {
+        self.execute_inner(None)
+    }
+
+    pub fn execute_with_progress(
+        &self,
+        progress: impl Into<Progress>,
+    ) -> Result<DownloadReceipt, DownloadFailure> {
+        self.execute_inner(Some(progress.into()))
+    }
+
+    fn execute_inner(
+        &self,
+        progress: Option<Progress>,
+    ) -> Result<DownloadReceipt, DownloadFailure> {
         self.validate()?;
         let token =
             env::var(&self.token_environment).map_err(|_| DownloadFailure::MissingToken {
@@ -125,13 +139,16 @@ impl ModelDownloadRequest {
         let (owner, name) = split_id(&self.repository);
         let repository = client.model(owner, name);
         self.install_snapshot(|staging| {
-            repository
+            let download = repository
                 .snapshot_download()
                 .revision(self.revision.clone())
                 .local_dir(staging.to_owned())
-                .max_workers(8)
-                .send()
-                .map_err(map_hub_error)?;
+                .max_workers(8);
+            match progress {
+                Some(progress) => download.progress(progress).send(),
+                None => download.send(),
+            }
+            .map_err(map_hub_error)?;
             Ok(())
         })
     }
