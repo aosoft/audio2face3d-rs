@@ -29,6 +29,7 @@ dependencies = [
  "audio2x-core",
  "audio2x-cuda",
  "audio2x-inference",
+ "serde_json",
 ]
 
 [[package]]

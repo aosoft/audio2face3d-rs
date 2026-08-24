@@ -178,3 +178,25 @@ reference_test = "TestCoreBatchPostProcessor.Correctness"
 reference_implementations = ["Reference", "GPU", "GPU Shared", "GPU Local", "Final (fast)", "Final (slow)", "Final"]
 reference_passed = true
 rust_test_command = "cargo test -p audio2emotion --all-features --lib"
+
+[validation.milestone8.facade]
+model_kinds = ["regression", "diffusion", "audio2emotion"]
+operations = ["model-load", "track-build", "callback", "parameter-update"]
+real_engine_samples = ["audio2x-regression", "audio2x-diffusion", "audio2x-emotion"]
+runtime_discovery = ["Windows", "Linux"]
+model_download_is_explicit = true
+gated_auth_diagnostic = true
+
+[validation.milestone8.benchmark]
+result_manifest = "reference/benchmark.toml"
+phases = ["build", "cache", "warmup", "steady-state", "post-process", "end-to-end"]
+percentiles = [50, 95, 99]
+tracks = [1, 2]
+precisions = ["fp32", "fp16"]
+peak_memory_recorded = true
+cpp_baseline_model = "mark"
+cpp_baseline_fp32 = true
+cpp_baseline_fp16 = false
+cpp_baseline_fp16_reason = "Generated C++ fixture did not contain mark/model_fp16.json."
+comparison_boundary = "C++ processes the complete five-second fixture through the geometry executor; Rust measures one raw TensorRT inference."
+test_command = "cargo test --workspace --all-features"
