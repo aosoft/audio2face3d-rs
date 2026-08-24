@@ -195,6 +195,8 @@ download_records_onnx_sha256 = true
 download_catalog_presets = ["diffusion", "claire", "james", "mark", "emotion"]
 download_catalog_supports_all = true
 download_reports_progress = true
+download_matching_output_is_skipped = true
+download_force_replace = true
 
 [validation.milestone8.benchmark]
 result_manifest = "reference/benchmark.toml"

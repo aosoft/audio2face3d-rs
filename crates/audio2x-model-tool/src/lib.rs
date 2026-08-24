@@ -1,6 +1,7 @@
 //! Rust-native model acquisition for Audio2X.
 
 use hf_hub::{HFClient, HFClientSync, HFError, progress::Progress, split_id};
+use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -96,6 +97,27 @@ pub struct DownloadReceipt {
     pub revision: String,
     pub output: PathBuf,
     pub network_onnx_sha256: String,
+    pub disposition: DownloadDisposition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadDisposition {
+    Downloaded,
+    VerifiedExisting,
+    Replaced,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DownloadOptions {
+    pub force: bool,
+}
+
+#[derive(Deserialize)]
+struct SourceMetadata {
+    schema_version: u64,
+    repository: String,
+    revision: String,
+    network_onnx_sha256: String,
 }
 
 impl ModelDownloadRequest {
@@ -103,21 +125,33 @@ impl ModelDownloadRequest {
     /// external Hugging Face CLI. The completed snapshot becomes visible at
     /// `output` only after its required files and ONNX digest are validated.
     pub fn execute(&self) -> Result<DownloadReceipt, DownloadFailure> {
-        self.execute_inner(None)
+        self.execute_with_options(DownloadOptions::default(), None)
     }
 
     pub fn execute_with_progress(
         &self,
         progress: impl Into<Progress>,
     ) -> Result<DownloadReceipt, DownloadFailure> {
-        self.execute_inner(Some(progress.into()))
+        self.execute_with_options(DownloadOptions::default(), Some(progress.into()))
     }
 
-    fn execute_inner(
+    pub fn execute_with_options(
         &self,
+        options: DownloadOptions,
         progress: Option<Progress>,
     ) -> Result<DownloadReceipt, DownloadFailure> {
         self.validate()?;
+        if self.output.exists() {
+            if !options.force {
+                return self.verify_existing();
+            }
+            if !self.output.is_dir() {
+                return Err(DownloadFailure::ExistingOutputMismatch {
+                    output: self.output.clone(),
+                    reason: "the output is not a directory".into(),
+                });
+            }
+        }
         let token =
             env::var(&self.token_environment).map_err(|_| DownloadFailure::MissingToken {
                 environment: self.token_environment.clone(),
@@ -138,7 +172,7 @@ impl ModelDownloadRequest {
         .map_err(map_hub_error)?;
         let (owner, name) = split_id(&self.repository);
         let repository = client.model(owner, name);
-        self.install_snapshot(|staging| {
+        self.install_snapshot(options.force, |staging| {
             let download = repository
                 .snapshot_download()
                 .revision(self.revision.clone())
@@ -151,6 +185,73 @@ impl ModelDownloadRequest {
             .map_err(map_hub_error)?;
             Ok(())
         })
+    }
+
+    fn verify_existing(&self) -> Result<DownloadReceipt, DownloadFailure> {
+        if !self.output.is_dir() {
+            return Err(self.existing_mismatch("the output is not a directory"));
+        }
+        for name in REQUIRED_MODEL_FILES {
+            if !self.output.join(name).is_file() {
+                return Err(self.existing_mismatch(format!("required file `{name}` is missing")));
+            }
+        }
+        let metadata_path = self.output.join(".audio2x-source.json");
+        let payload = fs::read(&metadata_path).map_err(|error| {
+            self.existing_mismatch(format!(
+                "cannot read `{}`: {error}",
+                metadata_path.display()
+            ))
+        })?;
+        let metadata: SourceMetadata = serde_json::from_slice(&payload).map_err(|error| {
+            self.existing_mismatch(format!(
+                "cannot parse `{}`: {error}",
+                metadata_path.display()
+            ))
+        })?;
+        if metadata.schema_version != 1 {
+            return Err(self.existing_mismatch(format!(
+                "unsupported provenance schema {}",
+                metadata.schema_version
+            )));
+        }
+        if metadata.repository != self.repository {
+            return Err(self.existing_mismatch(format!(
+                "repository is `{}`, expected `{}`",
+                metadata.repository, self.repository
+            )));
+        }
+        if metadata.revision != self.revision {
+            return Err(self.existing_mismatch(format!(
+                "revision is `{}`, expected `{}`",
+                metadata.revision, self.revision
+            )));
+        }
+        let actual_hash = sha256(&self.output.join("network.onnx"))?;
+        if metadata.network_onnx_sha256.len() != 64
+            || !metadata
+                .network_onnx_sha256
+                .eq_ignore_ascii_case(&actual_hash)
+        {
+            return Err(self.existing_mismatch(format!(
+                "network.onnx SHA-256 is `{actual_hash}`, expected `{}`",
+                metadata.network_onnx_sha256
+            )));
+        }
+        Ok(DownloadReceipt {
+            repository: self.repository.clone(),
+            revision: self.revision.clone(),
+            output: self.output.clone(),
+            network_onnx_sha256: actual_hash,
+            disposition: DownloadDisposition::VerifiedExisting,
+        })
+    }
+
+    fn existing_mismatch(&self, reason: impl Into<String>) -> DownloadFailure {
+        DownloadFailure::ExistingOutputMismatch {
+            output: self.output.clone(),
+            reason: reason.into(),
+        }
     }
 
     fn validate(&self) -> Result<(), DownloadFailure> {
@@ -179,10 +280,11 @@ impl ModelDownloadRequest {
 
     fn install_snapshot(
         &self,
+        replace_existing: bool,
         download: impl FnOnce(&Path) -> Result<(), DownloadFailure>,
     ) -> Result<DownloadReceipt, DownloadFailure> {
-        if self.output.exists() {
-            return Err(DownloadFailure::OutputExists(self.output.clone()));
+        if self.output.exists() && !replace_existing {
+            return Err(self.existing_mismatch("the output appeared while downloading"));
         }
         let parent = self.output.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
@@ -208,12 +310,17 @@ impl ModelDownloadRequest {
         stream.write_all(&payload)?;
         stream.sync_all()?;
         drop(stream);
-        staging.install(&self.output)?;
+        let replaced = staging.install(&self.output, replace_existing)?;
         Ok(DownloadReceipt {
             repository: self.repository.clone(),
             revision: self.revision.clone(),
             output: self.output.clone(),
             network_onnx_sha256,
+            disposition: if replaced {
+                DownloadDisposition::Replaced
+            } else {
+                DownloadDisposition::Downloaded
+            },
         })
     }
 }
@@ -230,8 +337,11 @@ pub enum DownloadFailure {
     InvalidTokenEnvironment,
     #[error("model access token is missing; set {environment} after accepting the model license")]
     MissingToken { environment: String },
-    #[error("model output already exists: {}", .0.display())]
-    OutputExists(PathBuf),
+    #[error(
+        "existing model output does not match the requested snapshot: {} ({reason}); use --force to replace it",
+        output.display()
+    )]
+    ExistingOutputMismatch { output: PathBuf, reason: String },
     #[error("downloaded model is missing required file: {0}")]
     MissingModelFile(String),
     #[error("gated model authentication failed; accept the license and verify the token: {0}")]
@@ -246,6 +356,26 @@ pub enum DownloadFailure {
     Hub(String),
     #[error("unable to write model provenance: {0}")]
     Metadata(String),
+    #[error(
+        "model replacement failed for {}: {replace_error}; rollback from {} also failed: {rollback_error}",
+        output.display(),
+        backup.display()
+    )]
+    ReplacementRollback {
+        output: PathBuf,
+        backup: PathBuf,
+        replace_error: io::Error,
+        rollback_error: io::Error,
+    },
+    #[error(
+        "model was replaced, but the old backup could not be removed: {} ({source})",
+        backup.display()
+    )]
+    BackupCleanup {
+        backup: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -309,11 +439,51 @@ impl StagingDirectory {
         &self.path
     }
 
-    fn install(&mut self, output: &Path) -> io::Result<()> {
-        fs::rename(&self.path, output)?;
+    fn install(&mut self, output: &Path, replace_existing: bool) -> Result<bool, DownloadFailure> {
+        if !output.exists() {
+            fs::rename(&self.path, output)?;
+            self.installed = true;
+            return Ok(false);
+        }
+        if !replace_existing {
+            return Err(DownloadFailure::ExistingOutputMismatch {
+                output: output.to_owned(),
+                reason: "the output appeared while downloading".into(),
+            });
+        }
+
+        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+        let backup = unique_sibling(parent, output.file_name().unwrap(), "backup");
+        fs::rename(output, &backup)?;
+        if let Err(replace_error) = fs::rename(&self.path, output) {
+            if let Err(rollback_error) = fs::rename(&backup, output) {
+                return Err(DownloadFailure::ReplacementRollback {
+                    output: output.to_owned(),
+                    backup,
+                    replace_error,
+                    rollback_error,
+                });
+            }
+            return Err(DownloadFailure::Io(replace_error));
+        }
         self.installed = true;
-        Ok(())
+        fs::remove_dir_all(&backup)
+            .map_err(|source| DownloadFailure::BackupCleanup { backup, source })?;
+        Ok(true)
     }
+}
+
+fn unique_sibling(parent: &Path, output_name: &std::ffi::OsStr, kind: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(
+        ".{}.{kind}-{}-{nonce}-{counter}",
+        output_name.to_string_lossy(),
+        std::process::id()
+    ))
 }
 
 impl Drop for StagingDirectory {
@@ -366,6 +536,13 @@ mod tests {
         ))
     }
 
+    fn write_model_files(directory: &Path, contents: &[u8]) -> Result<(), DownloadFailure> {
+        for name in REQUIRED_MODEL_FILES {
+            fs::write(directory.join(name), contents)?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn rejects_non_immutable_revisions_and_missing_tokens_before_network() {
         let mut value = request(PathBuf::from("model"));
@@ -387,14 +564,10 @@ mod tests {
         let output = root.join("model");
         let value = request(output.clone());
         let receipt = value
-            .install_snapshot(|staging| {
-                for name in REQUIRED_MODEL_FILES {
-                    fs::write(staging.join(name), name.as_bytes())?;
-                }
-                Ok(())
-            })
+            .install_snapshot(false, |staging| write_model_files(staging, b"model"))
             .unwrap();
         assert_eq!(receipt.output, output);
+        assert_eq!(receipt.disposition, DownloadDisposition::Downloaded);
         assert_eq!(receipt.network_onnx_sha256.len(), 64);
         assert!(output.join(".audio2x-source.json").is_file());
         assert!(!root.read_dir().unwrap().any(|entry| {
@@ -413,13 +586,84 @@ mod tests {
         let output = root.join("model");
         let value = request(output.clone());
         assert!(matches!(
-            value.install_snapshot(|staging| {
+            value.install_snapshot(false, |staging| {
                 fs::write(staging.join("network.onnx"), b"onnx")?;
                 Ok(())
             }),
             Err(DownloadFailure::MissingModelFile(_))
         ));
         assert!(!output.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn matching_existing_snapshot_is_verified_and_skipped_without_a_token() {
+        let root = test_root("skip");
+        let output = root.join("model");
+        let value = request(output.clone());
+        value
+            .install_snapshot(false, |staging| write_model_files(staging, b"model"))
+            .unwrap();
+
+        let receipt = value.execute().unwrap();
+        assert_eq!(receipt.disposition, DownloadDisposition::VerifiedExisting);
+        assert_eq!(receipt.output, output);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn changed_existing_onnx_requires_force() {
+        let root = test_root("changed");
+        let output = root.join("model");
+        let value = request(output.clone());
+        value
+            .install_snapshot(false, |staging| write_model_files(staging, b"model"))
+            .unwrap();
+        fs::write(output.join("network.onnx"), b"changed").unwrap();
+
+        assert!(matches!(
+            value.execute(),
+            Err(DownloadFailure::ExistingOutputMismatch { .. })
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn forced_install_validates_before_replacing_existing_directory() {
+        let root = test_root("replace");
+        let output = root.join("model");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("old-marker"), b"old").unwrap();
+        let value = request(output.clone());
+
+        let receipt = value
+            .install_snapshot(true, |staging| {
+                assert!(output.join("old-marker").is_file());
+                write_model_files(staging, b"new")
+            })
+            .unwrap();
+        assert_eq!(receipt.disposition, DownloadDisposition::Replaced);
+        assert_eq!(fs::read(output.join("network.onnx")).unwrap(), b"new");
+        assert!(!output.join("old-marker").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_forced_download_preserves_existing_directory() {
+        let root = test_root("replace-failure");
+        let output = root.join("model");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("old-marker"), b"old").unwrap();
+        let value = request(output.clone());
+
+        assert!(matches!(
+            value.install_snapshot(true, |staging| {
+                fs::write(staging.join("network.onnx"), b"incomplete")?;
+                Ok(())
+            }),
+            Err(DownloadFailure::MissingModelFile(_))
+        ));
+        assert_eq!(fs::read(output.join("old-marker")).unwrap(), b"old");
         fs::remove_dir_all(root).unwrap();
     }
 }
