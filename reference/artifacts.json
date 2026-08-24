@@ -248,6 +248,11 @@
           "sha256": "03790f24942ec26796ce101c2e238eb7ff5c1bb94a6c14a840ffcd530d3a301e"
         },
         {
+          "bytes": 418,
+          "path": "audio2face-sdk/samples/data/mark/model_fp16.json",
+          "sha256": "e7bcc074b67159bf90a545ba089a3df1507971c2a4ed0f26dc83490124a7f843"
+        },
+        {
           "bytes": 75751144,
           "path": "audio2face-sdk/samples/data/mark/network.onnx",
           "sha256": "dcd16d3b1affb090d4da1ba88791faa6bcd755f97c853b3b667abad9be15cb4b"
@@ -258,6 +263,11 @@
           "sha256": "81d12167c8219125637aec55ec66cad50539d3e4c78a99626657b4eff4285cd9"
         },
         {
+          "bytes": 61217660,
+          "path": "audio2face-sdk/samples/data/mark/network_fp16.trt",
+          "sha256": "7261a77069b319d9f15f8ce368b0be28503b431d7e8c3ad164822187fd73e7b0"
+        },
+        {
           "bytes": 1015,
           "path": "audio2face-sdk/samples/data/mark/network_info.json",
           "sha256": "10423b97032e6f213d0d4d886a693723b74bc616e9fcb27fe52c1f14b1cd3f73"
@@ -266,6 +276,11 @@
           "bytes": 506,
           "path": "audio2face-sdk/samples/data/mark/trt_info.json",
           "sha256": "b288b5bba1e9eb0a1c49db0d3e182203d303c3ff26b8a6a284a3879b01758d0a"
+        },
+        {
+          "bytes": 489,
+          "path": "audio2face-sdk/samples/data/mark/trt_info_fp16.json",
+          "sha256": "0bbd707f45b9f9e821e136b1cc25077db20e927e6e624ebf0e442f5b985bbc47"
         },
         {
           "bytes": 128044,

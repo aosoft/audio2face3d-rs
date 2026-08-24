@@ -12,6 +12,17 @@ tensorrt = "10.16.1.11"
 tool = "trtexec"
 atomic_output_required = true
 command_template = ["trtexec", "--onnx=<network.onnx>", "--saveEngine=<network.trt>"]
+fp16_source_metadata = "audio2face-sdk/samples/data/mark/trt_info.json"
+fp16_command = [
+    "trtexec",
+    "--onnx=<network.onnx>",
+    "--saveEngine=<network_fp16.trt>",
+    "--minShapes=input:1x1x8320,emotion:1x1x26",
+    "--maxShapes=input:128x1x8320,emotion:128x1x26",
+    "--optShapes=input:8x1x8320,emotion:8x1x26",
+    "--memPoolSize=tacticSharedMem:0.046875",
+    "--fp16",
+]
 
 [measurement]
 status = "passed"
@@ -60,13 +71,14 @@ precision = "fp16"
 tracks = 1
 warmup_iterations = 5
 measured_iterations = 10
-build_ns = 345538400
-cache_ns = 270900
-warmup_ns = { p50 = 2658100, p95 = 90006400, p99 = 90006400 }
-steady_state_ns = { p50 = 2683500, p95 = 3407600, p99 = 3407600 }
+engine_sha256 = "7261a77069b319d9f15f8ce368b0be28503b431d7e8c3ad164822187fd73e7b0"
+build_ns = 280433900
+cache_ns = 237100
+warmup_ns = { p50 = 2805700, p95 = 58316100, p99 = 58316100 }
+steady_state_ns = { p50 = 2757400, p95 = 3303000, p99 = 3303000 }
 post_process_ns = { p50 = 100, p95 = 200, p99 = 200 }
-end_to_end_ns = { p50 = 2734000, p95 = 3487900, p99 = 3487900 }
-peak_gpu_memory_mib = 1120
+end_to_end_ns = { p50 = 2756100, p95 = 3225400, p99 = 3225400 }
+peak_gpu_memory_mib = 1098
 
 [[results]]
 implementation = "rust"
@@ -76,18 +88,19 @@ precision = "fp16"
 tracks = 2
 warmup_iterations = 5
 measured_iterations = 10
-build_ns = 287701300
-cache_ns = 264500
-warmup_ns = { p50 = 2769300, p95 = 54295300, p99 = 54295300 }
-steady_state_ns = { p50 = 2720000, p95 = 3208900, p99 = 3208900 }
-post_process_ns = { p50 = 100, p95 = 200, p99 = 200 }
-end_to_end_ns = { p50 = 2736900, p95 = 3727500, p99 = 3727500 }
-peak_gpu_memory_mib = 1120
+engine_sha256 = "7261a77069b319d9f15f8ce368b0be28503b431d7e8c3ad164822187fd73e7b0"
+build_ns = 274083900
+cache_ns = 283500
+warmup_ns = { p50 = 3472900, p95 = 53155700, p99 = 53155700 }
+steady_state_ns = { p50 = 3405500, p95 = 3972700, p99 = 3972700 }
+post_process_ns = { p50 = 100, p95 = 100, p99 = 100 }
+end_to_end_ns = { p50 = 2957600, p95 = 3748300, p99 = 3748300 }
+peak_gpu_memory_mib = 1098
 
 [comparison.cpp_sdk]
 benchmark = "BM_RegressionGeometryExecutorOffline"
 model = "mark"
-precision = "fp32"
+precisions = ["fp32", "fp16"]
 execution_option = "None"
 a2e_precomputed = true
 repetitions = 3
@@ -97,9 +110,19 @@ one_track_items_per_second_median = 344.678
 two_tracks_median_ns = 849412000
 two_tracks_a2f_total_median_ms = 849.402
 two_tracks_items_per_second_median = 565.097
-comparison_scope = "The C++ benchmark consumes the complete five-second audio fixture and includes the geometry executor and callback collection. Rust results measure one raw TensorRT inference. They share model, GPU, driver, CUDA, and TensorRT conditions but are not divided into a speed ratio because the timed boundaries differ."
-fp16_status = "not-run"
-fp16_reason = "The generated C++ SDK fixture does not contain mark/model_fp16.json. The benchmark reported the missing file before the FP16 case could run."
+comparison_scope = "The C++ benchmark consumes the complete five-second audio fixture and includes the geometry executor and callback collection. Rust results measure one raw TensorRT inference. Each precision uses the same engine in both implementations and shares model, GPU, driver, CUDA, and TensorRT conditions, but results are not divided into a speed ratio because the timed boundaries differ."
+fp16_status = "passed"
+fp16_engine_sha256 = "7261a77069b319d9f15f8ce368b0be28503b431d7e8c3ad164822187fd73e7b0"
+fp16_one_track_median_ns = 593944800
+fp16_one_track_a2f_total_median_ms = 593.937
+fp16_one_track_items_per_second_median = 404.078
+fp16_one_track_vs_fp32_speedup = 1.1723
+fp16_one_track_latency_reduction_percent = 14.70
+fp16_two_tracks_median_ns = 658909500
+fp16_two_tracks_a2f_total_median_ms = 658.904
+fp16_two_tracks_items_per_second_median = 728.476
+fp16_two_tracks_vs_fp32_speedup = 1.2891
+fp16_two_tracks_latency_reduction_percent = 22.43
 
 [memory]
 scope = "total device memory used"
