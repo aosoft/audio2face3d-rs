@@ -127,6 +127,7 @@ name = "audio2x-model-tool"
 version = "0.1.0"
 dependencies = [
  "audio2x",
+ "audio2x-inference",
  "hf-hub",
  "serde",
  "serde_json",

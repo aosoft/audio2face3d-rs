@@ -25,3 +25,4 @@ docs/
 *.trt
 *.engine
 *.plan
+.audio2x-engine*.json

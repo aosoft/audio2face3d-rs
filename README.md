@@ -51,7 +51,42 @@ The dedicated Rust tool uses the Hugging Face Hub API directly; it does not laun
 
 During a download the tool reports overall bytes, percentage, completed files, and transfer rate. Interactive terminals reuse one line; redirected output emits periodic log lines instead.
 
-Each download is staged in a sibling temporary directory, checked for the Audio2X model files, and atomically installed. The tool writes `.audio2x-source.json` with the repository, immutable revision, and `network.onnx` SHA-256. The downloaded descriptor already names `network.trt`; generate that environment-specific engine with `audio2x-engine` and the profiles in the downloaded `trt_info.json` before running a sample.
+Each download is staged in a sibling temporary directory, checked for the Audio2X model files, and atomically installed. The tool writes `.audio2x-source.json` with the repository, immutable revision, and `network.onnx` SHA-256.
+
+## TensorRT engine generation
+
+Generate an environment-specific TensorRT engine from a downloaded preset with the same Rust tool. It expands the optimization profiles in the model's `trt_info.json` and invokes `TRTEXEC` or `trtexec` directly:
+
+```sh
+cargo run -p audio2x-model-tool -- engine mark
+cargo run -p audio2x-model-tool -- engine mark --precision=fp16
+cargo run -p audio2x-model-tool -- engine mark --precision=fp32 --device=0
+```
+
+`default` matches the original SDK's standard build: FP32 is available and TensorRT may use TF32. `fp16` enables mixed FP16/FP32 execution. Explicit `fp32` disables TF32. The generated artifacts are:
+
+| Precision | Engine | TensorRT metadata | Runtime descriptor |
+|---|---|---|---|
+| `default` | `network.trt` | existing `trt_info.json` | existing `model.json` |
+| `fp16` | `network_fp16.trt` | `trt_info_fp16.json` | `model_fp16.json` |
+| `fp32` | `network_fp32.trt` | `trt_info_fp32.json` | `model_fp32.json` |
+
+The FP16 names match the original SDK. ONNX is only an engine-build input; runtime samples load the generated model descriptor and its referenced `.trt` file.
+
+The tool records the ONNX and engine hashes, expanded arguments, device, `trtexec` binary hash/version, CUDA toolkit, and GPU/driver identity in a precision-specific `.audio2x-engine*.json` sidecar. A matching existing engine is verified and skipped. A mismatch is preserved and reported; use `--replace` to stage, validate, and replace the selected precision's complete artifact set with rollback on installation failure.
+
+Download/verification and engine generation can be combined. `--force` applies only to the downloaded snapshot and `--replace` only to the selected engine artifacts:
+
+```sh
+cargo run -p audio2x-model-tool -- prepare mark --precision=fp16
+cargo run -p audio2x-model-tool -- prepare all --device=0
+```
+
+Engine generation can take several minutes per model. `trtexec` output is streamed to the console. Set an explicit executable when it is not on `PATH`:
+
+```powershell
+$env:TRTEXEC = 'C:\SDK\TensorRT-10.16.1.11\bin\trtexec.exe'
+```
 
 ## Samples
 
@@ -59,6 +94,7 @@ The samples accept a resolved `model.json`, track count, and optional number of 
 
 ```sh
 cargo run -p audio2x --all-features --bin audio2x-regression -- ./models/mark/model.json 1 16000
+cargo run -p audio2x --all-features --bin audio2x-regression -- ./models/mark/model_fp16.json 1 16000
 cargo run -p audio2x --all-features --bin audio2x-diffusion -- ./models/diffusion/model.json 1 16000
 cargo run -p audio2x --all-features --bin audio2x-emotion -- ./models/emotion/model.json 1 16000
 ```
@@ -71,7 +107,7 @@ The benchmark command separates build, descriptor-cache, warm-up, steady-state i
 
 ```sh
 cargo run --release -p audio2x --all-features --bin audio2x-benchmark -- ./models/mark/model.json 1 fp32 100
-cargo run --release -p audio2x --all-features --bin audio2x-benchmark -- ./models/mark/model.json 2 fp16 100 ./models/mark/network-fp16.trt
+cargo run --release -p audio2x --all-features --bin audio2x-benchmark -- ./models/mark/model_fp16.json 2 fp16 100
 ```
 
 For geometry models, the isolated post-process phase currently measures the device-result consumption boundary; full animator and blendshape timing must be reported separately from raw TensorRT inference. Compare C++ and Rust only with identical model/engine, batch, precision, GPU, driver, CUDA, and TensorRT versions.

@@ -18,8 +18,10 @@ pub use session::{
 
 mod engine;
 mod metadata;
+mod trt_info;
 
 pub use engine::{EngineBuildRequest, EngineBuilder, EngineError, ShapeProfile};
 pub use metadata::{
     Compatibility, CompatibilityIssue, EngineMetadata, IoTensorMetadata, ProfileMetadata,
 };
+pub use trt_info::{TrtBuildInfo, TrtBuildInfoError};

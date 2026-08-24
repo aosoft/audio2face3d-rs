@@ -1,5 +1,12 @@
 //! Rust-native model acquisition for Audio2X.
 
+mod engine;
+
+pub use engine::{
+    EngineBuildDisposition, EngineBuildReceipt, EnginePrecision, ModelEngineBuildRequest,
+    ModelEngineFailure,
+};
+
 use hf_hub::{HFClient, HFClientSync, HFError, progress::Progress, split_id};
 use serde::Deserialize;
 use serde_json::json;

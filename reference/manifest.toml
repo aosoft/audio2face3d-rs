@@ -197,6 +197,15 @@ download_catalog_supports_all = true
 download_reports_progress = true
 download_matching_output_is_skipped = true
 download_force_replace = true
+engine_generation_is_rust_native = true
+engine_generation_commands = ["engine", "prepare"]
+engine_precisions = ["default", "fp16", "fp32"]
+engine_fp16_original_suffix = true
+engine_trt_info_defaults_expanded = true
+engine_matching_output_is_skipped = true
+engine_replace_is_transactional = true
+engine_provenance_includes = ["onnx-sha256", "engine-sha256", "precision", "expanded-arguments", "device", "trtexec-sha256", "trtexec-version", "cuda-toolkit", "gpu-driver"]
+python_required_for_engine_generation = false
 
 [validation.milestone8.benchmark]
 result_manifest = "reference/benchmark.toml"
