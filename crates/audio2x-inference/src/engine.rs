@@ -5,9 +5,9 @@
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -102,7 +102,7 @@ pub enum EngineError {
     MissingOnnx(PathBuf),
     ExistingTarget(PathBuf),
     EmptyOutput(PathBuf),
-    TrtFailed(i32),
+    TrtFailed { code: i32, output: String },
     Validation(String),
     Io(io::Error),
 }
@@ -114,7 +114,7 @@ impl fmt::Display for EngineError {
             Self::MissingOnnx(p) => write!(f, "ONNX file does not exist: {}", p.display()),
             Self::ExistingTarget(p) => write!(f, "engine target already exists: {}", p.display()),
             Self::EmptyOutput(p) => write!(f, "trtexec produced an empty engine: {}", p.display()),
-            Self::TrtFailed(c) => write!(f, "trtexec failed with exit code {c}"),
+            Self::TrtFailed { code, .. } => write!(f, "trtexec failed with exit code {code}"),
             Self::Validation(message) => write!(f, "generated engine validation failed: {message}"),
             Self::Io(e) => e.fmt(f),
         }
@@ -122,6 +122,22 @@ impl fmt::Display for EngineError {
 }
 
 impl std::error::Error for EngineError {}
+
+impl EngineError {
+    /// Whether TensorRT explicitly reported that tactic selection exhausted
+    /// the device memory available to the builder.
+    pub fn is_device_memory_exhaustion(&self) -> bool {
+        let Self::TrtFailed { output, .. } = self else {
+            return false;
+        };
+        let output = output.to_ascii_lowercase();
+        output.contains("device memory is insufficient")
+            || output.contains("cuda_error_out_of_memory")
+            || output.contains("cuda out of memory")
+            || output.contains("tactic device request") && output.contains("insufficient memory")
+    }
+}
+
 impl From<io::Error> for EngineError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
@@ -167,10 +183,13 @@ impl EngineBuilder {
         fs::create_dir_all(parent)?;
         let temp = temporary_path(&request.engine);
         let args = request.command_args(&temp)?;
-        let status = Command::new(&self.executable).args(&args).status()?;
+        let (status, output) = run_and_relay(&self.executable, &args)?;
         if !status.success() {
             let _ = fs::remove_file(&temp);
-            return Err(EngineError::TrtFailed(status.code().unwrap_or(-1)));
+            return Err(EngineError::TrtFailed {
+                code: status.code().unwrap_or(-1),
+                output,
+            });
         }
         if let Err(error) = validate(&temp) {
             let _ = fs::remove_file(&temp);
@@ -192,6 +211,67 @@ impl EngineBuilder {
                 .map_err(|error| EngineError::Validation(error.to_string()))
         })
     }
+}
+
+fn run_and_relay(
+    executable: &Path,
+    arguments: &[String],
+) -> io::Result<(std::process::ExitStatus, String)> {
+    let mut child = Command::new(executable)
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("trtexec stdout pipe is unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("trtexec stderr pipe is unavailable"))?;
+    let (status, stdout, stderr) = std::thread::scope(|scope| {
+        let stdout = scope.spawn(|| relay(stdout, false));
+        let stderr = scope.spawn(|| relay(stderr, true));
+        let status = child.wait();
+        let stdout = stdout
+            .join()
+            .map_err(|_| io::Error::other("trtexec stdout relay panicked"))?;
+        let stderr = stderr
+            .join()
+            .map_err(|_| io::Error::other("trtexec stderr relay panicked"))?;
+        Ok::<_, io::Error>((status?, stdout?, stderr?))
+    })?;
+    Ok((
+        status,
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        ),
+    ))
+}
+
+fn relay(mut source: impl Read, to_stderr: bool) -> io::Result<Vec<u8>> {
+    let mut captured = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        captured.extend_from_slice(&buffer[..count]);
+        if to_stderr {
+            let mut target = io::stderr().lock();
+            target.write_all(&buffer[..count])?;
+            target.flush()?;
+        } else {
+            let mut target = io::stdout().lock();
+            target.write_all(&buffer[..count])?;
+            target.flush()?;
+        }
+    }
+    Ok(captured)
 }
 
 fn temporary_path(target: &Path) -> PathBuf {
@@ -329,5 +409,19 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"new");
         assert!(!temp.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn classifies_only_explicit_device_memory_failures_for_profile_fallback() {
+        let memory = EngineError::TrtFailed {
+            code: 1,
+            output: "Tactic Device request: 8999MB Available: 8191MB. Device memory is insufficient to use tactic.".into(),
+        };
+        let parser = EngineError::TrtFailed {
+            code: 1,
+            output: "ONNX parser failed: unsupported operator".into(),
+        };
+        assert!(memory.is_device_memory_exhaustion());
+        assert!(!parser.is_device_memory_exhaustion());
     }
 }

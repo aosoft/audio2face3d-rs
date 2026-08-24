@@ -239,7 +239,23 @@ fn print_engine_receipt(receipt: &EngineBuildReceipt) {
     println!("engine: {} ({status})", receipt.engine.display());
     println!("precision: {}", receipt.precision);
     if let Some(max_batch_size) = receipt.max_batch_size {
-        println!("max batch size: {max_batch_size}");
+        let policy = if receipt.automatic_batch_size {
+            "automatic"
+        } else {
+            "explicit"
+        };
+        println!("max batch size: {max_batch_size} ({policy})");
+    }
+    if receipt.attempted_max_batch_sizes.len() > 1 {
+        println!(
+            "batch attempts: {}",
+            receipt
+                .attempted_max_batch_sizes
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        );
     }
     println!("engine sha256: {}", receipt.engine_sha256);
     println!("model descriptor: {}", receipt.model_descriptor.display());

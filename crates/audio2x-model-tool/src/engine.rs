@@ -99,21 +99,130 @@ pub struct ModelEngineBuildRequest {
 
 impl ModelEngineBuildRequest {
     pub fn execute(&self) -> Result<EngineBuildReceipt, ModelEngineFailure> {
-        let plan = BuildPlan::load(self)?;
+        let source_plan = BuildPlan::load(self)?;
         let executable = resolve_executable(&self.trtexec).ok_or_else(|| {
             ModelEngineFailure::ExecutableNotFound(self.trtexec.to_string_lossy().into_owned())
         })?;
-        let identity = BuildIdentity::discover(&plan, self.device_id, &executable)?;
-        self.execute_with(&plan, identity, |request| {
-            EngineBuilder {
-                executable,
-                replace_existing: false,
+        let has_existing = source_plan
+            .generated_names()
+            .iter()
+            .any(|name| self.model_directory.join(name).exists());
+        if has_existing && !self.replace {
+            return self.verify_existing_request(&source_plan, &executable);
+        }
+
+        self.execute_candidates_with(
+            &source_plan,
+            |plan| BuildIdentity::discover(plan, self.device_id, &executable),
+            |_plan, request| {
+                EngineBuilder {
+                    executable: executable.clone(),
+                    replace_existing: false,
+                }
+                .build(request)
+                .map_err(ModelEngineFailure::Build)
+            },
+        )
+    }
+
+    fn execute_candidates_with(
+        &self,
+        source_plan: &BuildPlan,
+        mut identity: impl FnMut(&BuildPlan) -> Result<BuildIdentity, ModelEngineFailure>,
+        mut build: impl FnMut(&BuildPlan, &EngineBuildRequest) -> Result<(), ModelEngineFailure>,
+    ) -> Result<EngineBuildReceipt, ModelEngineFailure> {
+        let candidates = if self.max_batch_size.is_some() {
+            vec![source_plan.max_batch_size]
+        } else {
+            automatic_batch_candidates(source_plan.max_batch_size)
+        };
+        let mut attempted = Vec::new();
+        for (index, candidate) in candidates.iter().copied().enumerate() {
+            let plan = if candidate == source_plan.max_batch_size {
+                source_plan.clone()
+            } else {
+                BuildPlan::load_with_max_batch(self, candidate)?
+            };
+            if let Some(value) = candidate {
+                attempted.push(value);
             }
-            .build(request)
-            .map_err(ModelEngineFailure::Build)
+            let selection = BatchSelection {
+                automatic: self.max_batch_size.is_none(),
+                source_max_batch_size: source_plan.source_max_batch_size,
+                selected_max_batch_size: candidate,
+                attempted_max_batch_sizes: attempted.clone(),
+            };
+            let identity = identity(&plan)?;
+            let result = self.execute_with_selection(&plan, identity, selection, |request| {
+                build(&plan, request)
+            });
+            let Some(next) = candidates.get(index + 1).copied().flatten() else {
+                return result;
+            };
+            match result {
+                Err(error) if self.max_batch_size.is_none() && is_device_memory_failure(&error) => {
+                    let current = candidate.expect("a fallback candidate always has a batch size");
+                    eprintln!(
+                        "audio2x-model: TensorRT device memory is insufficient at max batch {current}; retrying with {next}"
+                    );
+                }
+                result => return result,
+            }
+        }
+        unreachable!("every engine build has at least one batch candidate")
+    }
+
+    fn verify_existing_request(
+        &self,
+        source_plan: &BuildPlan,
+        executable: &Path,
+    ) -> Result<EngineBuildReceipt, ModelEngineFailure> {
+        let provenance_path = self.model_directory.join(&source_plan.provenance_name);
+        let provenance: EngineProvenance = read_json(&provenance_path)?;
+        let plan = match (&provenance.batch_selection, self.max_batch_size) {
+            (Some(selection), None) if selection.automatic => {
+                selection
+                    .validate_automatic(source_plan.source_max_batch_size)
+                    .map_err(|reason| ModelEngineFailure::ExistingArtifactsMismatch {
+                        directory: self.model_directory.clone(),
+                        precision: self.precision,
+                        reason,
+                    })?;
+                BuildPlan::load_with_max_batch(self, selection.selected_max_batch_size)?
+            }
+            (Some(selection), Some(requested)) if !selection.automatic => {
+                if selection.selected_max_batch_size != Some(requested) {
+                    return Err(ModelEngineFailure::ExistingArtifactsMismatch {
+                        directory: self.model_directory.clone(),
+                        precision: self.precision,
+                        reason: format!(
+                            "engine maximum batch is {:?}, requested {requested}",
+                            selection.selected_max_batch_size
+                        ),
+                    });
+                }
+                source_plan.clone()
+            }
+            (None, _) if provenance.schema_version == 1 => source_plan.clone(),
+            _ => {
+                return Err(ModelEngineFailure::ExistingArtifactsMismatch {
+                    directory: self.model_directory.clone(),
+                    precision: self.precision,
+                    reason: "automatic/explicit batch selection policy changed".into(),
+                });
+            }
+        };
+        let identity = BuildIdentity::discover(&plan, self.device_id, executable)?;
+        verify_existing(&plan, identity).map_err(|reason| {
+            ModelEngineFailure::ExistingArtifactsMismatch {
+                directory: self.model_directory.clone(),
+                precision: self.precision,
+                reason,
+            }
         })
     }
 
+    #[cfg(test)]
     fn execute_with(
         &self,
         plan: &BuildPlan,
@@ -133,6 +242,26 @@ impl ModelEngineBuildRequest {
                 }
             });
         }
+
+        self.execute_with_selection(
+            plan,
+            identity,
+            BatchSelection::single(plan.max_batch_size),
+            build,
+        )
+    }
+
+    fn execute_with_selection(
+        &self,
+        plan: &BuildPlan,
+        identity: BuildIdentity,
+        batch_selection: BatchSelection,
+        build: impl FnOnce(&EngineBuildRequest) -> Result<(), ModelEngineFailure>,
+    ) -> Result<EngineBuildReceipt, ModelEngineFailure> {
+        let generated_names = plan.generated_names();
+        let had_existing = generated_names
+            .iter()
+            .any(|name| self.model_directory.join(name).exists());
 
         let mut staging = EngineStagingDirectory::create(&self.model_directory, self.precision)?;
         let staged_engine = staging.path().join(&plan.engine_name);
@@ -161,8 +290,9 @@ impl ModelEngineBuildRequest {
         }
         let engine_sha256 = sha256(&staged_engine)?;
         let provenance = EngineProvenance {
-            schema_version: 1,
+            schema_version: 2,
             build: identity,
+            batch_selection: Some(batch_selection.clone()),
             engine_sha256: engine_sha256.clone(),
         };
         write_json(&staging.path().join(&plan.provenance_name), &provenance)?;
@@ -176,6 +306,8 @@ impl ModelEngineBuildRequest {
             provenance: self.model_directory.join(&plan.provenance_name),
             precision: self.precision,
             max_batch_size: plan.max_batch_size,
+            automatic_batch_size: batch_selection.automatic,
+            attempted_max_batch_sizes: batch_selection.attempted_max_batch_sizes,
             engine_sha256,
             disposition: if had_existing {
                 EngineBuildDisposition::Replaced
@@ -202,6 +334,8 @@ pub struct EngineBuildReceipt {
     pub provenance: PathBuf,
     pub precision: EnginePrecision,
     pub max_batch_size: Option<u64>,
+    pub automatic_batch_size: bool,
+    pub attempted_max_batch_sizes: Vec<u64>,
     pub engine_sha256: String,
     pub disposition: EngineBuildDisposition,
 }
@@ -211,6 +345,7 @@ struct BuildPlan {
     model_directory: PathBuf,
     onnx: PathBuf,
     precision: EnginePrecision,
+    source_max_batch_size: Option<u64>,
     max_batch_size: Option<u64>,
     engine_name: String,
     model_name: String,
@@ -246,6 +381,7 @@ impl BuildPlan {
         }
 
         let mut trt_info = TrtBuildInfo::load(&trt_info_path)?;
+        let source_max_batch_size = trt_info.defaults.get("MAX_BATCH_SIZE").copied();
         if let Some(max_batch_size) = request.max_batch_size {
             if max_batch_size == 0 {
                 return Err(ModelEngineFailure::InvalidMaxBatchSize(max_batch_size));
@@ -279,6 +415,7 @@ impl BuildPlan {
             model_directory: request.model_directory.clone(),
             onnx,
             precision: request.precision,
+            source_max_batch_size,
             max_batch_size: trt_info.defaults.get("MAX_BATCH_SIZE").copied(),
             engine_name,
             model_name: request.precision.model_name(),
@@ -290,6 +427,15 @@ impl BuildPlan {
         })
     }
 
+    fn load_with_max_batch(
+        request: &ModelEngineBuildRequest,
+        max_batch_size: Option<u64>,
+    ) -> Result<Self, ModelEngineFailure> {
+        let mut request = request.clone();
+        request.max_batch_size = max_batch_size;
+        Self::load(&request)
+    }
+
     fn generated_names(&self) -> Vec<String> {
         let mut names = vec![self.engine_name.clone(), self.provenance_name.clone()];
         if self.precision != EnginePrecision::Default {
@@ -298,6 +444,22 @@ impl BuildPlan {
         }
         names
     }
+}
+
+fn automatic_batch_candidates(source: Option<u64>) -> Vec<Option<u64>> {
+    let Some(mut value) = source else {
+        return vec![None];
+    };
+    let mut candidates = vec![Some(value)];
+    while value > 1 {
+        value = (value / 2).max(1);
+        candidates.push(Some(value));
+    }
+    candidates
+}
+
+fn is_device_memory_failure(error: &ModelEngineFailure) -> bool {
+    matches!(error, ModelEngineFailure::Build(error) if error.is_device_memory_exhaustion())
 }
 
 fn is_precision_argument(argument: &str) -> bool {
@@ -317,6 +479,48 @@ struct BuildIdentity {
     trtexec_version: String,
     cuda_toolkit: String,
     gpu: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BatchSelection {
+    automatic: bool,
+    source_max_batch_size: Option<u64>,
+    selected_max_batch_size: Option<u64>,
+    attempted_max_batch_sizes: Vec<u64>,
+}
+
+impl BatchSelection {
+    #[cfg(test)]
+    fn single(max_batch_size: Option<u64>) -> Self {
+        Self {
+            automatic: false,
+            source_max_batch_size: max_batch_size,
+            selected_max_batch_size: max_batch_size,
+            attempted_max_batch_sizes: max_batch_size.into_iter().collect(),
+        }
+    }
+
+    fn validate_automatic(&self, source_max_batch_size: Option<u64>) -> Result<(), String> {
+        if !self.automatic || self.source_max_batch_size != source_max_batch_size {
+            return Err("source maximum batch or selection mode changed".into());
+        }
+        if self.attempted_max_batch_sizes.last().copied() != self.selected_max_batch_size {
+            return Err(
+                "automatic batch attempt history does not end at the selected value".into(),
+            );
+        }
+        let expected = automatic_batch_candidates(source_max_batch_size)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if self.attempted_max_batch_sizes.len() > expected.len()
+            || self.attempted_max_batch_sizes != expected[..self.attempted_max_batch_sizes.len()]
+        {
+            return Err("automatic batch attempt history is not a valid fallback prefix".into());
+        }
+        Ok(())
+    }
 }
 
 impl BuildIdentity {
@@ -343,6 +547,8 @@ impl BuildIdentity {
 struct EngineProvenance {
     schema_version: u64,
     build: BuildIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batch_selection: Option<BatchSelection>,
     engine_sha256: String,
 }
 
@@ -382,7 +588,7 @@ fn verify_existing(
     let provenance_path = plan.model_directory.join(&plan.provenance_name);
     let provenance: EngineProvenance =
         read_json(&provenance_path).map_err(|error| error.to_string())?;
-    if provenance.schema_version != 1 {
+    if !matches!(provenance.schema_version, 1 | 2) {
         return Err(format!(
             "unsupported engine provenance schema {}",
             provenance.schema_version
@@ -409,6 +615,13 @@ fn verify_existing(
         provenance: provenance_path,
         precision: plan.precision,
         max_batch_size: plan.max_batch_size,
+        automatic_batch_size: provenance
+            .batch_selection
+            .as_ref()
+            .is_some_and(|selection| selection.automatic),
+        attempted_max_batch_sizes: provenance
+            .batch_selection
+            .map_or_else(Vec::new, |selection| selection.attempted_max_batch_sizes),
         engine_sha256,
         disposition: EngineBuildDisposition::VerifiedExisting,
     })
@@ -907,6 +1120,99 @@ mod tests {
         assert_eq!(plan.max_batch_size, Some(4));
         assert!(plan.arguments.contains(&"--optShapes=input:4x2".into()));
         assert!(plan.arguments.contains(&"--maxShapes=input:4x2".into()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn automatic_batch_retries_only_device_memory_failures_and_records_selection() {
+        let root = test_root("automatic-batch");
+        write_source(&root);
+        let request = request(&root, EnginePrecision::Default, false);
+        let plan = BuildPlan::load(&request).unwrap();
+        let mut attempts = Vec::new();
+        let receipt = request
+            .execute_candidates_with(
+                &plan,
+                |plan| Ok(identity(plan)),
+                |plan, build| {
+                    attempts.push(plan.max_batch_size.unwrap());
+                    if plan.max_batch_size == Some(32) {
+                        return Err(ModelEngineFailure::Build(
+                            audio2x_inference::EngineError::TrtFailed {
+                                code: 1,
+                                output: "Device memory is insufficient to use tactic".into(),
+                            },
+                        ));
+                    }
+                    fs::write(&build.engine, b"engine")?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(attempts, [32, 16]);
+        assert_eq!(receipt.max_batch_size, Some(16));
+        assert!(receipt.automatic_batch_size);
+        assert_eq!(receipt.attempted_max_batch_sizes, [32, 16]);
+        let provenance: EngineProvenance = read_json(&receipt.provenance).unwrap();
+        assert_eq!(provenance.schema_version, 2);
+        assert_eq!(
+            provenance
+                .batch_selection
+                .unwrap()
+                .attempted_max_batch_sizes,
+            [32, 16]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_batch_never_falls_back() {
+        let root = test_root("explicit-batch");
+        write_source(&root);
+        let mut request = request(&root, EnginePrecision::Default, false);
+        request.max_batch_size = Some(16);
+        let plan = BuildPlan::load(&request).unwrap();
+        let mut attempts = 0;
+        let result = request.execute_candidates_with(
+            &plan,
+            |plan| Ok(identity(plan)),
+            |_plan, _build| {
+                attempts += 1;
+                Err(ModelEngineFailure::Build(
+                    audio2x_inference::EngineError::TrtFailed {
+                        code: 1,
+                        output: "Device memory is insufficient to use tactic".into(),
+                    },
+                ))
+            },
+        );
+        assert!(matches!(result, Err(ModelEngineFailure::Build(_))));
+        assert_eq!(attempts, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn automatic_batch_does_not_retry_non_memory_failures() {
+        let root = test_root("automatic-non-memory");
+        write_source(&root);
+        let request = request(&root, EnginePrecision::Default, false);
+        let plan = BuildPlan::load(&request).unwrap();
+        let mut attempts = 0;
+        let result = request.execute_candidates_with(
+            &plan,
+            |plan| Ok(identity(plan)),
+            |_plan, _build| {
+                attempts += 1;
+                Err(ModelEngineFailure::Build(
+                    audio2x_inference::EngineError::TrtFailed {
+                        code: 1,
+                        output: "ONNX parser failed: unsupported operator".into(),
+                    },
+                ))
+            },
+        );
+        assert!(matches!(result, Err(ModelEngineFailure::Build(_))));
+        assert_eq!(attempts, 1);
         fs::remove_dir_all(root).unwrap();
     }
 }

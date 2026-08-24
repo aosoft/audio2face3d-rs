@@ -74,9 +74,11 @@ cargo run -p audio2x-model-tool -- engine emotion --max-batch=32
 
 The FP16 names match the original SDK. ONNX is only an engine-build input; runtime samples load the generated model descriptor and its referenced `.trt` file.
 
-The Audio2Emotion preset preserves the distributed TensorRT profile, including its `MAX_BATCH_SIZE=128`, by default. The runtime reads the generated engine profile and accepts up to that engine's maximum batch size. On GPUs that cannot build the distributed profile, pass an explicit memory-oriented override such as `--max-batch=32`; `OPT_BATCH_SIZE` is clamped when it exceeds that value. The tool passes `--skipInference` because this command builds an engine rather than benchmarking it.
+Engine generation starts with the distributed TensorRT profile, including Audio2Emotion's `MAX_BATCH_SIZE=128`. If TensorRT explicitly reports that available device memory cannot support any tactic, an unspecified maximum automatically retries at half the batch size until it succeeds (`128 -> 64 -> 32 -> ... -> 1`). Other build failures stop immediately. `--max-batch=N` disables fallback and strictly uses the requested value; `OPT_BATCH_SIZE` is clamped when it exceeds that value. The runtime reads the generated engine profile and accepts up to the selected maximum. The tool passes `--skipInference` because this command builds an engine rather than benchmarking it.
 
-The tool records the ONNX and engine hashes, expanded arguments, device, `trtexec` binary hash/version, CUDA toolkit, and GPU/driver identity in a precision-specific `.audio2x-engine*.json` sidecar. A matching existing engine is verified and skipped. A mismatch is preserved and reported; use `--replace` to stage, validate, and replace the selected precision's complete artifact set with rollback on installation failure.
+The tool records the ONNX and engine hashes, expanded arguments, automatic/explicit batch policy, attempted and selected batch sizes, device, `trtexec` binary hash/version, CUDA toolkit, and GPU/driver identity in a precision-specific `.audio2x-engine*.json` sidecar. A matching existing engine is verified and skipped. A mismatch is preserved and reported; use `--replace` to stage, validate, and replace the selected precision's complete artifact set with rollback on installation failure.
+
+An engine created by an earlier tool version with `--max-batch=N` remains verifiable with the same explicit option. Use `--replace` once, without `--max-batch`, to replace it with an automatically selected profile.
 
 Download/verification and engine generation can be combined. `--force` applies only to the downloaded snapshot and `--replace` only to the selected engine artifacts:
 
