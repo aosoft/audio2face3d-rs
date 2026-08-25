@@ -20,5 +20,9 @@ serde_json.workspace = true
 [build-dependencies]
 cc = "1.2"
 
+[dev-dependencies]
+audio2x-core.workspace = true
+audio2x-cuda.workspace = true
+
 [lints]
 workspace = true

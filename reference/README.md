@@ -2,33 +2,32 @@
 
 The reference artifacts stay in the local NVIDIA SDK checkout because model and
 SDK licenses differ from this project's source license. This directory records
-their revisions and hashes without redistributing them.
+their revisions, hashes, and benchmark results without redistributing them.
+Executable validation lives in the crate that owns the behavior being tested;
+`reference/` is data and documentation only.
 
-Generate `reference/artifacts.json` from the repository root:
+Both migrated reference validations are ignored tests. A normal workspace test
+compiles them but does not access the SDK checkout, TensorRT engine, or GPU.
 
-```powershell
-cargo run --manifest-path reference/Cargo.toml -- `
-  --sdk-root <Audio2Face-3D-SDK checkout>
-```
-
-The checkout location is required through `--sdk-root` or the
-`AUDIO2FACE_SDK_ROOT` environment variable. No local path is written to the
-manifest. Generation is atomic: the final JSON replaces the previous manifest
-only after every file has been read and hashed.
-
-Generate the optional FP16 engine and descriptors without the original Python
-generator by setting `TRTEXEC` and passing the generated model directory:
+Validate `reference/artifacts.json` against a local SDK checkout explicitly:
 
 ```powershell
-$env:TRTEXEC = '<TensorRT-root>\bin\trtexec.exe'
-cargo run --manifest-path reference/Cargo.toml -- `
-  --sdk-root <Audio2Face-3D-SDK-checkout> `
-  --generate-fp16 <generated-Mark-model-directory>
+$env:AUDIO2FACE_SDK_ROOT = '<Audio2Face-3D-SDK checkout>'
+cargo test -p audio2x-model-tool --test reference_artifacts `
+  reference_artifact_manifest_matches_sdk_checkout -- --ignored --exact
 ```
 
-This reads the SDK's `trt_info.json`, adds `--fp16`, expands its batch-profile
-defaults, builds `network_fp16.trt`, and writes `trt_info_fp16.json` and
-`model_fp16.json`. Existing FP16 artifacts are never overwritten.
+The test checks the recorded SDK revision and every fixture's size and SHA-256.
+The checkout path is supplied only through the environment and is not stored in
+the manifest.
+
+Model download and TensorRT engine generation are owned by the main Rust model
+tool. For example, generate the Mark FP16 engine with the original `_fp16`
+suffix convention as follows:
+
+```powershell
+cargo run -p audio2x-model-tool -- engine mark --precision fp16
+```
 
 The three cases are:
 
@@ -48,7 +47,8 @@ pointing the TensorRT test at both artifacts:
 $env:AUDIO2X_REFERENCE_ENGINE = '<Rust-generated-engine>'
 $env:AUDIO2X_REFERENCE_TENSORS = '<Audio2Face-3D-SDK>\_data\generated\audio2x-common\tests\data\test_data_inference.bin'
 cargo test -p audio2x-inference --features tensorrt `
-  session::tests::matches_cpp_reference_fixture_when_configured -- --exact
+  --test reference_inference cpp_fixture_matches_rust_tensor_rt_engine `
+  -- --ignored --exact
 ```
 
 The engine must be generated from the fixture's corresponding
