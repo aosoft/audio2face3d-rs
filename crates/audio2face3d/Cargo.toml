@@ -1,0 +1,28 @@
+[package]
+name = "audio2face3d"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[features]
+default = ["animation", "emotion"]
+animation = []
+emotion = []
+cuda = ["dep:cudarc"]
+tensorrt = ["cuda"]
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+cudarc = { version = "0.19", optional = true, features = ["driver", "cublas", "curand", "cuda-version-from-build-system", "dynamic-linking"], default-features = false }
+
+[build-dependencies]
+cc = "1.2"
+
+[dev-dependencies]
+trybuild = "1.0"
+
+[lints]
+workspace = true

@@ -13,7 +13,7 @@ Validate `reference/artifacts.json` against a local SDK checkout explicitly:
 
 ```powershell
 $env:AUDIO2FACE_SDK_ROOT = '<Audio2Face-3D-SDK checkout>'
-cargo test -p audio2x-model-tool --test reference_artifacts `
+cargo test -p audio2face3d-cli --test reference_artifacts `
   reference_artifact_manifest_matches_sdk_checkout -- --ignored --exact
 ```
 
@@ -26,7 +26,7 @@ tool. For example, generate the Mark FP16 engine with the original `_fp16`
 suffix convention as follows:
 
 ```powershell
-cargo run -p audio2x-model-tool -- engine mark --precision fp16
+cargo run -p audio2face3d-cli -- model engine mark --precision fp16
 ```
 
 The three cases are:
@@ -44,9 +44,9 @@ Validate a Rust-generated engine against the matching C++ tensor fixture by
 pointing the TensorRT test at both artifacts:
 
 ```powershell
-$env:AUDIO2X_REFERENCE_ENGINE = '<Rust-generated-engine>'
-$env:AUDIO2X_REFERENCE_TENSORS = '<Audio2Face-3D-SDK>\_data\generated\audio2x-common\tests\data\test_data_inference.bin'
-cargo test -p audio2x-inference --features tensorrt `
+$env:AUDIO2FACE3D_REFERENCE_ENGINE = '<Rust-generated-engine>'
+$env:AUDIO2FACE3D_REFERENCE_TENSORS = '<Audio2Face-3D-SDK>\_data\generated\audio2x-common\tests\data\test_data_inference.bin'
+cargo test -p audio2face3d --features tensorrt `
   --test reference_inference cpp_fixture_matches_rust_tensor_rt_engine `
   -- --ignored --exact
 ```

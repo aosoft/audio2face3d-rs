@@ -109,75 +109,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "audio2emotion"
+name = "audio2face3d"
 version = "0.1.0"
 dependencies = [
- "audio2x-core",
- "audio2x-cuda",
- "audio2x-inference",
-]
-
-[[package]]
-name = "audio2face"
-version = "0.1.0"
-dependencies = [
- "audio2x-core",
- "audio2x-cuda",
- "audio2x-inference",
-]
-
-[[package]]
-name = "audio2x"
-version = "0.1.0"
-dependencies = [
- "audio2emotion",
- "audio2face",
- "audio2x-core",
- "audio2x-cuda",
- "audio2x-inference",
- "serde_json",
-]
-
-[[package]]
-name = "audio2x-core"
-version = "0.1.0"
-dependencies = [
+ "cc",
+ "cudarc",
  "serde",
  "serde_json",
  "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "audio2x-cuda"
-version = "0.1.0"
-dependencies = [
- "audio2x-core",
- "cc",
- "cudarc",
  "tracing",
  "trybuild",
 ]
 
 [[package]]
-name = "audio2x-inference"
+name = "audio2face3d-cli"
 version = "0.1.0"
 dependencies = [
- "audio2x-core",
- "audio2x-cuda",
- "cc",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "audio2x-model-tool"
-version = "0.1.0"
-dependencies = [
- "audio2x",
- "audio2x-inference",
+ "audio2face3d",
  "clap",
  "hf-hub",
  "serde",

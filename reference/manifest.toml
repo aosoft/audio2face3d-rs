@@ -73,7 +73,7 @@ status = "known-failure"
 note = "Interactive executor tests request a batch larger than the generated TensorRT engine profile. The run was stopped after reproducing the mismatch."
 
 [reproducibility]
-command = ["cargo", "test", "-p", "audio2x-model-tool", "--test", "reference_artifacts", "reference_artifact_manifest_matches_sdk_checkout", "--", "--ignored", "--exact"]
+command = ["cargo", "test", "-p", "audio2face3d-cli", "--test", "reference_artifacts", "reference_artifact_manifest_matches_sdk_checkout", "--", "--ignored", "--exact"]
 sdk_root_environment = "AUDIO2FACE_SDK_ROOT"
 artifact_manifest = "reference/artifacts.json"
 deterministic_sources = true

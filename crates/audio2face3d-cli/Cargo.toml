@@ -1,0 +1,25 @@
+[package]
+name = "audio2face3d-cli"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+runtime = ["audio2face3d/animation", "audio2face3d/emotion", "audio2face3d/tensorrt"]
+
+[dependencies]
+audio2face3d.workspace = true
+clap.workspace = true
+hf-hub.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[[bin]]
+name = "audio2face3d"
+path = "src/main.rs"
+doc = false
+
+[lints]
+workspace = true
