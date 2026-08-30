@@ -55,9 +55,13 @@ pub struct RegressionResultSlices<'a> {
 
 #[derive(Debug, Clone)]
 pub struct RegressionContract {
+    pub implicit_emotion_size: usize,
+    pub explicit_emotion_size: usize,
     pub emotion_size: usize,
     pub audio_size: usize,
     pub result_layout: RegressionResultLayout,
+    pub result_skin_size: usize,
+    pub result_tongue_size: usize,
     pub progress: WindowProgress,
 }
 
@@ -92,6 +96,8 @@ impl RegressionContract {
                 target: "i64",
             })?;
         Ok(Self {
+            implicit_emotion_size: parameters.implicit_emotion_len,
+            explicit_emotion_size: parameters.explicit_emotions.len(),
             emotion_size,
             audio_size: audio.buffer_len,
             result_layout: RegressionResultLayout {
@@ -100,6 +106,20 @@ impl RegressionContract {
                 jaw: parameters.result_jaw_size,
                 eyes: parameters.result_eyes_size,
             },
+            result_skin_size: parameters.num_verts_skin.checked_mul(3).ok_or(
+                Error::IntegerOverflow {
+                    field: "regression_result_skin_size",
+                    value: parameters.num_verts_skin,
+                    target: "usize",
+                },
+            )?,
+            result_tongue_size: parameters.num_verts_tongue.checked_mul(3).ok_or(
+                Error::IntegerOverflow {
+                    field: "regression_result_tongue_size",
+                    value: parameters.num_verts_tongue,
+                    target: "usize",
+                },
+            )?,
             progress: WindowProgress::new(WindowProgressParameters {
                 window_size: audio.buffer_len,
                 start_offset: -target_offset,

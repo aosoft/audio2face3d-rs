@@ -20,6 +20,48 @@ The Rust modules correspond to the original SDK as follows:
 | `audio2face-sdk` | `audio2face3d::animation` |
 | `audio2emotion-sdk` | `audio2face3d::emotion` |
 
+### Inference-free Audio2Emotion
+
+`PostProcessEmotionExecutorBundle` reproduces the original post-process-only
+path without loading a TensorRT engine. Audio samples define the duration but
+are not read; each frame feeds zero classifier output plus the configured or
+accumulated preferred emotion into the post-processor.
+
+```rust,no_run
+use audio2face3d::emotion::{
+    EmotionExecutionStatus, PostProcessEmotionBundleOptions,
+    PostProcessEmotionExecutorBundle,
+};
+
+# fn run() -> audio2face3d::Result<()> {
+let mut bundle = PostProcessEmotionExecutorBundle::load(
+    "models/emotion/model.json",
+    PostProcessEmotionBundleOptions::new(1, 30, 1),
+)?;
+bundle.audio_accumulator(0)?.accumulate(&vec![0.0; 16_000])?;
+bundle.audio_accumulator(0)?.close()?;
+
+let preferred = vec![0.0; bundle.executor().output_emotion_length()];
+bundle
+    .preferred_emotion_accumulator(0)?
+    .accumulate(0, &preferred)
+    .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
+bundle
+    .preferred_emotion_accumulator(0)?
+    .close()
+    .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
+
+while !matches!(
+    bundle.execute(|metadata, emotions| {
+        println!("frame={} emotions={emotions:?}", metadata.frame);
+        true
+    })?,
+    EmotionExecutionStatus::Complete
+) {}
+# Ok(())
+# }
+```
+
 ## Runtime setup
 
 CUDA 12 and TensorRT 10 must be installed separately. The initial validated versions are CUDA 12.9 and TensorRT 10.16.1.11.

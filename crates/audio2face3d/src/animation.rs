@@ -14,6 +14,7 @@ mod executor;
 #[cfg(feature = "cuda")]
 mod gpu_blendshape;
 mod jaw;
+mod model_buffers;
 mod pca;
 mod postprocess;
 mod regression;
@@ -52,6 +53,16 @@ pub use executor::{
 #[cfg(feature = "cuda")]
 pub use gpu_blendshape::{GpuBlendshapeSolveFence, GpuBlendshapeSolver};
 pub use jaw::{JawParameters, JawTransform, rigid_transform};
+pub use model_buffers::{
+    DiffusionBufferContract, GeometryResultLayout, ModelBindingContract, RegressionBufferContract,
+    RuntimeBinding, TensorBatchInfo,
+};
+#[cfg(feature = "cuda")]
+pub use model_buffers::{
+    DiffusionInferenceInputBuffers, DiffusionInferenceOutputBuffers,
+    DiffusionInferenceStateBuffers, DiffusionResultBuffers, GeometryResultBuffers,
+    RegressionInferenceInputBuffers, RegressionInferenceOutputBuffers, RegressionResultBuffers,
+};
 pub use pca::PcaReconstruction;
 pub use postprocess::{
     PostprocessedRegressionBackend, RegressionGeometry, RegressionPostprocessor,

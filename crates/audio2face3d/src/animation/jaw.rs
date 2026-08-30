@@ -2,8 +2,23 @@ use crate::common::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JawParameters {
+    /// Corresponds to the original `IAnimatorTeeth::lowerTeethStrength`.
+    ///
+    /// The jaw result displacement is multiplied by this value before the
+    /// rigid transform is fitted. `1.0` preserves the model result. The
+    /// original accepted range is `0.0..=2.0`.
     pub strength: f32,
+    /// Corresponds to `IAnimatorTeeth::lowerTeethHeightOffset`.
+    ///
+    /// This translation is applied to the target pose's Y component after
+    /// [`strength`](Self::strength) has been applied. The original accepted
+    /// range is `-3.0..=3.0`.
     pub height_offset: f32,
+    /// Corresponds to `IAnimatorTeeth::lowerTeethDepthOffset`.
+    ///
+    /// This translation is applied to the target pose's Z component after
+    /// [`strength`](Self::strength) has been applied. The original accepted
+    /// range is `-3.0..=3.0`.
     pub depth_offset: f32,
 }
 
@@ -17,7 +32,22 @@ impl Default for JawParameters {
     }
 }
 
-/// CPU parity oracle for lower-teeth rigid-transform reconstruction.
+/// CPU implementation of the original `IAnimatorTeeth` result contract.
+///
+/// The original animator consumes a neutral lower-teeth jaw pose and a jaw
+/// result pose, then returns a column-major 4x4 rigid transform. This type
+/// accepts the result as a displacement (`deltas`), so the host-side mapping
+/// is:
+///
+/// ```text
+/// target = neutral + deltas * lowerTeethStrength
+/// target.y += lowerTeethHeightOffset
+/// target.z += lowerTeethDepthOffset
+/// transform = rigid_transform(target, neutral)
+/// ```
+///
+/// It intentionally returns the transform only; applying it to a scene mesh
+/// or engine/DCC jaw node remains the caller's responsibility.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JawTransform {
     neutral_pose: Vec<f32>,
@@ -33,7 +63,11 @@ impl JawTransform {
         &self.neutral_pose
     }
 
-    /// Produces the column-major 4x4 transform used by the SDK result contract.
+    /// Computes the lower-teeth transform from a jaw result displacement.
+    ///
+    /// `deltas` is an interleaved XYZ array with the same point count and
+    /// ordering as [`Self::neutral_pose`]. The returned matrix is column
+    /// major, matching the SDK result contract.
     pub fn compute(&self, deltas: &[f32], parameters: JawParameters) -> Result<[f32; 16]> {
         if deltas.len() != self.neutral_pose.len() {
             return Err(Error::InvalidSchema(format!(
@@ -42,15 +76,16 @@ impl JawTransform {
                 self.neutral_pose.len()
             )));
         }
-        if [
-            parameters.strength,
-            parameters.height_offset,
-            parameters.depth_offset,
-        ]
-        .iter()
-        .any(|value| !value.is_finite())
+        if !parameters.strength.is_finite()
+            || !(0.0..=2.0).contains(&parameters.strength)
+            || !parameters.height_offset.is_finite()
+            || !(-3.0..=3.0).contains(&parameters.height_offset)
+            || !parameters.depth_offset.is_finite()
+            || !(-3.0..=3.0).contains(&parameters.depth_offset)
         {
-            return Err(Error::InvalidSchema("jaw parameters must be finite".into()));
+            return Err(Error::InvalidSchema(
+                "jaw strength must be in [0, 2] and offsets in [-3, 3]".into(),
+            ));
         }
         let mut target = Vec::with_capacity(deltas.len());
         for (neutral, delta) in self
@@ -277,5 +312,57 @@ mod tests {
         assert!(JawTransform::new(vec![]).is_err());
         let jaw = JawTransform::new(vec![0., 0., 0.]).unwrap();
         assert!(jaw.compute(&[], JawParameters::default()).is_err());
+    }
+
+    #[test]
+    fn animator_teeth_parameter_mapping_is_host_contract() {
+        // The SDK names these parameters lowerTeethStrength,
+        // lowerTeethHeightOffset and lowerTeethDepthOffset. Verify that the
+        // Rust names and operation order preserve that contract.
+        let jaw = JawTransform::new(vec![0., 0., 0., 1., 0., 0., 0., 1., 0.]).unwrap();
+        let transform = jaw
+            .compute(
+                &[1., 2., 3., 1., 2., 3., 1., 2., 3.],
+                JawParameters {
+                    strength: 2.,
+                    height_offset: 3.,
+                    depth_offset: -3.,
+                },
+            )
+            .unwrap();
+
+        // All points have the same displacement, therefore the fitted
+        // transform is a pure translation: 2*deltas + offsets.
+        close(
+            &transform,
+            &[
+                1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 2., 7., 3., 1.,
+            ],
+        );
+    }
+
+    #[test]
+    fn animator_teeth_rejects_values_outside_original_ranges() {
+        let jaw = JawTransform::new(vec![0., 0., 0.]).unwrap();
+        for parameters in [
+            JawParameters {
+                strength: -0.1,
+                ..JawParameters::default()
+            },
+            JawParameters {
+                strength: 2.1,
+                ..JawParameters::default()
+            },
+            JawParameters {
+                height_offset: -3.1,
+                ..JawParameters::default()
+            },
+            JawParameters {
+                depth_offset: 3.1,
+                ..JawParameters::default()
+            },
+        ] {
+            assert!(jaw.compute(&[0., 0., 0.], parameters).is_err());
+        }
     }
 }

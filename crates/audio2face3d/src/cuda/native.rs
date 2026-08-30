@@ -828,6 +828,66 @@ impl<T> DeviceBuffer<T> {
         }
         stream.synchronize()
     }
+
+    /// Copies a range from another allocation on the same device and stream.
+    pub fn copy_from_device_range(
+        &mut self,
+        target_offset: usize,
+        source: &DeviceBuffer<T>,
+        source_offset: usize,
+        len: usize,
+        stream: &CudaStream,
+    ) -> Result<()> {
+        ensure_same_device(self.device.id(), source.device.id())?;
+        ensure_same_device(self.device.id(), stream.device_id())?;
+        let target = self.view().slice(target_offset, len)?;
+        let source = source.view().slice(source_offset, len)?;
+        self.device.make_current()?;
+        let bytes = len
+            .checked_mul(size_of::<T>())
+            .ok_or(Error::IntegerOverflow {
+                field: "device_copy_bytes",
+                value: len,
+                target: "usize",
+            })?;
+        // SAFETY: both validated views cover `bytes`, belong to the current
+        // context, and synchronization completes the transfer before return.
+        unsafe {
+            check(
+                cuMemcpyDtoDAsync_v2(target.as_raw(), source.as_raw(), bytes, stream.raw),
+                "cuMemcpyDtoDAsync",
+            )?;
+        }
+        stream.synchronize()
+    }
+
+    /// Zero-fills a range of this allocation on `stream`.
+    pub fn memset_zero_range(
+        &mut self,
+        offset: usize,
+        len: usize,
+        stream: &CudaStream,
+    ) -> Result<()> {
+        ensure_same_device(self.device.id(), stream.device_id())?;
+        let target = self.view().slice(offset, len)?;
+        self.device.make_current()?;
+        let bytes = len
+            .checked_mul(size_of::<T>())
+            .ok_or(Error::IntegerOverflow {
+                field: "device_memset_bytes",
+                value: len,
+                target: "usize",
+            })?;
+        // SAFETY: the validated view covers `bytes`; synchronization completes
+        // the write before this method returns.
+        unsafe {
+            check(
+                cuMemsetD8Async(target.as_raw(), 0, bytes, stream.raw),
+                "cuMemsetD8Async",
+            )?;
+        }
+        stream.synchronize()
+    }
 }
 
 impl<T> Drop for DeviceBuffer<T> {
@@ -848,7 +908,7 @@ pub struct DeviceView<'a, T> {
     _owner: PhantomData<&'a DeviceBuffer<T>>,
 }
 
-impl<T> DeviceView<'_, T> {
+impl<'a, T> DeviceView<'a, T> {
     pub const fn len(&self) -> usize {
         self.len
     }
@@ -865,7 +925,7 @@ impl<T> DeviceView<'_, T> {
         self.pointer
     }
 
-    pub fn slice(&self, offset: usize, len: usize) -> Result<DeviceView<'_, T>> {
+    pub fn slice(self, offset: usize, len: usize) -> Result<DeviceView<'a, T>> {
         let end = offset.checked_add(len).ok_or(Error::IntegerOverflow {
             field: "device_view_end",
             value: len,
