@@ -1,6 +1,6 @@
-# audio2face3d
+# Audio2Face-3D for Rust
 
-Rust 2024 implementation of the NVIDIA Audio2Face-3D and Audio2Emotion runtime pipelines. TensorRT engines and model data are not bundled or downloaded during builds.
+Rust implementation of the NVIDIA Audio2Face-3D and Audio2Emotion runtime pipelines. TensorRT engines and model data are not bundled or downloaded during builds.
 
 The workspace is organized as two publishable packages:
 
