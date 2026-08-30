@@ -142,3 +142,15 @@ cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models
 ```
 
 For geometry models, the isolated post-process phase currently measures the device-result consumption boundary; full animator and blendshape timing must be reported separately from raw TensorRT inference. Compare C++ and Rust only with identical model/engine, batch, precision, GPU, driver, CUDA, and TensorRT versions.
+
+## License
+
+The source code in this repository is available under the [MIT License](LICENSE).
+It includes work derived from the NVIDIA Audio2Face-3D SDK and retains the
+applicable NVIDIA copyright and license notice.
+
+The MIT License does not apply to NVIDIA model files or externally installed
+CUDA and TensorRT SDK binaries, headers, and components. Those are distributed
+separately and remain subject to their respective NVIDIA license terms. In
+particular, Audio2Face-3D models use the NVIDIA Open Model License, while
+Audio2Emotion models use their model-specific license agreement.
