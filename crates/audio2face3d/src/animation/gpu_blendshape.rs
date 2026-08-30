@@ -3,8 +3,8 @@
 use crate::animation::{BlendshapeData, CpuBlendshapeSolver};
 use crate::common::{BlendshapeConfig, Error, Result};
 use crate::cuda::{
-    CublasHandle, CublasTranspose, CudaEvent, CudaModule, CudaStream, DeviceBuffer, GpuDevice,
-    blendshape_solver_ptx, ensure_same_device,
+    CublasHandle, CublasTranspose, CudaEvent, CudaModule, CudaStream, DeviceBuffer, DeviceView,
+    GpuDevice, blendshape_solver_ptx, ensure_same_device,
 };
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -199,7 +199,9 @@ impl GpuBlendshapeSolver {
     ///
     /// All work uses `stream`. The returned fence borrows the solver, target,
     /// output, and stream until [`GpuBlendshapeSolveFence::synchronize`] has
-    /// observed completion. The output must not be accessed sooner.
+    /// observed completion. Device work that consumes [`GpuBlendshapeSolveFence::output`]
+    /// may be enqueued on [`GpuBlendshapeSolveFence::stream`] before host
+    /// synchronization; direct host access must wait for completion.
     pub fn solve_async<'a>(
         &'a mut self,
         target: &'a DeviceBuffer<f32>,
@@ -329,6 +331,8 @@ impl GpuBlendshapeSolver {
         event.record(stream)?;
         Ok(GpuBlendshapeSolveFence {
             event,
+            output: output.view(),
+            stream,
             _resources: PhantomData,
         })
     }
@@ -430,6 +434,8 @@ impl GpuBlendshapeSolver {
 
 pub struct GpuBlendshapeSolveFence<'a> {
     event: CudaEvent,
+    output: DeviceView<'a, f32>,
+    stream: &'a CudaStream,
     _resources: PhantomData<(
         &'a mut GpuBlendshapeSolver,
         &'a DeviceBuffer<f32>,
@@ -438,9 +444,27 @@ pub struct GpuBlendshapeSolveFence<'a> {
     )>,
 }
 
-impl GpuBlendshapeSolveFence<'_> {
+impl<'a> GpuBlendshapeSolveFence<'a> {
+    /// Device-resident output ordered after the solve on [`Self::stream`].
+    pub fn output(&self) -> DeviceView<'_, f32> {
+        self.output
+    }
+
+    /// CUDA stream on which the solve and completion event were recorded.
+    pub fn stream(&self) -> &CudaStream {
+        self.stream
+    }
+
     pub fn synchronize(&self) -> Result<()> {
         self.event.synchronize()
+    }
+}
+
+impl Drop for GpuBlendshapeSolveFence<'_> {
+    fn drop(&mut self) {
+        // Keep the borrowed solver and buffers alive until their enqueued work
+        // finishes even when the caller does not synchronize explicitly.
+        let _ = self.event.synchronize();
     }
 }
 

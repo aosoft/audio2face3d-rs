@@ -1,7 +1,8 @@
 use crate::animation::{
-    DiffusionContract, DiffusionExecutionStatus, DiffusionExecutor, DiffusionTrack, PumpStatus,
-    RegressionContract, RegressionExecutor, RegressionTrack, TensorRtDiffusionBackend,
-    TensorRtRegressionBackend,
+    DiffusionContract, DiffusionExecutionStatus, DiffusionExecutor, DiffusionPostprocessor,
+    DiffusionTrack, EyesRotation, GeometryModelData, PumpStatus, RegressionContract,
+    RegressionExecutor, RegressionGeometry, RegressionPostprocessor, RegressionTrack,
+    TensorRtDiffusionBackend, TensorRtRegressionBackend,
 };
 use crate::common::{
     AudioAccumulator, EmotionAccumulator, Error, GeometryAudioParameters, GeometryParameters,
@@ -79,6 +80,50 @@ pub enum PipelineStatus {
     Interrupted,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeometryFrame {
+    pub skin: Vec<f32>,
+    pub tongue: Vec<f32>,
+    pub jaw_transform: [f32; 16],
+    pub eyes_rotation: EyesRotation,
+}
+
+impl GeometryFrame {
+    pub fn packed(&self) -> Vec<f32> {
+        let mut values = Vec::with_capacity(self.skin.len() + self.tongue.len() + 22);
+        values.extend_from_slice(&self.skin);
+        values.extend_from_slice(&self.tongue);
+        values.extend_from_slice(&self.jaw_transform);
+        values.extend_from_slice(&self.eyes_rotation.right);
+        values.extend_from_slice(&self.eyes_rotation.left);
+        values
+    }
+}
+
+impl From<RegressionGeometry> for GeometryFrame {
+    fn from(value: RegressionGeometry) -> Self {
+        Self {
+            skin: value.skin,
+            tongue: value.tongue,
+            jaw_transform: value.jaw_transform,
+            eyes_rotation: value.eyes_rotation,
+        }
+    }
+}
+
+enum GeometryPostprocessors {
+    Regression(Vec<RegressionPostprocessor>),
+    Diffusion(Vec<DiffusionPostprocessor>),
+}
+
+/// Owns a geometry pipeline and model-specific post-processors.
+pub struct GeometryExecutorBundle {
+    pipeline: TensorRtPipeline,
+    postprocessors: GeometryPostprocessors,
+    model_data: Vec<GeometryModelData>,
+    dt: f32,
+}
+
 struct RegressionOwnedTrack {
     audio: AudioAccumulator,
     emotions: EmotionAccumulator,
@@ -100,6 +145,54 @@ struct EmotionOwnedTrack {
 
 pub struct TensorRtPipeline {
     inner: PipelineInner,
+}
+
+/// Borrowed geometry components owned by a [`TensorRtPipeline`].
+///
+/// The enum keeps the executor and its matching TensorRT backend under one
+/// borrow, so callers cannot accidentally combine components from different
+/// model kinds or outlive the pipeline that owns them.
+pub enum GeometryPipelineComponents<'a> {
+    Regression {
+        executor: &'a RegressionExecutor,
+        backend: &'a TensorRtRegressionBackend,
+    },
+    Diffusion {
+        executor: &'a DiffusionExecutor,
+        backend: &'a TensorRtDiffusionBackend,
+    },
+}
+
+/// Mutably borrowed geometry components owned by a [`TensorRtPipeline`].
+pub enum GeometryPipelineComponentsMut<'a> {
+    Regression {
+        executor: &'a mut RegressionExecutor,
+        backend: &'a mut TensorRtRegressionBackend,
+    },
+    Diffusion {
+        executor: &'a mut DiffusionExecutor,
+        backend: &'a mut TensorRtDiffusionBackend,
+    },
+}
+
+/// Borrowed per-track inputs and parameters owned by a pipeline.
+pub enum PipelineTrackComponents<'a> {
+    Regression {
+        audio: &'a AudioAccumulator,
+        emotions: &'a EmotionAccumulator,
+        implicit_emotion: &'a [f32],
+        input_strength: f32,
+    },
+    Diffusion {
+        audio: &'a AudioAccumulator,
+        emotions: &'a EmotionAccumulator,
+        identity_index: usize,
+        input_strength: f32,
+    },
+    Emotion {
+        audio: &'a AudioAccumulator,
+        input_strength: f32,
+    },
 }
 
 enum PipelineInner {
@@ -266,6 +359,68 @@ impl TensorRtPipeline {
             PipelineInner::Regression { tracks, .. } => tracks.len(),
             PipelineInner::Diffusion { tracks, .. } => tracks.len(),
             PipelineInner::Emotion { tracks, .. } => tracks.len(),
+        }
+    }
+
+    /// Borrows the low-level geometry executor/backend pair without
+    /// transferring ownership. Emotion pipelines reject this accessor.
+    pub fn geometry_components(&self) -> Result<GeometryPipelineComponents<'_>> {
+        match &self.inner {
+            PipelineInner::Regression {
+                executor, backend, ..
+            } => Ok(GeometryPipelineComponents::Regression { executor, backend }),
+            PipelineInner::Diffusion {
+                executor, backend, ..
+            } => Ok(GeometryPipelineComponents::Diffusion { executor, backend }),
+            PipelineInner::Emotion { .. } => {
+                Err(invalid("emotion pipelines have no geometry components"))
+            }
+        }
+    }
+
+    /// Mutably borrows the matching low-level executor/backend pair.
+    pub fn geometry_components_mut(&mut self) -> Result<GeometryPipelineComponentsMut<'_>> {
+        match &mut self.inner {
+            PipelineInner::Regression {
+                executor, backend, ..
+            } => Ok(GeometryPipelineComponentsMut::Regression { executor, backend }),
+            PipelineInner::Diffusion {
+                executor, backend, ..
+            } => Ok(GeometryPipelineComponentsMut::Diffusion { executor, backend }),
+            PipelineInner::Emotion { .. } => {
+                Err(invalid("emotion pipelines have no geometry components"))
+            }
+        }
+    }
+
+    /// Borrows one track's accumulators and current parameter values.
+    pub fn track_components(&self, track: usize) -> Result<PipelineTrackComponents<'_>> {
+        match &self.inner {
+            PipelineInner::Regression { tracks, .. } => {
+                let track = regression_track(tracks, track)?;
+                Ok(PipelineTrackComponents::Regression {
+                    audio: &track.audio,
+                    emotions: &track.emotions,
+                    implicit_emotion: &track.implicit_emotion,
+                    input_strength: track.input_strength,
+                })
+            }
+            PipelineInner::Diffusion { tracks, .. } => {
+                let track = diffusion_track(tracks, track)?;
+                Ok(PipelineTrackComponents::Diffusion {
+                    audio: &track.audio,
+                    emotions: &track.emotions,
+                    identity_index: track.identity_index,
+                    input_strength: track.input_strength,
+                })
+            }
+            PipelineInner::Emotion { tracks, .. } => {
+                let track = emotion_track(tracks, track)?;
+                Ok(PipelineTrackComponents::Emotion {
+                    audio: &track.audio,
+                    input_strength: track.input_strength,
+                })
+            }
         }
     }
 
@@ -464,6 +619,161 @@ impl TensorRtPipeline {
     }
 }
 
+impl GeometryExecutorBundle {
+    pub fn load(model: &Model, options: PipelineOptions) -> Result<Self> {
+        if model.kind() == ModelKind::Emotion {
+            return Err(invalid(
+                "geometry bundle requires a Regression or Diffusion model",
+            ));
+        }
+        let dt = options.frame_rate_denominator as f32 / options.frame_rate_numerator as f32;
+        if !dt.is_finite() || dt <= 0.0 {
+            return Err(invalid("geometry bundle frame rate is invalid"));
+        }
+        let mut model_data = Vec::with_capacity(options.track_count);
+        let postprocessors = match model.network() {
+            NetworkDocument::Geometry(network) => match &network.params {
+                GeometryParameters::Regression(parameters) => {
+                    let mut processors = Vec::with_capacity(options.track_count);
+                    for track in 0..options.track_count {
+                        let index = track.min(model.parameter_count() - 1);
+                        let data = GeometryModelData::load_regression(
+                            model
+                                .model_data_path(index)
+                                .or_else(|_| model.model_data_path(0))?,
+                        )?;
+                        let ModelParameters::Geometry(config) = model.parameters(index)? else {
+                            return Err(invalid("regression geometry config is unavailable"));
+                        };
+                        processors.push(data.regression_postprocessor(
+                            config,
+                            parameters.num_shapes_skin,
+                            parameters.num_shapes_tongue,
+                        )?);
+                        model_data.push(data);
+                    }
+                    GeometryPostprocessors::Regression(processors)
+                }
+                GeometryParameters::Diffusion(parameters) => {
+                    let contract = DiffusionContract::new(
+                        parameters,
+                        match &network.audio_params {
+                            GeometryAudioParameters::Diffusion(audio) => audio,
+                            _ => return Err(invalid("diffusion audio config is unavailable")),
+                        },
+                    )?;
+                    let mut processors = Vec::with_capacity(options.track_count);
+                    for track in 0..options.track_count {
+                        let index = track.min(model.parameter_count() - 1);
+                        let data = GeometryModelData::load_diffusion(
+                            model
+                                .model_data_path(index)
+                                .or_else(|_| model.model_data_path(0))?,
+                        )?;
+                        let ModelParameters::Geometry(config) = model.parameters(index)? else {
+                            return Err(invalid("diffusion geometry config is unavailable"));
+                        };
+                        processors
+                            .push(data.diffusion_postprocessor(config, contract.result_layout)?);
+                        model_data.push(data);
+                    }
+                    GeometryPostprocessors::Diffusion(processors)
+                }
+            },
+            _ => return Err(invalid("geometry network is unavailable")),
+        };
+        Ok(Self {
+            pipeline: TensorRtPipeline::load(model, options)?,
+            postprocessors,
+            model_data,
+            dt,
+        })
+    }
+
+    pub fn pipeline(&self) -> &TensorRtPipeline {
+        &self.pipeline
+    }
+
+    pub fn pipeline_mut(&mut self) -> &mut TensorRtPipeline {
+        &mut self.pipeline
+    }
+
+    pub fn model_data(&self, track: usize) -> Result<&GeometryModelData> {
+        self.model_data
+            .get(track)
+            .ok_or_else(|| invalid("geometry bundle track is out of range"))
+    }
+
+    pub fn track_count(&self) -> usize {
+        self.pipeline.track_count()
+    }
+
+    pub fn accumulate_audio(&self, track: usize, samples: &[f32]) -> Result<()> {
+        self.pipeline.accumulate_audio(track, samples)
+    }
+
+    pub fn close_audio(&self, track: usize) -> Result<()> {
+        self.pipeline.close_audio(track)
+    }
+
+    pub fn set_track_parameters(&mut self, track: usize, value: TrackParameters) -> Result<()> {
+        self.pipeline.set_track_parameters(track, value)
+    }
+
+    pub fn execute<C>(&mut self, mut callback: C) -> Result<PipelineStatus>
+    where
+        C: for<'frame> FnMut(CallbackMetadata, &'frame GeometryFrame) -> bool,
+    {
+        let processors = &mut self.postprocessors;
+        let dt = self.dt;
+        let mut postprocess_error = None;
+        let status = self.pipeline.execute(|metadata, output| {
+            let PipelineOutput::Geometry(raw) = output else {
+                postprocess_error = Some(invalid("geometry bundle received an emotion output"));
+                return false;
+            };
+            let result = match processors {
+                GeometryPostprocessors::Regression(processors) => processors
+                    .get_mut(metadata.track)
+                    .ok_or_else(|| invalid("regression postprocessor track is out of range"))
+                    .and_then(|processor| processor.process(raw, dt)),
+                GeometryPostprocessors::Diffusion(processors) => processors
+                    .get_mut(metadata.track)
+                    .ok_or_else(|| invalid("diffusion postprocessor track is out of range"))
+                    .and_then(|processor| processor.process(raw, dt)),
+            };
+            match result {
+                Ok(frame) => {
+                    let frame = GeometryFrame::from(frame);
+                    callback(metadata, &frame)
+                }
+                Err(error) => {
+                    postprocess_error = Some(error);
+                    false
+                }
+            }
+        })?;
+        if let Some(error) = postprocess_error {
+            Err(error)
+        } else {
+            Ok(status)
+        }
+    }
+
+    pub fn reset_postprocess(&mut self, track: usize) -> Result<()> {
+        match &mut self.postprocessors {
+            GeometryPostprocessors::Regression(processors) => processors
+                .get_mut(track)
+                .ok_or_else(|| invalid("regression postprocessor track is out of range"))?
+                .reset(),
+            GeometryPostprocessors::Diffusion(processors) => processors
+                .get_mut(track)
+                .ok_or_else(|| invalid("diffusion postprocessor track is out of range"))?
+                .reset(),
+        }
+    }
+}
+
 fn geometry_input_strength(model: &Model, index: usize) -> Result<f32> {
     match model.parameters(index)? {
         ModelParameters::Geometry(value) => {
@@ -536,6 +846,24 @@ fn invalid(message: impl Into<String>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geometry_frame_packs_original_result_component_order() {
+        let frame = GeometryFrame {
+            skin: vec![1.0, 2.0],
+            tongue: vec![3.0],
+            jaw_transform: [4.0; 16],
+            eyes_rotation: EyesRotation {
+                right: [5.0; 3],
+                left: [6.0; 3],
+            },
+        };
+        let packed = frame.packed();
+        assert_eq!(&packed[..3], &[1.0, 2.0, 3.0]);
+        assert_eq!(&packed[3..19], &[4.0; 16]);
+        assert_eq!(&packed[19..22], &[5.0; 3]);
+        assert_eq!(&packed[22..25], &[6.0; 3]);
+    }
 
     #[test]
     fn runs_installed_models_through_facade_when_configured() {

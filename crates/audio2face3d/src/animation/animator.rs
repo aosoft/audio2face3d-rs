@@ -80,7 +80,23 @@ impl SkinAnimator {
         {
             return Err(invalid("skin pose arrays must have matching lengths"));
         }
-        if params.face_mask_softness <= 0.0 {
+        if ![
+            params.lower_face_smoothing,
+            params.upper_face_smoothing,
+            params.lower_face_strength,
+            params.upper_face_strength,
+            params.face_mask_level,
+            params.face_mask_softness,
+            params.skin_strength,
+            params.blink_strength,
+            params.eyelid_open_offset,
+            params.lip_open_offset,
+            params.blink_offset,
+        ]
+        .into_iter()
+        .all(f32::is_finite)
+            || params.face_mask_softness <= 0.0
+        {
             return Err(invalid("face mask softness must be positive"));
         }
         let ys: Vec<_> = neutral_pose.chunks_exact(3).map(|v| v[1]).collect();
@@ -110,6 +126,21 @@ impl SkinAnimator {
         &self.neutral_pose
     }
 
+    pub const fn parameters(&self) -> SkinAnimatorParams {
+        self.params
+    }
+
+    pub fn set_parameters(&mut self, parameters: SkinAnimatorParams) -> Result<()> {
+        let replacement = Self::new(
+            parameters,
+            self.neutral_pose.clone(),
+            self.lip_open_pose_delta.clone(),
+            self.eye_close_pose_delta.clone(),
+        )?;
+        *self = replacement;
+        Ok(())
+    }
+
     pub fn reset(&mut self) {
         self.lower.stages = None;
         self.upper.stages = None;
@@ -122,7 +153,24 @@ impl SkinAnimator {
         if !dt.is_finite() {
             return Err(invalid("skin delta time must be finite"));
         }
-        let raw: Vec<_> = input
+        let raw = self.compose_raw(input);
+        let lower = self.lower.update(&raw, dt);
+        let upper = self.upper.update(&raw, dt);
+        Ok(self.compose_masked(&lower, &upper))
+    }
+
+    /// Evaluates one frame without temporal smoothing, as required by random
+    /// access authoring workflows.
+    pub fn animate_stateless(&self, input: &[f32]) -> Result<Vec<f32>> {
+        if input.len() != self.neutral_pose.len() {
+            return Err(invalid("skin input length does not match neutral pose"));
+        }
+        let raw = self.compose_raw(input);
+        Ok(self.compose_masked(&raw, &raw))
+    }
+
+    fn compose_raw(&self, input: &[f32]) -> Vec<f32> {
+        input
             .iter()
             .zip(&self.eye_close_pose_delta)
             .zip(&self.lip_open_pose_delta)
@@ -133,11 +181,11 @@ impl SkinAnimator {
                             + self.params.blink_offset * self.params.blink_strength)
                     + lip * self.params.lip_open_offset
             })
-            .collect();
-        let lower = self.lower.update(&raw, dt);
-        let upper = self.upper.update(&raw, dt);
-        Ok(self
-            .neutral_pose
+            .collect()
+    }
+
+    fn compose_masked(&self, lower: &[f32], upper: &[f32]) -> Vec<f32> {
+        self.neutral_pose
             .iter()
             .enumerate()
             .map(|(i, &neutral)| {
@@ -146,7 +194,7 @@ impl SkinAnimator {
                     + upper[i] * self.params.upper_face_strength * (1.0 - mask)
                     + lower[i] * self.params.lower_face_strength * mask
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -168,6 +216,7 @@ impl TongueAnimator {
         if neutral_pose.is_empty() || !neutral_pose.len().is_multiple_of(3) {
             return Err(invalid("tongue neutral pose must contain XYZ vertices"));
         }
+        validate_tongue_parameters(params)?;
         Ok(Self {
             params,
             neutral_pose,
@@ -176,6 +225,16 @@ impl TongueAnimator {
 
     pub fn neutral_pose(&self) -> &[f32] {
         &self.neutral_pose
+    }
+
+    pub const fn parameters(&self) -> TongueAnimatorParams {
+        self.params
+    }
+
+    pub fn set_parameters(&mut self, parameters: TongueAnimatorParams) -> Result<()> {
+        validate_tongue_parameters(parameters)?;
+        self.params = parameters;
+        Ok(())
     }
 
     pub fn animate(&self, input: &[f32]) -> Result<Vec<f32>> {
@@ -229,6 +288,7 @@ impl EyesAnimator {
         if saccade_rotation.is_empty() || !saccade_rotation.len().is_multiple_of(2) {
             return Err(invalid("saccade rotation must contain XY pairs"));
         }
+        validate_eyes_parameters(params)?;
         let mut this = Self {
             params,
             saccade_rotation,
@@ -242,6 +302,16 @@ impl EyesAnimator {
     fn frame_count(&self) -> usize {
         self.saccade_rotation.len() / 2
     }
+    pub const fn parameters(&self) -> EyesAnimatorParams {
+        self.params
+    }
+    pub fn set_parameters(&mut self, parameters: EyesAnimatorParams) -> Result<()> {
+        validate_eyes_parameters(parameters)?;
+        self.params = parameters;
+        let count = self.frame_count() as f32;
+        self.frame_index = (self.params.saccade_seed + self.live_time).rem_euclid(count) as usize;
+        Ok(())
+    }
     pub fn reset(&mut self) -> Result<()> {
         self.live_time = 0.0;
         self.increment_live_time(0.0)
@@ -249,6 +319,15 @@ impl EyesAnimator {
     pub fn set_frame_index(&mut self, frame: i32) {
         self.frame_index = (self.params.saccade_seed as i64 + i64::from(frame))
             .rem_euclid(self.frame_count() as i64) as usize;
+    }
+    pub fn set_live_time(&mut self, time: f32) -> Result<()> {
+        if !time.is_finite() {
+            return Err(invalid("eyes live time must be finite"));
+        }
+        let count = self.frame_count() as f32;
+        self.live_time = (time * 30.0).rem_euclid(count);
+        self.frame_index = (self.params.saccade_seed + self.live_time).rem_euclid(count) as usize;
+        Ok(())
     }
     pub fn increment_live_time(&mut self, dt: f32) -> Result<()> {
         if !dt.is_finite() {
@@ -285,6 +364,40 @@ impl EyesAnimator {
                 0.0,
             ],
         }
+    }
+}
+
+fn validate_tongue_parameters(parameters: TongueAnimatorParams) -> Result<()> {
+    if [
+        parameters.tongue_strength,
+        parameters.tongue_height_offset,
+        parameters.tongue_depth_offset,
+    ]
+    .into_iter()
+    .all(f32::is_finite)
+    {
+        Ok(())
+    } else {
+        Err(invalid("tongue parameters must be finite"))
+    }
+}
+
+fn validate_eyes_parameters(parameters: EyesAnimatorParams) -> Result<()> {
+    if [
+        parameters.eyeballs_strength,
+        parameters.saccade_strength,
+        parameters.right_eyeball_rotation_offset_x,
+        parameters.right_eyeball_rotation_offset_y,
+        parameters.left_eyeball_rotation_offset_x,
+        parameters.left_eyeball_rotation_offset_y,
+        parameters.saccade_seed,
+    ]
+    .into_iter()
+    .all(f32::is_finite)
+    {
+        Ok(())
+    } else {
+        Err(invalid("eyes parameters must be finite"))
     }
 }
 

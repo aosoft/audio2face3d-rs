@@ -1,8 +1,9 @@
 use crate::common::{
     ConfigDocument, EmotionPostProcessingConfig, Error, GeometryAudioParameters, GeometryConfig,
-    GeometryParameters, ModelDocument, NetworkDocument, Result, load_config, load_model,
-    load_network,
+    GeometryParameters, ModelDataPaths, ModelDocument, NetworkDocument, Result, load_config,
+    load_model, load_network,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +26,8 @@ pub struct Model {
     engine_path: PathBuf,
     network: NetworkDocument,
     parameters: Vec<ModelParameters>,
+    model_data_paths: Vec<PathBuf>,
+    blendshape_paths: Vec<HashMap<String, ModelDataPaths>>,
     kind: ModelKind,
 }
 
@@ -32,18 +35,23 @@ impl Model {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let descriptor_path = path.as_ref().to_owned();
         let descriptor = load_model(&descriptor_path)?;
-        let (network_path, engine_path, config_paths) = match descriptor {
-            ModelDocument::Single(model) => (
-                model.network_info_path,
-                model.network_path,
-                vec![model.model_config_path],
-            ),
-            ModelDocument::Multi(model) => (
-                model.network_info_path,
-                model.network_path,
-                model.model_config_paths,
-            ),
-        };
+        let (network_path, engine_path, config_paths, model_data_paths, blendshape_paths) =
+            match descriptor {
+                ModelDocument::Single(model) => (
+                    model.network_info_path,
+                    model.network_path,
+                    vec![model.model_config_path],
+                    model.model_data_path.into_iter().collect(),
+                    model.blendshape_paths.into_iter().collect(),
+                ),
+                ModelDocument::Multi(model) => (
+                    model.network_info_path,
+                    model.network_path,
+                    model.model_config_paths,
+                    model.model_data_paths,
+                    model.blendshape_paths,
+                ),
+            };
         let network = load_network(network_path)?;
         let kind = match &network {
             NetworkDocument::Geometry(network) => match network.params {
@@ -79,6 +87,8 @@ impl Model {
             engine_path,
             network,
             parameters,
+            model_data_paths,
+            blendshape_paths,
             kind,
         })
     }
@@ -107,6 +117,19 @@ impl Model {
 
     pub fn parameter_count(&self) -> usize {
         self.parameters.len()
+    }
+
+    pub fn model_data_path(&self, index: usize) -> Result<&Path> {
+        self.model_data_paths
+            .get(index)
+            .map(PathBuf::as_path)
+            .ok_or_else(|| invalid("model data path is unavailable"))
+    }
+
+    pub fn blendshape_paths(&self, index: usize) -> Result<&HashMap<String, ModelDataPaths>> {
+        self.blendshape_paths
+            .get(index)
+            .ok_or_else(|| invalid("blendshape paths are unavailable"))
     }
 
     pub fn set_parameters(&mut self, index: usize, parameters: ModelParameters) -> Result<()> {

@@ -121,7 +121,7 @@ std::string native_error(const char* operation) {
 }
 std::vector<char> read_engine(const char* path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) throw std::runtime_error("failed to open TensorRT engine");
+    if (!file) throw std::runtime_error(std::string("failed to open TensorRT engine: ") + path);
     const auto end = file.tellg();
     if (end <= 0) throw std::runtime_error("TensorRT engine is empty");
     std::vector<char> bytes(static_cast<size_t>(end));

@@ -55,6 +55,9 @@ pub struct RegressionResultSlices<'a> {
 
 #[derive(Debug, Clone)]
 pub struct RegressionContract {
+    pub sample_rate: usize,
+    pub frame_rate_numerator: usize,
+    pub frame_rate_denominator: usize,
     pub implicit_emotion_size: usize,
     pub explicit_emotion_size: usize,
     pub emotion_size: usize,
@@ -96,6 +99,9 @@ impl RegressionContract {
                 target: "i64",
             })?;
         Ok(Self {
+            sample_rate: audio.samplerate,
+            frame_rate_numerator,
+            frame_rate_denominator,
             implicit_emotion_size: parameters.implicit_emotion_len,
             explicit_emotion_size: parameters.explicit_emotions.len(),
             emotion_size,

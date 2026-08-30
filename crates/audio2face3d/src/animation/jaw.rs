@@ -32,6 +32,24 @@ impl Default for JawParameters {
     }
 }
 
+impl JawParameters {
+    pub fn validate(self) -> Result<()> {
+        if !self.strength.is_finite()
+            || !(0.0..=2.0).contains(&self.strength)
+            || !self.height_offset.is_finite()
+            || !(-3.0..=3.0).contains(&self.height_offset)
+            || !self.depth_offset.is_finite()
+            || !(-3.0..=3.0).contains(&self.depth_offset)
+        {
+            Err(Error::InvalidSchema(
+                "jaw strength must be in [0, 2] and offsets in [-3, 3]".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// CPU implementation of the original `IAnimatorTeeth` result contract.
 ///
 /// The original animator consumes a neutral lower-teeth jaw pose and a jaw
@@ -76,17 +94,7 @@ impl JawTransform {
                 self.neutral_pose.len()
             )));
         }
-        if !parameters.strength.is_finite()
-            || !(0.0..=2.0).contains(&parameters.strength)
-            || !parameters.height_offset.is_finite()
-            || !(-3.0..=3.0).contains(&parameters.height_offset)
-            || !parameters.depth_offset.is_finite()
-            || !(-3.0..=3.0).contains(&parameters.depth_offset)
-        {
-            return Err(Error::InvalidSchema(
-                "jaw strength must be in [0, 2] and offsets in [-3, 3]".into(),
-            ));
-        }
+        parameters.validate()?;
         let mut target = Vec::with_capacity(deltas.len());
         for (neutral, delta) in self
             .neutral_pose

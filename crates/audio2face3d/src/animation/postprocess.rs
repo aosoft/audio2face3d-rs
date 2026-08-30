@@ -1,6 +1,7 @@
 use crate::animation::{
-    EyesAnimator, EyesRotation, JawParameters, JawTransform, PcaReconstruction, RegressionBackend,
-    RegressionFrameInput, RegressionResultLayout, SkinAnimator, TongueAnimator,
+    EyesAnimator, EyesAnimatorParams, EyesRotation, JawParameters, JawTransform, PcaReconstruction,
+    RegressionBackend, RegressionFrameInput, RegressionResultLayout, SkinAnimator,
+    SkinAnimatorParams, TongueAnimator, TongueAnimatorParams,
 };
 use crate::common::{Error, Result};
 
@@ -10,6 +11,24 @@ pub struct RegressionGeometry {
     pub tongue: Vec<f32>,
     pub jaw_transform: [f32; 16],
     pub eyes_rotation: EyesRotation,
+}
+
+/// Component-wise post-processing used by interactive geometry executors.
+pub trait LayeredGeometryPostprocessor {
+    fn process_skin(&mut self, inference: &[f32], dt: f32, stateless: bool) -> Result<Vec<f32>>;
+    fn process_tongue(&mut self, inference: &[f32]) -> Result<Vec<f32>>;
+    fn process_teeth(&mut self, inference: &[f32]) -> Result<[f32; 16]>;
+    fn process_eyes(&mut self, inference: &[f32], live_time: f32) -> Result<EyesRotation>;
+    fn reset_layers(&mut self) -> Result<()>;
+
+    fn skin_parameters(&self) -> SkinAnimatorParams;
+    fn set_skin_parameters(&mut self, parameters: SkinAnimatorParams) -> Result<()>;
+    fn tongue_parameters(&self) -> TongueAnimatorParams;
+    fn set_tongue_parameters(&mut self, parameters: TongueAnimatorParams) -> Result<()>;
+    fn teeth_parameters(&self) -> JawParameters;
+    fn set_teeth_parameters(&mut self, parameters: JawParameters) -> Result<()>;
+    fn eyes_parameters(&self) -> EyesAnimatorParams;
+    fn set_eyes_parameters(&mut self, parameters: EyesAnimatorParams) -> Result<()>;
 }
 
 pub struct PostprocessedRegressionBackend<B> {
@@ -133,6 +152,76 @@ impl RegressionPostprocessor {
     pub fn reset(&mut self) -> Result<()> {
         self.skin.reset();
         self.eyes.reset()
+    }
+}
+
+impl LayeredGeometryPostprocessor for RegressionPostprocessor {
+    fn process_skin(&mut self, inference: &[f32], dt: f32, stateless: bool) -> Result<Vec<f32>> {
+        let slices = self.layout().split(inference)?;
+        let delta = self.skin_pca.reconstruct(slices.skin, 1)?;
+        if stateless {
+            self.skin.animate_stateless(&delta)
+        } else {
+            self.skin.animate(&delta, dt)
+        }
+    }
+
+    fn process_tongue(&mut self, inference: &[f32]) -> Result<Vec<f32>> {
+        let slices = self.layout().split(inference)?;
+        self.tongue
+            .animate(&self.tongue_pca.reconstruct(slices.tongue, 1)?)
+    }
+
+    fn process_teeth(&mut self, inference: &[f32]) -> Result<[f32; 16]> {
+        let slices = self.layout().split(inference)?;
+        self.jaw.compute(slices.jaw, self.jaw_parameters)
+    }
+
+    fn process_eyes(&mut self, inference: &[f32], live_time: f32) -> Result<EyesRotation> {
+        let slices = self.layout().split(inference)?;
+        let eyes = slices.eyes.try_into().map_err(|_| {
+            Error::InvalidSchema("regression eyes output must contain four values".into())
+        })?;
+        self.eyes.set_live_time(live_time)?;
+        Ok(self.eyes.compute_rotation(eyes))
+    }
+
+    fn reset_layers(&mut self) -> Result<()> {
+        self.reset()
+    }
+
+    fn skin_parameters(&self) -> SkinAnimatorParams {
+        self.skin.parameters()
+    }
+
+    fn set_skin_parameters(&mut self, parameters: SkinAnimatorParams) -> Result<()> {
+        self.skin.set_parameters(parameters)
+    }
+
+    fn tongue_parameters(&self) -> TongueAnimatorParams {
+        self.tongue.parameters()
+    }
+
+    fn set_tongue_parameters(&mut self, parameters: TongueAnimatorParams) -> Result<()> {
+        self.tongue.set_parameters(parameters)
+    }
+
+    fn teeth_parameters(&self) -> JawParameters {
+        self.jaw_parameters
+    }
+
+    fn set_teeth_parameters(&mut self, parameters: JawParameters) -> Result<()> {
+        parameters.validate()?;
+        self.jaw_parameters = parameters;
+        Ok(())
+    }
+
+    fn eyes_parameters(&self) -> EyesAnimatorParams {
+        self.eyes.parameters()
+    }
+
+    fn set_eyes_parameters(&mut self, parameters: EyesAnimatorParams) -> Result<()> {
+        self.eyes.set_parameters(parameters)
     }
 }
 

@@ -31,6 +31,22 @@ impl TensorRtDiffusionBackend {
         })
     }
 
+    pub fn contract(&self) -> &DiffusionContract {
+        &self.contract
+    }
+
+    pub fn device(&self) -> &GpuDevice {
+        &self.device
+    }
+
+    pub fn session(&self) -> &TensorRtSession {
+        &self.session
+    }
+
+    pub fn stream(&self) -> &CudaStream {
+        &self.stream
+    }
+
     fn run_batch(
         &mut self,
         inputs: &[(usize, DiffusionFrameInput)],

@@ -12,6 +12,7 @@ mod emotion_accumulator;
 mod error;
 mod float_accumulator;
 mod model;
+mod npz;
 mod tensor;
 mod window_progress;
 
@@ -32,5 +33,6 @@ pub use model::{
     RegressionParameters, SingleModelDocument, load_config, load_model, load_network, parse_config,
     parse_model, parse_network,
 };
+pub(crate) use npz::NpzArchive;
 pub use tensor::{Binding, BindingSchema, Dimension, ElementType, IoMode, Shape};
 pub use window_progress::{SampleWindow, WindowProgress, WindowProgressParameters};

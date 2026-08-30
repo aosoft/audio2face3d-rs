@@ -1,5 +1,6 @@
 use crate::animation::{
-    EyesAnimator, JawParameters, JawTransform, RegressionGeometry, SkinAnimator, TongueAnimator,
+    EyesAnimator, EyesAnimatorParams, EyesRotation, JawParameters, JawTransform,
+    RegressionGeometry, SkinAnimator, SkinAnimatorParams, TongueAnimator, TongueAnimatorParams,
 };
 use crate::common::{
     Binding, BindingSchema, DiffusionAudioParameters, DiffusionParameters, Dimension, ElementType,
@@ -53,6 +54,9 @@ pub struct DiffusionResultSlices<'a> {
 
 #[derive(Debug, Clone)]
 pub struct DiffusionContract {
+    pub sample_rate: usize,
+    pub frame_rate_numerator: usize,
+    pub frame_rate_denominator: usize,
     pub emotion_size: usize,
     pub identity_size: usize,
     pub audio_size: usize,
@@ -135,6 +139,9 @@ impl DiffusionContract {
                 target: "usize",
             })?;
         Ok(Self {
+            sample_rate: audio.samplerate,
+            frame_rate_numerator: 30,
+            frame_rate_denominator: 1,
             emotion_size: parameters.emotions.len(),
             identity_size: parameters.identities.len(),
             audio_size: audio.buffer_len,
@@ -472,6 +479,75 @@ pub struct DiffusionPostprocessor {
     jaw: JawTransform,
     jaw_parameters: JawParameters,
     eyes: EyesAnimator,
+}
+
+impl crate::animation::LayeredGeometryPostprocessor for DiffusionPostprocessor {
+    fn process_skin(&mut self, inference: &[f32], dt: f32, stateless: bool) -> Result<Vec<f32>> {
+        let result = self.layout.split(inference)?;
+        if stateless {
+            self.skin.animate_stateless(result.skin)
+        } else {
+            self.skin.animate(result.skin, dt)
+        }
+    }
+
+    fn process_tongue(&mut self, inference: &[f32]) -> Result<Vec<f32>> {
+        self.tongue.animate(self.layout.split(inference)?.tongue)
+    }
+
+    fn process_teeth(&mut self, inference: &[f32]) -> Result<[f32; 16]> {
+        self.jaw
+            .compute(self.layout.split(inference)?.jaw, self.jaw_parameters)
+    }
+
+    fn process_eyes(&mut self, inference: &[f32], live_time: f32) -> Result<EyesRotation> {
+        let eyes = self
+            .layout
+            .split(inference)?
+            .eyes
+            .try_into()
+            .map_err(|_| invalid("diffusion eyes output must contain four values"))?;
+        self.eyes.set_live_time(live_time)?;
+        Ok(self.eyes.compute_rotation(eyes))
+    }
+
+    fn reset_layers(&mut self) -> Result<()> {
+        self.reset()
+    }
+
+    fn skin_parameters(&self) -> SkinAnimatorParams {
+        self.skin.parameters()
+    }
+
+    fn set_skin_parameters(&mut self, parameters: SkinAnimatorParams) -> Result<()> {
+        self.skin.set_parameters(parameters)
+    }
+
+    fn tongue_parameters(&self) -> TongueAnimatorParams {
+        self.tongue.parameters()
+    }
+
+    fn set_tongue_parameters(&mut self, parameters: TongueAnimatorParams) -> Result<()> {
+        self.tongue.set_parameters(parameters)
+    }
+
+    fn teeth_parameters(&self) -> JawParameters {
+        self.jaw_parameters
+    }
+
+    fn set_teeth_parameters(&mut self, parameters: JawParameters) -> Result<()> {
+        parameters.validate()?;
+        self.jaw_parameters = parameters;
+        Ok(())
+    }
+
+    fn eyes_parameters(&self) -> EyesAnimatorParams {
+        self.eyes.parameters()
+    }
+
+    fn set_eyes_parameters(&mut self, parameters: EyesAnimatorParams) -> Result<()> {
+        self.eyes.set_parameters(parameters)
+    }
 }
 
 impl DiffusionPostprocessor {

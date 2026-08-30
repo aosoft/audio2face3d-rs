@@ -13,8 +13,11 @@ mod diffusion_tensorrt_backend;
 mod executor;
 #[cfg(feature = "cuda")]
 mod gpu_blendshape;
+mod interactive;
+mod interactive_blendshape;
 mod jaw;
 mod model_buffers;
+mod model_data;
 mod pca;
 mod postprocess;
 mod regression;
@@ -52,6 +55,13 @@ pub use executor::{
 };
 #[cfg(feature = "cuda")]
 pub use gpu_blendshape::{GpuBlendshapeSolveFence, GpuBlendshapeSolver};
+pub use interactive::{
+    GeometryInvalidationLayer, InteractiveDiffusionExecutor, InteractiveGeometryInterrupt,
+    InteractiveGeometryMetadata, InteractiveGeometryStatus, InteractiveRegressionExecutor,
+};
+pub use interactive_blendshape::{
+    BlendshapeInvalidationLayer, InteractiveBlendshapeLayer, InteractiveBlendshapeWeights,
+};
 pub use jaw::{JawParameters, JawTransform, rigid_transform};
 pub use model_buffers::{
     DiffusionBufferContract, GeometryResultLayout, ModelBindingContract, RegressionBufferContract,
@@ -63,9 +73,11 @@ pub use model_buffers::{
     DiffusionInferenceStateBuffers, DiffusionResultBuffers, GeometryResultBuffers,
     RegressionInferenceInputBuffers, RegressionInferenceOutputBuffers, RegressionResultBuffers,
 };
+pub use model_data::GeometryModelData;
 pub use pca::PcaReconstruction;
 pub use postprocess::{
-    PostprocessedRegressionBackend, RegressionGeometry, RegressionPostprocessor,
+    LayeredGeometryPostprocessor, PostprocessedRegressionBackend, RegressionGeometry,
+    RegressionPostprocessor,
 };
 
 pub use regression::{

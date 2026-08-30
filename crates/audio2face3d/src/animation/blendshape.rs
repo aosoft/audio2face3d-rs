@@ -1,7 +1,8 @@
 //! Blendshape data preparation and the SDK-compatible CPU solver path.
 
-use crate::common::{BlendshapeConfig, Error, Result};
+use crate::common::{BlendshapeConfig, Error, NpzArchive, Result};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
@@ -19,6 +20,55 @@ pub struct BlendshapeData {
 }
 
 impl BlendshapeData {
+    /// Loads the original SDK NPZ layout (`poseNames`, `neutral`, poses, optional mask).
+    pub fn load_npz(path: impl AsRef<Path>) -> Result<Self> {
+        let mut archive = NpzArchive::open(path.as_ref())?;
+        let mut names = archive.strings("poseNames")?;
+        if names.first().map(String::as_str) != Some("neutral") {
+            return Err(invalid("blendshape poseNames must begin with neutral"));
+        }
+        let neutral_pose = archive.f32("neutral")?;
+        names.remove(0);
+        let mut delta_poses = Vec::with_capacity(
+            neutral_pose
+                .len()
+                .checked_mul(names.len())
+                .ok_or_else(|| invalid("blendshape NPZ dimensions overflow"))?,
+        );
+        for name in &names {
+            let pose = archive.f32(name)?;
+            if pose.len() != neutral_pose.len() {
+                return Err(invalid(format!(
+                    "blendshape pose {name} dimensions do not match neutral"
+                )));
+            }
+            delta_poses.extend(pose);
+        }
+        let pose_mask = archive
+            .contains("frontalMask")
+            .then(|| archive.i32("frontalMask"))
+            .transpose()?
+            .map(|values| {
+                values
+                    .into_iter()
+                    .map(|value| {
+                        usize::try_from(value).map_err(|_| {
+                            invalid("blendshape frontalMask contains a negative index")
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?;
+        let data = Self {
+            neutral_pose,
+            delta_poses,
+            pose_names: names,
+            pose_mask,
+        };
+        data.validate()?;
+        Ok(data)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.neutral_pose.is_empty() || !self.neutral_pose.len().is_multiple_of(3) {
             return Err(invalid(
