@@ -64,7 +64,10 @@
       "required": ["path", "sha256"],
       "properties": {
         "path": { "type": "string" },
-        "sha256": { "$ref": "#/$defs/sha256" }
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "license": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     },

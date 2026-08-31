@@ -2,7 +2,13 @@
 name = "audio2face3d-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Model, reference, benchmark, and runtime CLI for audio2face3d"
+keywords = ["audio2face", "animation", "cuda", "tensorrt"]
+categories = ["command-line-utilities", "multimedia"]
 
 [features]
 default = []

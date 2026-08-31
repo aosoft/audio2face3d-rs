@@ -55,6 +55,28 @@ The engine must be generated from the fixture's corresponding
 dimension from each fixture tensor, runs inference, and compares every output
 element with an absolute tolerance of `1e-3`.
 
+## Release benchmark baseline
+
+`benchmark-baseline.json` fixes the validated hardware/software environment,
+required Regression, Diffusion, Audio2Emotion, CPU/GPU BlendShape, and
+interactive replay workloads, plus the initial measured cases. Capture commands
+use only environment variables for local model descriptors. Generated benchmark
+JSON belongs below `reference/compatible_test/benchmarks/` and is ignored.
+
+The benchmark comparator checks P50/P95/P99 latency, throughput, and peak GPU
+memory without mixing performance failure with the numeric artifact comparator:
+
+```powershell
+cargo run -p audio2face3d-cli -- release benchmark-compare `
+  reference/benchmark-baseline.json `
+  reference/compatible_test/benchmarks/regression.json
+```
+
+The default limits are 15 percent for latency and throughput and 10 percent for
+memory. Candidate and baseline engine hashes must match. Recapture a baseline
+when the GPU, driver, CUDA, TensorRT, precision, track count, or model engine
+changes; do not compare unlike environments.
+
 ## Original SDK compatibility harness
 
 `artifact-schema.json` is shared by the original C++ SDK runner and the Rust

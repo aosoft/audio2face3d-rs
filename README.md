@@ -20,6 +20,42 @@ The Rust modules correspond to the original SDK as follows:
 | `audio2face-sdk` | `audio2face3d::animation` |
 | `audio2emotion-sdk` | `audio2face3d::emotion` |
 
+## Release support contract
+
+The required release target is Windows x86-64 with MSVC, CUDA 12.9.x,
+TensorRT 10.16.1.x, an SM 8.6 GPU, and both FP32 and FP16 engines. Linux
+x86-64 with the same CUDA and TensorRT families is currently build-only and
+experimental. The minimum supported Rust version is 1.87.
+
+| Feature | Contents | Required tier |
+|---|---|---|
+| default | CPU animation and emotion processing | `portable` |
+| `animation` | geometry, BlendShape, Teeth, and interactive APIs | `portable` |
+| `emotion` | Audio2Emotion post-processing | `portable` |
+| `cuda` | CUDA buffers, streams, solvers, and lifetime tests | `cuda-lifetime` |
+| `tensorrt` | real TensorRT model execution | `tensorrt-model` |
+
+The machine-readable contract is `release/release-baseline.json`. Its five CI
+tiers deliberately separate portable tests, CUDA ownership tests, real-model
+tests, original-SDK reference parity, and package/release checks:
+
+```powershell
+./ci/run-tier.ps1 portable
+./ci/run-tier.ps1 cuda-lifetime
+./ci/run-tier.ps1 tensorrt-model
+./ci/run-tier.ps1 reference-parity
+./ci/run-tier.ps1 release
+```
+
+Native tiers require the environment variables listed in the release contract;
+machine-local SDK/model/audio paths and generated captures are never committed.
+Audit the contract, pinned revisions, licenses, artifact sizes/hashes, benchmark
+definitions, API policy, and safety invariants with:
+
+```sh
+cargo run -p audio2face3d-cli -- release audit
+```
+
 ### Inference-free Audio2Emotion
 
 `PostProcessEmotionExecutorBundle` reproduces the original post-process-only
@@ -99,6 +135,42 @@ components. GPU components move their solver, target/output `DeviceBuffer`,
 checks before execution. `InteractiveGeometryExecutorBundleBuilder` provides
 typed Regression and Diffusion constructors for custom backends,
 post-processors, accumulators, and contracts without type erasure.
+
+## Interactive and GPU callback quick start
+
+Interactive execution keeps inference, post-processing, and BlendShape caches
+inside one owner. Callback device views are valid only for the callback and
+cannot be retained by safe Rust:
+
+```rust,no_run
+use audio2face3d::{InteractiveGpuBlendshapeExecutorBundle, InteractivePipelineOptions, Model};
+
+# fn run() -> audio2face3d::Result<()> {
+let model = Model::load("models/mark/model.json")?;
+let mut bundle = InteractiveGpuBlendshapeExecutorBundle::load(
+    &model,
+    InteractivePipelineOptions::default(),
+)?;
+bundle.geometry().audio().accumulate(&vec![0.0; 16_000])?;
+bundle.geometry().audio().close()?;
+bundle.geometry().emotions().close()?;
+bundle.compute_frame(0, |_metadata, output| {
+    let mut weights = vec![0.0; output.skin_weight_count()];
+    if let Some(view) = output.skin_weights {
+        view.copy_to(&mut weights, output.stream).expect("CUDA copy");
+    }
+    true
+})?;
+bundle.wait()?;
+# Ok(())
+# }
+```
+
+Use `compute_all_frames` for an ordered temporal pass. Use `compute_frame` for
+random access and replay; invalidating geometry automatically invalidates the
+dependent BlendShape weight cache. The standalone CPU and GPU BlendShape
+bundles and Teeth animator are described by the component and Teeth sections
+above.
 
 ## Standalone teeth animation
 
@@ -230,9 +302,43 @@ The benchmark command separates build, descriptor-cache, warm-up, steady-state i
 ```sh
 cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100
 cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model_fp16.json 2 fp16 100
+cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100 --scope blendshape-cpu
+cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100 --scope blendshape-gpu
+cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100 --scope interactive-gpu-replay
+cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100 --output reference/compatible_test/benchmarks/mark.json
+```
+
+JSON output records the model and engine SHA-256, execution environment,
+P50/P95/P99 latency, throughput, and peak GPU memory. Compare performance
+against the tracked hardware baseline independently from reference-value
+parity:
+
+```sh
+cargo run -p audio2face3d-cli -- release benchmark-compare reference/benchmark-baseline.json reference/compatible_test/benchmarks/mark.json
 ```
 
 For geometry models, the isolated post-process phase currently measures the device-result consumption boundary; full animator and blendshape timing must be reported separately from raw TensorRT inference. Compare C++ and Rust only with identical model/engine, batch, precision, GPU, driver, CUDA, and TensorRT versions.
+
+## Safety, errors, and versioning
+
+CUDA streams, events, buffers, GPU solvers, and TensorRT sessions are
+thread-affine (`!Send`/`!Sync`). Device views borrow their allocations, and
+asynchronous fences retain all borrowed resources until queued CUDA work is
+observed complete. Device identity is checked before composition. Interactive
+cache eviction, invalidation, and destruction synchronize before releasing
+referenced buffers. TensorRT execution contexts require mutable access and
+cannot be enqueued concurrently.
+
+Every TensorRT C++ shim entry catches C++ exceptions before returning through
+the C ABI. Public operations report malformed input, schema, device, CUDA, and
+TensorRT failures through `audio2face3d::Result`; panics are not part of the
+public error contract. Compile-fail tests fix the view/fence lifetime and
+thread-affinity rules, while `release_stress` covers long input, maximum track
+limits, reset/replay, queued work, and drop behavior.
+
+This project follows SemVer 2.0.0. Before 1.0, minor releases may change the
+public API; patch releases remain compatible. Removing a public feature is a
+breaking change, and every release requires a public-API and feature review.
 
 ## License
 

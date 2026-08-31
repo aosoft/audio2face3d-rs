@@ -2,7 +2,13 @@
 name = "audio2face3d"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Unofficial Rust runtime for NVIDIA Audio2Face-3D and Audio2Emotion"
+keywords = ["audio2face", "animation", "cuda", "tensorrt"]
+categories = ["multimedia", "api-bindings"]
 build = "build.rs"
 
 [features]

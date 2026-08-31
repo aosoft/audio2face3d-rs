@@ -57,11 +57,6 @@ pub(crate) fn build() {
     } else {
         build.flag("-std=c++17");
     }
-    let compiler = build.get_compiler();
-    println!(
-        "cargo:warning=TensorRT host compiler: {}",
-        compiler.path().display()
-    );
     println!("cargo:rustc-link-search=native={}", library.display());
     let cuda_library = first_directory(&cuda, &["lib/x64", "lib64", "lib"]);
     println!("cargo:rustc-link-search=native={}", cuda_library.display());

@@ -10,6 +10,14 @@
       "seed": 0
     },
     {
+      "name": "mark-standard-fp16",
+      "pipeline": "regression",
+      "execution": "standard",
+      "precision": "fp16",
+      "tracks": 1,
+      "seed": 0
+    },
+    {
       "name": "multi-diffusion-standard-fp32",
       "pipeline": "diffusion",
       "execution": "standard",
@@ -53,6 +61,22 @@
       "name": "mark-blendshape-gpu-fp32",
       "pipeline": "regression",
       "execution": "blendshape-gpu",
+      "precision": "fp32",
+      "tracks": 1,
+      "seed": 0
+    },
+    {
+      "name": "mark-interactive-blendshape-random-fp32",
+      "pipeline": "regression",
+      "execution": "interactive-blendshape-random",
+      "precision": "fp32",
+      "tracks": 1,
+      "seed": 0
+    },
+    {
+      "name": "mark-interactive-blendshape-all-fp32",
+      "pipeline": "regression",
+      "execution": "interactive-blendshape-all",
       "precision": "fp32",
       "tracks": 1,
       "seed": 0

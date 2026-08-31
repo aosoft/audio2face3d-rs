@@ -2,6 +2,7 @@
 
 mod engine;
 pub mod reference;
+pub mod release;
 
 pub use engine::{
     EngineBuildDisposition, EngineBuildReceipt, EnginePrecision, ModelEngineBuildRequest,

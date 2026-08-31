@@ -1,23 +1,32 @@
 use audio2face3d::animation::{
-    DiffusionBackend, DiffusionContract, DiffusionFrameInput, RegressionBackend,
-    RegressionContract, RegressionFrameInput, TensorRtDiffusionBackend, TensorRtRegressionBackend,
+    BlendshapeData, CpuBlendshapeSolver, DiffusionBackend, DiffusionContract, DiffusionFrameInput,
+    GpuBlendshapeSolver, InteractiveGpuBlendshapeLayer, RegressionBackend, RegressionContract,
+    RegressionFrameInput, RegressionGeometry, TensorRtDiffusionBackend, TensorRtRegressionBackend,
 };
-use audio2face3d::common::{GeometryAudioParameters, GeometryParameters, NetworkDocument, Result};
-use audio2face3d::cuda::GpuDevice;
+use audio2face3d::common::{
+    Error, GeometryAudioParameters, GeometryParameters, NetworkDocument, Result,
+    load_blendshape_config,
+};
+use audio2face3d::cuda::{CudaStream, DeviceBuffer, GpuDevice};
 use audio2face3d::emotion::{
     ClassifierBackend, ClassifierContract, EmotionPostProcessData, EmotionPostProcessor,
     TensorRtClassifierBackend,
 };
 use audio2face3d::{BenchmarkRunner, Model, ModelKind, ModelParameters};
+use audio2face3d_cli::reference::sha256_file;
 use std::cell::RefCell;
+use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
 pub fn run(
     descriptor: &Path,
     tracks: usize,
     precision: &str,
+    scope: &str,
     iterations: usize,
     engine: Option<&Path>,
+    output: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if precision != "fp32" && precision != "fp16" {
         return Err("precision must be fp32 or fp16".into());
@@ -34,6 +43,7 @@ pub fn run(
                 &model,
                 engine.unwrap_or_else(|| model.engine_path()),
                 tracks,
+                scope,
             )?);
             Ok(())
         },
@@ -63,15 +73,32 @@ pub fn run(
         },
         gpu_memory_mib,
     )?;
-    let output = serde_json::json!({
+    let engine = engine.unwrap_or_else(|| model.engine_path());
+    let document = serde_json::json!({
         "schema_version": 1,
         "pipeline": format!("{:?}", model.kind()).to_ascii_lowercase(),
         "precision": precision,
         "tracks": tracks,
-        "engine": engine.unwrap_or_else(|| model.engine_path()).display().to_string(),
+        "scope": scope,
+        "model": descriptor.display().to_string(),
+        "model_sha256": sha256_file(descriptor)?,
+        "engine": engine.display().to_string(),
+        "engine_sha256": sha256_file(engine)?,
+        "revision": option_env!("GIT_COMMIT"),
+        "environment": {
+            "target": std::env::consts::OS,
+            "architecture": std::env::consts::ARCH,
+            "cuda_path": std::env::var("CUDA_PATH").ok(),
+            "tensorrt_root": std::env::var("TENSORRT_ROOT_DIR").ok(),
+        },
         "report": report.to_json(),
     });
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    let mut bytes = serde_json::to_vec_pretty(&document)?;
+    bytes.push(b'\n');
+    if let Some(output) = output {
+        fs::write(output, &bytes)?;
+    }
+    print!("{}", String::from_utf8(bytes)?);
     Ok(())
 }
 
@@ -92,10 +119,30 @@ enum Workload {
         processors: Vec<EmotionPostProcessor>,
         outputs: Vec<Vec<f32>>,
     },
+    CpuBlendshape {
+        solver: Box<CpuBlendshapeSolver>,
+        target: Vec<f32>,
+        output: Vec<f32>,
+    },
+    GpuBlendshape {
+        solver: Box<GpuBlendshapeSolver>,
+        target: DeviceBuffer<f32>,
+        output: DeviceBuffer<f32>,
+        host_output: Vec<f32>,
+        stream: CudaStream,
+        _device: Rc<GpuDevice>,
+    },
+    InteractiveGpuReplay {
+        layer: Box<InteractiveGpuBlendshapeLayer>,
+        geometry: RegressionGeometry,
+    },
 }
 
 impl Workload {
-    fn load(model: &Model, engine: &Path, tracks: usize) -> Result<Self> {
+    fn load(model: &Model, engine: &Path, tracks: usize, scope: &str) -> Result<Self> {
+        if scope != "raw-network" {
+            return Self::load_blendshape(model, tracks, scope);
+        }
         let device = GpuDevice::new(0)?;
         match (model.kind(), model.network()) {
             (ModelKind::Regression, NetworkDocument::Geometry(network)) => {
@@ -185,6 +232,81 @@ impl Workload {
         }
     }
 
+    fn load_blendshape(model: &Model, tracks: usize, scope: &str) -> Result<Self> {
+        if tracks != 1 {
+            return Err(Error::InvalidSchema(
+                "BlendShape benchmark scopes currently require one track".into(),
+            ));
+        }
+        if model.kind() == ModelKind::Emotion {
+            return Err(Error::InvalidSchema(
+                "BlendShape benchmark scopes require a geometry model".into(),
+            ));
+        }
+        let paths = model
+            .blendshape_paths(0)?
+            .get("skin")
+            .ok_or_else(|| Error::InvalidSchema("model has no skin BlendShape data".into()))?;
+        let data = BlendshapeData::load_npz(&paths.data)?;
+        let target = data.evaluate_pose(&vec![0.25; data.pose_count()])?;
+        let config = load_blendshape_config(&paths.config)?.blendshape_params;
+        match scope {
+            "blendshape-cpu" => {
+                let mut solver = CpuBlendshapeSolver::from_config(data, &config)?;
+                solver.prepare()?;
+                Ok(Self::CpuBlendshape {
+                    solver: Box::new(solver),
+                    target,
+                    output: Vec::new(),
+                })
+            }
+            "blendshape-gpu" | "interactive-gpu-replay" => {
+                let device = GpuDevice::new(0)?;
+                let stream = device.create_stream()?;
+                let solver = GpuBlendshapeSolver::new(&device, &stream, data, &config)?;
+                if scope == "interactive-gpu-replay" {
+                    let mut layer = InteractiveGpuBlendshapeLayer::new(
+                        Rc::clone(&device),
+                        stream,
+                        Some(solver),
+                        None,
+                        2,
+                    )?;
+                    let geometry = RegressionGeometry {
+                        skin: target,
+                        tongue: Vec::new(),
+                        jaw_transform: [0.0; 16],
+                        eyes_rotation: audio2face3d::animation::EyesRotation {
+                            right: [0.0; 3],
+                            left: [0.0; 3],
+                        },
+                    };
+                    layer.compute_frame(0, 1, &geometry, |_| true)?;
+                    layer.wait()?;
+                    Ok(Self::InteractiveGpuReplay {
+                        layer: Box::new(layer),
+                        geometry,
+                    })
+                } else {
+                    let mut target_device = device.allocate(target.len())?;
+                    target_device.copy_from(&target, &stream)?;
+                    let output_count = solver.pose_count();
+                    Ok(Self::GpuBlendshape {
+                        solver: Box::new(solver),
+                        target: target_device,
+                        output: device.allocate(output_count)?,
+                        host_output: vec![0.0; output_count],
+                        stream,
+                        _device: device,
+                    })
+                }
+            }
+            _ => Err(Error::InvalidSchema(format!(
+                "unknown benchmark scope `{scope}`"
+            ))),
+        }
+    }
+
     fn infer(&mut self) -> Result<()> {
         match self {
             Self::Regression {
@@ -209,6 +331,22 @@ impl Workload {
                 outputs,
                 ..
             } => *outputs = backend.infer_batch(inputs)?,
+            Self::CpuBlendshape {
+                solver,
+                target,
+                output,
+            } => *output = solver.solve(target)?,
+            Self::GpuBlendshape {
+                solver,
+                target,
+                output,
+                stream,
+                ..
+            } => solver.solve_async(target, output, stream)?.synchronize()?,
+            Self::InteractiveGpuReplay { layer, geometry } => {
+                layer.compute_frame(0, 1, geometry, |_| true)?;
+                layer.wait()?;
+            }
         }
         Ok(())
     }
@@ -226,6 +364,18 @@ impl Workload {
             }
             Self::Regression { outputs, .. } | Self::Diffusion { outputs, .. } => {
                 let _: f32 = outputs.iter().flatten().copied().sum();
+            }
+            Self::CpuBlendshape { output, .. } => {
+                std::hint::black_box(output.iter().copied().sum::<f32>());
+            }
+            Self::GpuBlendshape {
+                output,
+                host_output,
+                stream,
+                ..
+            } => output.copy_to(host_output, stream)?,
+            Self::InteractiveGpuReplay { layer, .. } => {
+                std::hint::black_box(layer.copy_cached_frame_to_host(0)?);
             }
         }
         Ok(())

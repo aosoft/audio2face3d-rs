@@ -16,6 +16,12 @@ pub const SAMPLE_RATE: u32 = 16_000;
 pub struct FileProvenance {
     pub path: String,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -388,6 +394,9 @@ pub fn prepare_wav_fixture(
         Some(FileProvenance {
             path: wav.display().to_string(),
             sha256: source_hash,
+            bytes: Some(source_bytes.len() as u64),
+            license: Some(license.into()),
+            revision: None,
         }),
     )
 }
@@ -722,6 +731,9 @@ mod tests {
         let fixture = FileProvenance {
             path: "samples.f32le".into(),
             sha256: "fixture".into(),
+            bytes: Some(8),
+            license: Some("CC0-1.0".into()),
+            revision: None,
         };
         for (root, values) in [(&expected, [0.0, 1.0]), (&actual, [0.0, 1.1])] {
             let mut writer = ArtifactWriter::create(
@@ -791,5 +803,20 @@ mod tests {
             decode_pcm16_mono_wav(&wav).unwrap(),
             [-1.0, 32767.0 / 32768.0]
         );
+    }
+
+    #[test]
+    fn malformed_wav_inputs_return_errors_without_panicking() {
+        let malformed = [
+            Vec::new(),
+            b"RIFF\0\0\0\0WAVE".to_vec(),
+            b"RIFF\0\0\0\0WAVEfmt \x10\0\0".to_vec(),
+            b"RIFF\0\0\0\0WAVEdata\xFF\xFF\xFF\xFF".to_vec(),
+        ];
+        for bytes in malformed {
+            let result = std::panic::catch_unwind(|| decode_pcm16_mono_wav(&bytes));
+            assert!(result.is_ok(), "malformed WAV caused a panic");
+            assert!(result.unwrap().is_err());
+        }
     }
 }

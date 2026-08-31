@@ -58,6 +58,43 @@ enum Command {
         #[command(subcommand)]
         command: ReferenceCommand,
     },
+    /// Validate release contracts and performance baselines.
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReleaseCommand {
+    /// Validate the tracked support, CI, provenance, API, and safety contract.
+    Audit(ReleaseAuditCommand),
+    /// Compare a benchmark JSON report independently from numeric parity.
+    BenchmarkCompare(BenchmarkCompareCommand),
+}
+
+#[derive(Args, Debug)]
+struct ReleaseAuditCommand {
+    #[arg(long, default_value = "release/release-baseline.json")]
+    baseline: PathBuf,
+    #[arg(long, default_value = ".")]
+    workspace: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct BenchmarkCompareCommand {
+    baseline: PathBuf,
+    candidate: PathBuf,
+    #[arg(long, default_value_t = 15.0)]
+    maximum_latency_regression_percent: f64,
+    #[arg(long, default_value_t = 15.0)]
+    maximum_throughput_regression_percent: f64,
+    #[arg(long, default_value_t = 10.0)]
+    maximum_memory_regression_percent: f64,
+    #[arg(long)]
+    report: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -216,6 +253,27 @@ enum BenchmarkPrecision {
 }
 
 #[cfg(feature = "runtime")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum BenchmarkScope {
+    RawNetwork,
+    BlendshapeCpu,
+    BlendshapeGpu,
+    InteractiveGpuReplay,
+}
+
+#[cfg(feature = "runtime")]
+impl BenchmarkScope {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::RawNetwork => "raw-network",
+            Self::BlendshapeCpu => "blendshape-cpu",
+            Self::BlendshapeGpu => "blendshape-gpu",
+            Self::InteractiveGpuReplay => "interactive-gpu-replay",
+        }
+    }
+}
+
+#[cfg(feature = "runtime")]
 impl BenchmarkPrecision {
     const fn as_str(self) -> &'static str {
         match self {
@@ -236,11 +294,17 @@ struct BenchmarkCommand {
     /// Precision label recorded in the report.
     #[arg(value_enum, default_value = "fp32")]
     precision: BenchmarkPrecision,
+    /// Timed runtime boundary.
+    #[arg(long, value_enum, default_value = "raw-network")]
+    scope: BenchmarkScope,
     /// Number of measured iterations.
     #[arg(default_value_t = 20)]
     iterations: usize,
     /// Optional engine override.
     engine: Option<PathBuf>,
+    /// Also write the reproducible JSON result to this path.
+    #[arg(long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -384,10 +448,53 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             &command.model,
             command.tracks,
             command.precision.as_str(),
+            command.scope.as_str(),
             command.iterations,
             command.engine.as_deref(),
+            command.output.as_deref(),
         )?,
         Command::Reference { command } => run_reference(command)?,
+        Command::Release { command } => run_release(command)?,
+    }
+    Ok(())
+}
+
+fn run_release(command: ReleaseCommand) -> Result<(), Box<dyn std::error::Error>> {
+    use audio2face3d_cli::release;
+
+    match command {
+        ReleaseCommand::Audit(command) => {
+            let report = release::audit_release_baseline(&command.workspace, &command.baseline)?;
+            if let Some(path) = command.report {
+                release::write_json(&path, &report)?;
+            }
+            println!("checks: {}", report.checks);
+            for failure in &report.failures {
+                println!("failure: {failure}");
+            }
+            if !report.compatible {
+                return Err("release baseline audit failed".into());
+            }
+        }
+        ReleaseCommand::BenchmarkCompare(command) => {
+            let report = release::compare_benchmark(
+                &command.baseline,
+                &command.candidate,
+                command.maximum_latency_regression_percent,
+                command.maximum_throughput_regression_percent,
+                command.maximum_memory_regression_percent,
+            )?;
+            if let Some(path) = command.report {
+                release::write_json(&path, &report)?;
+            }
+            println!("case: {}", report.case);
+            for regression in &report.regressions {
+                println!("regression: {regression}");
+            }
+            if !report.compatible {
+                return Err("benchmark regression detected".into());
+            }
+        }
     }
     Ok(())
 }
@@ -667,7 +774,7 @@ mod tests {
     #[test]
     fn top_level_help_describes_commands_and_standard_flags() {
         let help = Cli::command().render_long_help().to_string();
-        assert!(help.contains("Manage models and run"));
+        assert!(help.contains("Model, reference, benchmark, and runtime CLI"));
         assert!(help.contains("model"));
         assert!(help.contains("doctor"));
         #[cfg(feature = "runtime")]

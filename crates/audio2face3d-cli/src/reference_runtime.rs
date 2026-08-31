@@ -102,6 +102,9 @@ pub fn capture(request: CaptureRequest<'_>) -> Result<(), Box<dyn std::error::Er
         FileProvenance {
             path: fixture_path.display().to_string(),
             sha256: fixture.samples_sha256,
+            bytes: Some((fixture.sample_count * size_of::<f32>()) as u64),
+            license: Some(fixture.license),
+            revision: fixture.source.and_then(|source| source.revision),
         },
     )?;
     add_provenance(&mut writer, &model)?;
@@ -775,6 +778,9 @@ fn add_provenance(writer: &mut ArtifactWriter, model: &Model) -> io::Result<()> 
             FileProvenance {
                 path: path.display().to_string(),
                 sha256: sha256_file(path)?,
+                bytes: Some(path.metadata()?.len()),
+                license: Some(model_license(model.kind()).into()),
+                revision: None,
             },
         );
     }
@@ -791,6 +797,15 @@ fn add_provenance(writer: &mut ArtifactWriter, model: &Model) -> io::Result<()> 
         audio2face3d::RuntimeDiscovery::discover().diagnostic(),
     );
     Ok(())
+}
+
+fn model_license(kind: ModelKind) -> &'static str {
+    match kind {
+        ModelKind::Regression | ModelKind::Diffusion => "NVIDIA Open Model License",
+        ModelKind::Emotion => {
+            "License Agreement for NVIDIA Audio2Emotion Model for Use with Audio2Face Project"
+        }
+    }
 }
 
 fn kind_name(kind: ModelKind) -> &'static str {

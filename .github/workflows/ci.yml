@@ -1,0 +1,17 @@
+name: portable-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Run portable release tier
+        shell: powershell
+        run: ./ci/run-tier.ps1 portable

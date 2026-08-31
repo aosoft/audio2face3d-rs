@@ -33,14 +33,10 @@ pub(crate) fn build() {
     let architectures = env::var("AUDIO2FACE3D_CUDA_ARCHS").unwrap_or_else(|_| "86".into());
     let flags = build_config::gencode_flags(&architectures)
         .unwrap_or_else(|error| panic!("invalid AUDIO2FACE3D_CUDA_ARCHS: {error}"));
-    for flag in &flags {
-        println!("cargo:warning=CUDA architecture flag: {flag}");
-    }
-
     // PTX is virtual-architecture specific. Compile for the first requested
     // architecture so the driver can JIT it for that architecture and newer
-    // devices. The remaining flags continue to describe the supported native
-    // architecture matrix to Cargo's diagnostics.
+    // devices. The complete architecture list remains part of the release
+    // support contract and the build configuration tests.
     let first = flags
         .first()
         .expect("gencode_flags always returns at least one architecture");

@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "environment": {
+    "target": "x86_64-pc-windows-msvc",
+    "gpu": "NVIDIA GeForce RTX 3070 Ti Laptop GPU (compute capability 8.6)",
+    "driver": "610.88",
+    "cuda": "12.9.86",
+    "tensorrt": "10.16.1.11"
+  },
+  "workloads": [
+    {
+      "name": "regression",
+      "scope": "raw-network",
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--output", "reference/compatible_test/benchmarks/regression.json"]
+    },
+    {
+      "name": "diffusion",
+      "scope": "raw-network",
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_DIFFUSION_MODEL%", "1", "fp32", "100", "--output", "reference/compatible_test/benchmarks/diffusion.json"]
+    },
+    {
+      "name": "audio2emotion",
+      "scope": "raw-network",
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_EMOTION_MODEL%", "1", "fp32", "100", "--output", "reference/compatible_test/benchmarks/audio2emotion.json"]
+    },
+    {
+      "name": "blendshape-cpu",
+      "scope": "blendshape-cpu",
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "blendshape-cpu", "--output", "reference/compatible_test/benchmarks/blendshape-cpu.json"]
+    },
+    {
+      "name": "blendshape-gpu",
+      "scope": "blendshape-gpu",
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "blendshape-gpu", "--output", "reference/compatible_test/benchmarks/blendshape-gpu.json"]
+    },
+    {
+      "name": "interactive-gpu-replay",
+      "scope": "interactive-gpu-replay",
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "interactive-gpu-replay", "--output", "reference/compatible_test/benchmarks/interactive-gpu-replay.json"]
+    }
+  ],
+  "cases": [
+    {
+      "name": "regression-raw-network-fp32-tracks1",
+      "pipeline": "regression",
+      "precision": "fp32",
+      "tracks": 1,
+      "scope": "raw-network",
+      "engine_sha256": "81d12167c8219125637aec55ec66cad50539d3e4c78a99626657b4eff4285cd9",
+      "phases": {
+        "steady-state": { "p50_ns": 3462400, "p95_ns": 3804700, "p99_ns": 3804700, "throughput_per_second": 288.817 },
+        "post-process": { "p50_ns": 100, "p95_ns": 100, "p99_ns": 100 },
+        "end-to-end": { "p50_ns": 3366600, "p95_ns": 3553900, "p99_ns": 3553900, "throughput_per_second": 297.036 }
+      },
+      "peak_memory_mib": 1552
+    },
+    {
+      "name": "regression-raw-network-fp16-tracks1",
+      "pipeline": "regression",
+      "precision": "fp16",
+      "tracks": 1,
+      "scope": "raw-network",
+      "engine_sha256": "7261a77069b319d9f15f8ce368b0be28503b431d7e8c3ad164822187fd73e7b0",
+      "phases": {
+        "steady-state": { "p50_ns": 2757400, "p95_ns": 3303000, "p99_ns": 3303000, "throughput_per_second": 362.660 },
+        "post-process": { "p50_ns": 100, "p95_ns": 200, "p99_ns": 200 },
+        "end-to-end": { "p50_ns": 2756100, "p95_ns": 3225400, "p99_ns": 3225400, "throughput_per_second": 362.832 }
+      },
+      "peak_memory_mib": 1098
+    },
+    {
+      "name": "diffusion-raw-network-fp32-tracks1",
+      "pipeline": "diffusion",
+      "precision": "fp32",
+      "tracks": 1,
+      "scope": "raw-network",
+      "engine_sha256": "B84A708E1F208AD412D52229C05E60AFAA36055BD6FEEA8DD16C5F6FF3E36575",
+      "phases": {
+        "steady-state": { "p50_ns": 65792400, "p95_ns": 68738900, "p99_ns": 68738900, "throughput_per_second": 15.114448 },
+        "post-process": { "p50_ns": 300, "p95_ns": 6100, "p99_ns": 6100 },
+        "end-to-end": { "p50_ns": 73080400, "p95_ns": 80485400, "p99_ns": 80485400, "throughput_per_second": 13.751369 }
+      },
+      "peak_memory_mib": 2901
+    },
+    {
+      "name": "audio2emotion-raw-network-fp32-tracks1",
+      "pipeline": "emotion",
+      "precision": "fp32",
+      "tracks": 1,
+      "scope": "raw-network",
+      "engine_sha256": "B232DAE5EC825ED7D3A84DCCB855D754043BB396C9D0C7A6849757AB8F403E8D",
+      "phases": {
+        "steady-state": { "p50_ns": 19184400, "p95_ns": 32356900, "p99_ns": 32356900, "throughput_per_second": 48.818137 },
+        "post-process": { "p50_ns": 3200, "p95_ns": 10500, "p99_ns": 10500 },
+        "end-to-end": { "p50_ns": 40389300, "p95_ns": 49772600, "p99_ns": 49772600, "throughput_per_second": 23.442416 }
+      },
+      "peak_memory_mib": 6133
+    },
+    {
+      "name": "blendshape-cpu-fp32-tracks1",
+      "pipeline": "regression",
+      "precision": "fp32",
+      "tracks": 1,
+      "scope": "blendshape-cpu",
+      "engine_sha256": "52E6FC7004EC253D592309A06499AFBE96268BA1FABBE16C54069DE3D439BC24",
+      "phases": {
+        "steady-state": { "p50_ns": 1579200, "p95_ns": 1697400, "p99_ns": 1697400, "throughput_per_second": 623.010261 },
+        "post-process": { "p50_ns": 500, "p95_ns": 800, "p99_ns": 800 },
+        "end-to-end": { "p50_ns": 1662900, "p95_ns": 1705300, "p99_ns": 1705300, "throughput_per_second": 614.904044 }
+      },
+      "peak_memory_mib": 36
+    },
+    {
+      "name": "blendshape-gpu-fp32-tracks1",
+      "pipeline": "regression",
+      "precision": "fp32",
+      "tracks": 1,
+      "scope": "blendshape-gpu",
+      "engine_sha256": "52E6FC7004EC253D592309A06499AFBE96268BA1FABBE16C54069DE3D439BC24",
+      "phases": {
+        "steady-state": { "p50_ns": 412400, "p95_ns": 483900, "p99_ns": 483900, "throughput_per_second": 2499.875006 },
+        "post-process": { "p50_ns": 122000, "p95_ns": 156622400, "p99_ns": 156622400 },
+        "end-to-end": { "p50_ns": 447300, "p95_ns": 619600, "p99_ns": 619600, "throughput_per_second": 2084.201751 }
+      },
+      "peak_memory_mib": 191
+    },
+    {
+      "name": "interactive-gpu-replay-fp32-tracks1",
+      "pipeline": "regression",
+      "precision": "fp32",
+      "tracks": 1,
+      "scope": "interactive-gpu-replay",
+      "engine_sha256": "52E6FC7004EC253D592309A06499AFBE96268BA1FABBE16C54069DE3D439BC24",
+      "phases": {
+        "steady-state": { "p50_ns": 14700, "p95_ns": 15500, "p99_ns": 15500, "throughput_per_second": 68399.452804 },
+        "post-process": { "p50_ns": 123400, "p95_ns": 292200, "p99_ns": 292200 },
+        "end-to-end": { "p50_ns": 137200, "p95_ns": 172900, "p99_ns": 172900, "throughput_per_second": 7325.470661 }
+      },
+      "peak_memory_mib": 191
+    }
+  ]
+}

@@ -5,4 +5,5 @@ fn device_view_cannot_outlive_allocation() {
     tests.compile_fail("tests/ui/device_view_outlives_buffer.rs");
     tests.compile_fail("tests/ui/interactive_gpu_view_escapes_callback.rs");
     tests.compile_fail("tests/ui/teeth_fence_outlives_stream.rs");
+    tests.compile_fail("tests/ui/cuda_stream_is_thread_affine.rs");
 }

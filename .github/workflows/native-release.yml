@@ -1,0 +1,49 @@
+name: native-release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Run portable release tier
+        shell: powershell
+        run: ./ci/run-tier.ps1 portable
+
+  cuda-lifetime:
+    runs-on: [self-hosted, windows, x64, cuda-12-9, sm-86]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run CUDA lifetime tier
+        shell: powershell
+        run: ./ci/run-tier.ps1 cuda-lifetime
+
+  tensorrt-model:
+    runs-on: [self-hosted, windows, x64, tensorrt-10-16, sm-86]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run real-model tier
+        shell: powershell
+        run: ./ci/run-tier.ps1 tensorrt-model
+
+  reference-parity:
+    runs-on: [self-hosted, windows, x64, audio2face-sdk, sm-86]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run compatible reference cases
+        shell: powershell
+        run: ./ci/run-tier.ps1 reference-parity
+
+  release:
+    needs: [portable, cuda-lifetime, tensorrt-model, reference-parity]
+    runs-on: [self-hosted, windows, x64, tensorrt-10-16, sm-86]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit packages and release contracts
+        shell: powershell
+        run: ./ci/run-tier.ps1 release

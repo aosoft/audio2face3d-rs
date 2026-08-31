@@ -9,14 +9,16 @@ pub struct Percentiles {
     pub p99_ns: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BenchmarkPhase {
     pub name: String,
     pub iterations: usize,
     pub percentiles: Percentiles,
+    /// Completed iterations per second across the complete measured phase.
+    pub throughput_per_second: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BenchmarkReport {
     pub warmup_iterations: usize,
     pub phases: Vec<BenchmarkPhase>,
@@ -34,6 +36,7 @@ impl BenchmarkReport {
                 "p50_ns": phase.percentiles.p50_ns,
                 "p95_ns": phase.percentiles.p95_ns,
                 "p99_ns": phase.percentiles.p99_ns,
+                "throughput_per_second": phase.throughput_per_second,
             })).collect::<Vec<_>>(),
         })
     }
@@ -137,6 +140,8 @@ where
         }
     }
     samples.sort_unstable();
+    let total_ns = samples.iter().map(|value| u128::from(*value)).sum::<u128>();
+    let throughput_per_second = iterations as f64 * 1_000_000_000.0 / total_ns.max(1) as f64;
     Ok(BenchmarkPhase {
         name: name.into(),
         iterations,
@@ -145,6 +150,7 @@ where
             p95_ns: percentile(&samples, 95),
             p99_ns: percentile(&samples, 99),
         },
+        throughput_per_second,
     })
 }
 
@@ -195,5 +201,11 @@ mod tests {
         );
         assert_eq!(report.peak_memory_mib, Some(42));
         assert_eq!(report.to_json()["phases"].as_array().unwrap().len(), 6);
+        assert!(
+            report
+                .phases
+                .iter()
+                .all(|phase| phase.throughput_per_second.is_finite())
+        );
     }
 }
