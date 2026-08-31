@@ -1,12 +1,13 @@
 //! Model-driven single-track interactive geometry execution.
 
 use crate::animation::{
-    BlendshapeData, BlendshapeInvalidationLayer, CpuBlendshapeSolver, DiffusionContract,
-    DiffusionPostprocessor, GeometryInvalidationLayer, GeometryModelData,
+    BlendshapeData, BlendshapeInvalidationLayer, CpuBlendshapeSolver, DiffusionBackend,
+    DiffusionContract, DiffusionPostprocessor, GeometryInvalidationLayer, GeometryModelData,
     InteractiveBlendshapeLayer, InteractiveBlendshapeWeights, InteractiveDiffusionExecutor,
     InteractiveGeometryInterrupt, InteractiveGeometryMetadata, InteractiveGeometryStatus,
-    InteractiveRegressionExecutor, RegressionContract, RegressionGeometry, RegressionPostprocessor,
-    TensorRtDiffusionBackend, TensorRtRegressionBackend,
+    InteractiveRegressionExecutor, LayeredGeometryPostprocessor, RegressionBackend,
+    RegressionContract, RegressionGeometry, RegressionPostprocessor, TensorRtDiffusionBackend,
+    TensorRtRegressionBackend,
 };
 use crate::common::{
     AudioAccumulator, EmotionAccumulator, Error, GeometryAudioParameters, GeometryParameters,
@@ -52,15 +53,113 @@ pub struct InteractiveBlendshapeExecutorBundle {
     blendshape: InteractiveBlendshapeLayer,
 }
 
-impl InteractiveBlendshapeExecutorBundle {
-    pub fn load(model: &Model, options: InteractivePipelineOptions) -> Result<Self> {
+/// Typed construction entry points for model-driven and user-owned interactive components.
+pub struct InteractiveGeometryExecutorBundleBuilder;
+
+impl InteractiveGeometryExecutorBundleBuilder {
+    pub fn from_model(
+        model: &Model,
+        options: InteractivePipelineOptions,
+    ) -> Result<InteractiveGeometryExecutorBundle> {
+        InteractiveGeometryExecutorBundle::load(model, options)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn regression<B, P>(
+        backend: B,
+        contract: RegressionContract,
+        postprocessor: P,
+        audio: AudioAccumulator,
+        emotions: EmotionAccumulator,
+        implicit_emotion: Vec<f32>,
+        input_strength: f32,
+    ) -> Result<InteractiveRegressionExecutor<B, P>>
+    where
+        B: RegressionBackend<Output = Vec<f32>>,
+        P: LayeredGeometryPostprocessor,
+    {
+        InteractiveRegressionExecutor::new(
+            backend,
+            contract,
+            postprocessor,
+            audio,
+            emotions,
+            implicit_emotion,
+            input_strength,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn diffusion<B, P>(
+        backend: B,
+        contract: DiffusionContract,
+        postprocessor: P,
+        audio: AudioAccumulator,
+        emotions: EmotionAccumulator,
+        identity_index: usize,
+        input_strength: f32,
+        preview_inferences: usize,
+        seed: u64,
+    ) -> Result<InteractiveDiffusionExecutor<B, P>>
+    where
+        B: DiffusionBackend,
+        P: LayeredGeometryPostprocessor,
+    {
+        InteractiveDiffusionExecutor::new(
+            backend,
+            contract,
+            postprocessor,
+            audio,
+            emotions,
+            identity_index,
+            input_strength,
+            preview_inferences,
+            seed,
+        )
+    }
+}
+
+/// Moves interactive geometry and BlendShape components into one owning bundle.
+pub struct InteractiveBlendshapeExecutorBundleBuilder {
+    geometry: InteractiveGeometryExecutorBundle,
+    blendshape: InteractiveBlendshapeLayer,
+}
+
+impl InteractiveBlendshapeExecutorBundleBuilder {
+    pub fn from_model(model: &Model, options: InteractivePipelineOptions) -> Result<Self> {
         Ok(Self {
-            geometry: InteractiveGeometryExecutorBundle::load(model, options)?,
+            geometry: InteractiveGeometryExecutorBundleBuilder::from_model(model, options)?,
             blendshape: InteractiveBlendshapeLayer::new(
                 load_blendshape_component(model, "skin")?,
                 load_blendshape_component(model, "tongue")?,
             ),
         })
+    }
+
+    pub fn from_components(
+        geometry: InteractiveGeometryExecutorBundle,
+        blendshape: InteractiveBlendshapeLayer,
+    ) -> Self {
+        Self {
+            geometry,
+            blendshape,
+        }
+    }
+
+    pub fn build(self) -> Result<InteractiveBlendshapeExecutorBundle> {
+        if self.geometry.kind() == ModelKind::Emotion {
+            return Err(invalid("interactive BlendShape requires geometry"));
+        }
+        Ok(InteractiveBlendshapeExecutorBundle {
+            geometry: self.geometry,
+            blendshape: self.blendshape,
+        })
+    }
+}
+
+impl InteractiveBlendshapeExecutorBundle {
+    pub fn load(model: &Model, options: InteractivePipelineOptions) -> Result<Self> {
+        InteractiveBlendshapeExecutorBundleBuilder::from_model(model, options)?.build()
     }
 
     pub fn geometry(&self) -> &InteractiveGeometryExecutorBundle {
@@ -342,6 +441,136 @@ fn component_paths<'a>(model: &'a Model, name: &str) -> Result<Option<&'a ModelD
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::animation::{
+        EyesAnimatorParams, EyesRotation, RegressionFrameInput, SkinAnimatorParams,
+        TongueAnimatorParams,
+    };
+    use crate::common::{RegressionAudioParameters, RegressionParameters};
+
+    struct FakePostprocessor;
+
+    impl LayeredGeometryPostprocessor for FakePostprocessor {
+        fn process_skin(&mut self, _: &[f32], _: f32, _: bool) -> Result<Vec<f32>> {
+            Ok(vec![0.0; 3])
+        }
+        fn process_tongue(&mut self, _: &[f32]) -> Result<Vec<f32>> {
+            Ok(vec![0.0; 3])
+        }
+        fn process_teeth(&mut self, _: &[f32]) -> Result<[f32; 16]> {
+            Ok([0.0; 16])
+        }
+        fn process_eyes(&mut self, _: &[f32], _: f32) -> Result<EyesRotation> {
+            Ok(EyesRotation {
+                right: [0.0; 3],
+                left: [0.0; 3],
+            })
+        }
+        fn reset_layers(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn skin_parameters(&self) -> SkinAnimatorParams {
+            SkinAnimatorParams {
+                lower_face_smoothing: 0.0,
+                upper_face_smoothing: 0.0,
+                lower_face_strength: 1.0,
+                upper_face_strength: 1.0,
+                face_mask_level: 0.0,
+                face_mask_softness: 0.0,
+                skin_strength: 1.0,
+                blink_strength: 1.0,
+                eyelid_open_offset: 0.0,
+                lip_open_offset: 0.0,
+                blink_offset: 0.0,
+            }
+        }
+        fn set_skin_parameters(&mut self, _: SkinAnimatorParams) -> Result<()> {
+            Ok(())
+        }
+        fn tongue_parameters(&self) -> TongueAnimatorParams {
+            TongueAnimatorParams {
+                tongue_strength: 1.0,
+                tongue_height_offset: 0.0,
+                tongue_depth_offset: 0.0,
+            }
+        }
+        fn set_tongue_parameters(&mut self, _: TongueAnimatorParams) -> Result<()> {
+            Ok(())
+        }
+        fn teeth_parameters(&self) -> crate::animation::JawParameters {
+            crate::animation::JawParameters::default()
+        }
+        fn set_teeth_parameters(&mut self, _: crate::animation::JawParameters) -> Result<()> {
+            Ok(())
+        }
+        fn eyes_parameters(&self) -> EyesAnimatorParams {
+            EyesAnimatorParams {
+                eyeballs_strength: 1.0,
+                saccade_strength: 0.0,
+                right_eyeball_rotation_offset_x: 0.0,
+                right_eyeball_rotation_offset_y: 0.0,
+                left_eyeball_rotation_offset_x: 0.0,
+                left_eyeball_rotation_offset_y: 0.0,
+                saccade_seed: 0.0,
+            }
+        }
+        fn set_eyes_parameters(&mut self, _: EyesAnimatorParams) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn typed_builder_accepts_owned_fake_backend_and_postprocessor() {
+        let contract = RegressionContract::new(
+            &RegressionParameters {
+                implicit_emotion_len: 1,
+                explicit_emotions: vec!["joy".into()],
+                default_emotion: vec![0.0],
+                num_shapes_skin: 1,
+                num_shapes_tongue: 0,
+                num_verts_skin: 1,
+                num_verts_tongue: 0,
+                result_jaw_size: 0,
+                result_eyes_size: 0,
+            },
+            &RegressionAudioParameters {
+                buffer_len: 2,
+                buffer_ofs: 0,
+                samplerate: 2,
+            },
+            2,
+            1,
+        )
+        .unwrap();
+        let audio = AudioAccumulator::new(1, 0).unwrap();
+        audio.accumulate(&[1.0, 2.0, 3.0]).unwrap();
+        audio.close().unwrap();
+        let emotions = EmotionAccumulator::new(1, 1).unwrap();
+        emotions.accumulate(0, &[0.0]).unwrap();
+        emotions.close().unwrap();
+        let backend = |_: usize, _: &RegressionFrameInput| Ok(vec![0.0]);
+        let mut executor = InteractiveGeometryExecutorBundleBuilder::regression(
+            backend,
+            contract,
+            FakePostprocessor,
+            audio,
+            emotions,
+            vec![0.0],
+            1.0,
+        )
+        .unwrap();
+        let mut callbacks = 0;
+        executor
+            .compute_frame(0, |metadata, geometry| {
+                callbacks += 1;
+                assert_eq!(metadata.frame, 0);
+                assert_eq!(geometry.skin.len(), 3);
+                true
+            })
+            .unwrap();
+        assert_eq!(callbacks, 1);
+        executor.invalidate(GeometryInvalidationLayer::All);
+        assert!(!executor.is_valid(GeometryInvalidationLayer::All));
+    }
 
     #[test]
     fn runs_installed_geometry_models_interactively_when_configured() {

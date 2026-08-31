@@ -181,6 +181,18 @@ impl GpuBlendshapeSolver {
         self.data.evaluate_pose(weights)
     }
 
+    pub fn target_len(&self) -> usize {
+        self.data.neutral_pose.len()
+    }
+
+    pub fn pose_count(&self) -> usize {
+        self.pose_count
+    }
+
+    pub fn device_id(&self) -> crate::cuda::DeviceId {
+        self.neutral.device_id()
+    }
+
     pub fn set_multipliers(&mut self, values: &[f32], stream: &CudaStream) -> Result<()> {
         validate_post_parameters(values, self.pose_count, "multipliers")?;
         self.multipliers.copy_from(values, stream)

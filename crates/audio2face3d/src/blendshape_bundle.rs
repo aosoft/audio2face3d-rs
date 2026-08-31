@@ -4,7 +4,7 @@ use crate::animation::{
     BlendshapeData, BlendshapeSolverKind, CpuBlendshapeSolver, GpuBlendshapeSolver,
 };
 use crate::common::{Error, ModelDataPaths, Result, load_blendshape_config};
-use crate::cuda::{CudaStream, DeviceBuffer, DeviceView, GpuDevice};
+use crate::cuda::{CudaStream, DeviceBuffer, DeviceView, GpuDevice, ensure_same_device};
 use crate::{
     CallbackMetadata, GeometryExecutorBundle, GeometryFrame, Model, PipelineOptions,
     PipelineStatus, TrackParameters,
@@ -76,32 +76,169 @@ pub enum BlendshapeSolverComponentsMut<'a> {
     },
 }
 
-struct CpuTrackSolvers {
-    skin: Option<CpuBlendshapeSolver>,
-    tongue: Option<CpuBlendshapeSolver>,
+pub struct CpuBlendshapeTrackComponents {
+    pub skin: Option<CpuBlendshapeSolver>,
+    pub tongue: Option<CpuBlendshapeSolver>,
 }
 
-struct GpuComponentSolver {
+pub struct GpuBlendshapeComponent {
     solver: GpuBlendshapeSolver,
     target: DeviceBuffer<f32>,
     output: DeviceBuffer<f32>,
 }
 
-struct GpuTrackSolvers {
-    skin: Option<GpuComponentSolver>,
-    tongue: Option<GpuComponentSolver>,
+impl GpuBlendshapeComponent {
+    pub fn new(
+        solver: GpuBlendshapeSolver,
+        target: DeviceBuffer<f32>,
+        output: DeviceBuffer<f32>,
+    ) -> Result<Self> {
+        ensure_same_device(solver.device_id(), target.device_id())?;
+        ensure_same_device(solver.device_id(), output.device_id())?;
+        if target.len() != solver.target_len() || output.len() != solver.pose_count() {
+            return Err(invalid(
+                "GPU BlendShape component buffer dimensions do not match its solver",
+            ));
+        }
+        Ok(Self {
+            solver,
+            target,
+            output,
+        })
+    }
+
+    pub fn solver(&self) -> &GpuBlendshapeSolver {
+        &self.solver
+    }
+
+    pub fn target(&self) -> &DeviceBuffer<f32> {
+        &self.target
+    }
+
+    pub fn output(&self) -> &DeviceBuffer<f32> {
+        &self.output
+    }
 }
 
-struct GpuSolvers {
+pub struct GpuBlendshapeTrackComponents {
+    pub skin: Option<GpuBlendshapeComponent>,
+    pub tongue: Option<GpuBlendshapeComponent>,
+}
+
+pub struct GpuBlendshapeComponents {
     // Drop resources before their stream and retained device context.
-    tracks: Vec<GpuTrackSolvers>,
+    tracks: Vec<GpuBlendshapeTrackComponents>,
     stream: CudaStream,
     _device: Rc<GpuDevice>,
 }
 
+impl GpuBlendshapeComponents {
+    pub fn new(
+        device: Rc<GpuDevice>,
+        stream: CudaStream,
+        tracks: Vec<GpuBlendshapeTrackComponents>,
+    ) -> Result<Self> {
+        ensure_same_device(device.id(), stream.device_id())?;
+        for track in &tracks {
+            for component in [track.skin.as_ref(), track.tongue.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                ensure_same_device(device.id(), component.solver.device_id())?;
+            }
+        }
+        Ok(Self {
+            tracks,
+            stream,
+            _device: device,
+        })
+    }
+
+    pub fn stream(&self) -> &CudaStream {
+        &self.stream
+    }
+
+    pub fn tracks(&self) -> &[GpuBlendshapeTrackComponents] {
+        &self.tracks
+    }
+}
+
 enum BundleSolvers {
-    Cpu(Vec<CpuTrackSolvers>),
-    Gpu(GpuSolvers),
+    Cpu(Vec<CpuBlendshapeTrackComponents>),
+    Gpu(GpuBlendshapeComponents),
+}
+
+/// Moves a geometry bundle and user-owned solver resources into one bundle.
+pub struct BlendshapeExecutorBundleBuilder {
+    geometry: GeometryExecutorBundle,
+    solvers: BundleSolvers,
+}
+
+impl BlendshapeExecutorBundleBuilder {
+    pub fn cpu(
+        geometry: GeometryExecutorBundle,
+        tracks: Vec<CpuBlendshapeTrackComponents>,
+    ) -> Self {
+        Self {
+            geometry,
+            solvers: BundleSolvers::Cpu(tracks),
+        }
+    }
+
+    pub fn gpu(geometry: GeometryExecutorBundle, components: GpuBlendshapeComponents) -> Self {
+        Self {
+            geometry,
+            solvers: BundleSolvers::Gpu(components),
+        }
+    }
+
+    pub fn build(self) -> Result<BlendshapeExecutorBundle> {
+        let track_count = self.geometry.track_count();
+        let solver_track_count = match &self.solvers {
+            BundleSolvers::Cpu(tracks) => tracks.len(),
+            BundleSolvers::Gpu(components) => components.tracks.len(),
+        };
+        if track_count == 0 || solver_track_count != track_count {
+            return Err(invalid(
+                "BlendShape solver track count differs from geometry",
+            ));
+        }
+        for track_index in 0..track_count {
+            let data = self.geometry.model_data(track_index)?;
+            match &self.solvers {
+                BundleSolvers::Cpu(tracks) => {
+                    validate_cpu_component(
+                        tracks[track_index].skin.as_ref(),
+                        data.skin_neutral_pose.len(),
+                        "skin",
+                    )?;
+                    validate_cpu_component(
+                        tracks[track_index].tongue.as_ref(),
+                        data.tongue_neutral_pose.len(),
+                        "tongue",
+                    )?;
+                }
+                BundleSolvers::Gpu(components) => {
+                    validate_gpu_component(
+                        components.tracks[track_index].skin.as_ref(),
+                        data.skin_neutral_pose.len(),
+                        &components.stream,
+                        "skin",
+                    )?;
+                    validate_gpu_component(
+                        components.tracks[track_index].tongue.as_ref(),
+                        data.tongue_neutral_pose.len(),
+                        &components.stream,
+                        "tongue",
+                    )?;
+                }
+            }
+        }
+        Ok(BlendshapeExecutorBundle {
+            geometry: self.geometry,
+            solvers: self.solvers,
+        })
+    }
 }
 
 /// Owns geometry execution and per-track skin/tongue blendshape solvers.
@@ -121,7 +258,7 @@ impl BlendshapeExecutorBundle {
                 let mut tracks = Vec::with_capacity(options.track_count);
                 for track in 0..options.track_count {
                     let index = track.min(model.parameter_count() - 1);
-                    tracks.push(CpuTrackSolvers {
+                    tracks.push(CpuBlendshapeTrackComponents {
                         skin: load_cpu_component(model, index, "skin")?,
                         tongue: load_cpu_component(model, index, "tongue")?,
                     });
@@ -134,21 +271,17 @@ impl BlendshapeExecutorBundle {
                 let mut tracks = Vec::with_capacity(options.track_count);
                 for track in 0..options.track_count {
                     let index = track.min(model.parameter_count() - 1);
-                    tracks.push(GpuTrackSolvers {
+                    tracks.push(GpuBlendshapeTrackComponents {
                         skin: load_gpu_component(model, index, "skin", &device, &stream)?,
                         tongue: load_gpu_component(model, index, "tongue", &device, &stream)?,
                     });
                 }
                 stream.synchronize()?;
-                BundleSolvers::Gpu(GpuSolvers {
-                    tracks,
-                    stream,
-                    _device: device,
-                })
+                BundleSolvers::Gpu(GpuBlendshapeComponents::new(device, stream, tracks)?)
             }
         };
         let geometry = GeometryExecutorBundle::load(model, options)?;
-        Ok(Self { geometry, solvers })
+        BlendshapeExecutorBundleBuilder { geometry, solvers }.build()
     }
 
     pub fn geometry(&self) -> &GeometryExecutorBundle {
@@ -342,7 +475,7 @@ where
                 .tracks
                 .get_mut(metadata.track)
                 .ok_or_else(|| invalid("blendshape bundle track is out of range"))?;
-            let GpuTrackSolvers { skin, tongue } = track;
+            let GpuBlendshapeTrackComponents { skin, tongue } = track;
             let skin_fence = enqueue_gpu_component(skin.as_mut(), &frame.skin, &gpu.stream)?;
             let tongue_fence = enqueue_gpu_component(tongue.as_mut(), &frame.tongue, &gpu.stream)?;
             Ok(callback(
@@ -358,7 +491,7 @@ where
 }
 
 fn enqueue_gpu_component<'a>(
-    component: Option<&'a mut GpuComponentSolver>,
+    component: Option<&'a mut GpuBlendshapeComponent>,
     geometry: &[f32],
     stream: &'a CudaStream,
 ) -> Result<Option<crate::animation::GpuBlendshapeSolveFence<'a>>> {
@@ -393,7 +526,7 @@ fn load_gpu_component(
     name: &str,
     device: &Rc<GpuDevice>,
     stream: &CudaStream,
-) -> Result<Option<GpuComponentSolver>> {
+) -> Result<Option<GpuBlendshapeComponent>> {
     let Some(paths) = component_paths(model, index, name)? else {
         return Ok(None);
     };
@@ -401,11 +534,49 @@ fn load_gpu_component(
     let target_count = data.neutral_pose.len();
     let output_count = data.pose_count();
     let config = load_blendshape_config(&paths.config)?.blendshape_params;
-    Ok(Some(GpuComponentSolver {
-        solver: GpuBlendshapeSolver::new(device, stream, data, &config)?,
-        target: device.allocate(target_count)?,
-        output: device.allocate(output_count)?,
-    }))
+    GpuBlendshapeComponent::new(
+        GpuBlendshapeSolver::new(device, stream, data, &config)?,
+        device.allocate(target_count)?,
+        device.allocate(output_count)?,
+    )
+    .map(Some)
+}
+
+fn validate_cpu_component(
+    component: Option<&CpuBlendshapeSolver>,
+    geometry_len: usize,
+    name: &str,
+) -> Result<()> {
+    if let Some(component) = component {
+        if !component.is_prepared() {
+            return Err(invalid(format!(
+                "{name} CPU BlendShape solver is not prepared"
+            )));
+        }
+        if component.data().neutral_pose.len() != geometry_len {
+            return Err(invalid(format!(
+                "{name} CPU BlendShape solver shape differs from geometry"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_gpu_component(
+    component: Option<&GpuBlendshapeComponent>,
+    geometry_len: usize,
+    stream: &CudaStream,
+    name: &str,
+) -> Result<()> {
+    if let Some(component) = component {
+        ensure_same_device(stream.device_id(), component.solver.device_id())?;
+        if component.solver.target_len() != geometry_len {
+            return Err(invalid(format!(
+                "{name} GPU BlendShape solver shape differs from geometry"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn component_paths<'a>(
@@ -464,8 +635,24 @@ mod tests {
     }
 
     #[test]
+    fn cpu_component_validation_rejects_unprepared_and_wrong_shapes() {
+        let unprepared = CpuBlendshapeSolver::new(BlendshapeData {
+            neutral_pose: vec![0.0; 6],
+            delta_poses: vec![1.0; 6],
+            pose_names: vec!["shape".into()],
+            pose_mask: None,
+        })
+        .unwrap();
+        assert!(validate_cpu_component(Some(&unprepared), 6, "skin").is_err());
+        let prepared = solver("skin");
+        assert!(validate_cpu_component(Some(&prepared), 3, "skin").is_err());
+        assert!(validate_cpu_component(Some(&prepared), 6, "skin").is_ok());
+        assert!(validate_cpu_component(None, 6, "skin").is_ok());
+    }
+
+    #[test]
     fn cpu_track_solves_skin_and_tongue_and_propagates_callback_stop() {
-        let mut solvers = BundleSolvers::Cpu(vec![CpuTrackSolvers {
+        let mut solvers = BundleSolvers::Cpu(vec![CpuBlendshapeTrackComponents {
             skin: Some(solver("skin")),
             tongue: Some(solver("tongue")),
         }]);

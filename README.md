@@ -62,6 +62,44 @@ while !matches!(
 # }
 ```
 
+## Component composition
+
+`GeometryExecutorBundle::builder` wraps the default model-driven TensorRT
+component with build-time model kind, track count, CUDA device, and output
+shape validation. A `GeometryObserver` runs after shape validation and before
+the application callback:
+
+```rust,no_run
+use audio2face3d::{GeometryExecutorBundle, Model, PipelineOptions};
+
+# fn run() -> audio2face3d::Result<()> {
+let model = Model::load("models/mark/model.json")?;
+let mut bundle = GeometryExecutorBundle::builder(&model, PipelineOptions::default())?
+    .observer(|metadata, frame| {
+        println!("track={} skin={}", metadata.track, frame.skin.len());
+        Ok(())
+    })
+    .build()?;
+bundle.accumulate_audio(0, &vec![0.0; 16_000])?;
+bundle.close_audio(0)?;
+while !matches!(bundle.execute(|_, _| true)?, audio2face3d::PipelineStatus::Complete) {}
+# Ok(())
+# }
+```
+
+Custom standard pipelines implement `GeometryExecutorComponent` and move all
+owned backends, post-processors, accumulators, typed buffers, and streams into
+the same high-level `ComposedGeometryExecutorBundle`. The builder validates the
+declared `GeometryComponentContract` before execution and revalidates every
+callback frame.
+
+`BlendshapeExecutorBundleBuilder` accepts user-owned CPU track solvers or GPU
+components. GPU components move their solver, target/output `DeviceBuffer`,
+`CudaStream`, and retained `GpuDevice` into the bundle, with device and shape
+checks before execution. `InteractiveGeometryExecutorBundleBuilder` provides
+typed Regression and Diffusion constructors for custom backends,
+post-processors, accumulators, and contracts without type erasure.
+
 ## Runtime setup
 
 CUDA 12 and TensorRT 10 must be installed separately. The initial validated versions are CUDA 12.9 and TensorRT 10.16.1.11.

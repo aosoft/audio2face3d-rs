@@ -1,16 +1,18 @@
 use audio2face3d::animation::{BlendshapeSolverKind, GeometryInvalidationLayer};
 use audio2face3d::common::{GeometryParameters, NetworkDocument};
 use audio2face3d::{
-    BlendshapeExecutorBundle, BlendshapeOutput, CallbackMetadata, GeometryExecutorBundle,
-    GeometryFrame, InteractiveGeometryExecutorBundle, InteractivePipelineOptions, Model, ModelKind,
-    ModelParameters, PipelineOptions, PipelineOutput, PipelineStatus, TensorRtPipeline,
-    TrackParameters,
+    BlendshapeExecutorBundle, BlendshapeOutput, CallbackMetadata, ComposedGeometryExecutorBundle,
+    GeometryExecutorBundle, GeometryFrame, GeometryObserver, InteractiveGeometryExecutorBundle,
+    InteractivePipelineOptions, Model, ModelKind, ModelParameters, PipelineOptions, PipelineOutput,
+    PipelineStatus, TensorRtPipeline, TrackParameters,
 };
 use audio2face3d_cli::reference::{
     ArtifactWriter, Case, FileProvenance, Producer, RecordMetadata, load_fixture, sha256_file,
 };
+use std::cell::Cell;
 use std::io;
 use std::path::Path;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Execution {
@@ -148,9 +150,16 @@ fn capture_standard(
             )
         })?;
     } else {
-        let mut geometry = GeometryExecutorBundle::load(model, options)?;
+        let observed_frames = Rc::new(Cell::new(0_u64));
+        let mut geometry = GeometryExecutorBundle::builder(model, options)?
+            .observer(ReferenceGeometryObserver(Rc::clone(&observed_frames)))
+            .build()?;
         configure_geometry(&mut geometry, model, tracks, samples)?;
         execute_geometry_to_completion(&mut geometry, writer, "postprocess")?;
+        writer
+            .manifest_mut()
+            .counters
+            .insert("geometry-observer-frames".into(), observed_frames.get());
     }
     Ok(())
 }
@@ -324,7 +333,7 @@ fn execute_to_completion(
 }
 
 fn execute_geometry_to_completion(
-    geometry: &mut GeometryExecutorBundle,
+    geometry: &mut ComposedGeometryExecutorBundle<GeometryExecutorBundle>,
     writer: &mut ArtifactWriter,
     layer: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -437,7 +446,7 @@ fn configure_tracks(
 }
 
 fn configure_geometry(
-    geometry: &mut GeometryExecutorBundle,
+    geometry: &mut ComposedGeometryExecutorBundle<GeometryExecutorBundle>,
     model: &Model,
     tracks: usize,
     samples: &[f32],
@@ -450,6 +459,15 @@ fn configure_geometry(
         geometry.close_audio(track)?;
     }
     Ok(())
+}
+
+struct ReferenceGeometryObserver(Rc<Cell<u64>>);
+
+impl GeometryObserver for ReferenceGeometryObserver {
+    fn observe(&mut self, _: CallbackMetadata, _: &GeometryFrame) -> audio2face3d::Result<()> {
+        self.0.set(self.0.get() + 1);
+        Ok(())
+    }
 }
 
 fn configure_track_parameters_bundle(

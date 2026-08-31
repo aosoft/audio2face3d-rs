@@ -620,6 +620,13 @@ impl TensorRtPipeline {
 }
 
 impl GeometryExecutorBundle {
+    pub fn builder(
+        model: &Model,
+        options: PipelineOptions,
+    ) -> Result<crate::GeometryExecutorBundleBuilder<Self>> {
+        crate::GeometryExecutorBundleBuilder::from_model(model, options)
+    }
+
     pub fn load(model: &Model, options: PipelineOptions) -> Result<Self> {
         if model.kind() == ModelKind::Emotion {
             return Err(invalid(
