@@ -3,6 +3,8 @@ mod benchmark_command;
 mod progress;
 mod raw_engine;
 #[cfg(feature = "runtime")]
+mod reference_runtime;
+#[cfg(feature = "runtime")]
 mod run_diffusion;
 #[cfg(feature = "runtime")]
 mod run_emotion;
@@ -51,6 +53,100 @@ enum Command {
     /// Measure runtime inference and post-processing phases.
     #[cfg(feature = "runtime")]
     Benchmark(BenchmarkCommand),
+    /// Prepare and compare implementation-neutral reference artifacts.
+    Reference {
+        #[command(subcommand)]
+        command: ReferenceCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ReferenceCommand {
+    /// Decode or generate a canonical mono 16 kHz f32 fixture.
+    Fixture {
+        #[command(subcommand)]
+        command: FixtureCommand,
+    },
+    /// Compare two captured artifact directories.
+    Compare(CompareReferenceCommand),
+    /// Capture a Rust runtime artifact from a canonical fixture.
+    #[cfg(feature = "runtime")]
+    Capture(CaptureReferenceCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum FixtureCommand {
+    /// Decode a mono PCM16 16 kHz WAV once and pin both source and sample hashes.
+    Wav(WavFixtureCommand),
+    /// Generate deterministic silence or a deterministic two-tone signal.
+    Generated(GeneratedFixtureCommand),
+}
+
+#[derive(Args, Debug)]
+struct WavFixtureCommand {
+    input: PathBuf,
+    output: PathBuf,
+    #[arg(long, default_value = "speech")]
+    name: String,
+    /// SPDX expression or a project-local license/provenance identifier.
+    #[arg(long)]
+    license: String,
+    /// Optional expected hash of the source WAV.
+    #[arg(long)]
+    sha256: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum GeneratedFixtureKind {
+    Silence,
+    Synthetic,
+}
+
+#[derive(Args, Debug)]
+struct GeneratedFixtureCommand {
+    output: PathBuf,
+    #[arg(value_enum)]
+    kind: GeneratedFixtureKind,
+    #[arg(long, default_value_t = 4)]
+    seconds: usize,
+}
+
+#[derive(Args, Debug)]
+struct CompareReferenceCommand {
+    expected: PathBuf,
+    actual: PathBuf,
+    #[arg(long, default_value = "reference/tolerances.json")]
+    tolerances: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+}
+
+#[cfg(feature = "runtime")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ReferenceExecution {
+    Standard,
+    InteractiveRandom,
+    InteractiveAll,
+    BlendshapeCpu,
+    BlendshapeGpu,
+}
+
+#[cfg(feature = "runtime")]
+#[derive(Args, Debug)]
+struct CaptureReferenceCommand {
+    model: PathBuf,
+    fixture: PathBuf,
+    output: PathBuf,
+    #[arg(long, value_enum, default_value = "standard")]
+    execution: ReferenceExecution,
+    #[arg(long, default_value = "fp32")]
+    precision: String,
+    #[arg(long, default_value_t = 1)]
+    tracks: usize,
+    #[arg(long, default_value_t = 0)]
+    seed: u64,
+    #[arg(long)]
+    frame: Option<usize>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -288,6 +384,86 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             command.iterations,
             command.engine.as_deref(),
         )?,
+        Command::Reference { command } => run_reference(command)?,
+    }
+    Ok(())
+}
+
+fn run_reference(command: ReferenceCommand) -> Result<(), Box<dyn std::error::Error>> {
+    use audio2face3d_cli::reference;
+
+    match command {
+        ReferenceCommand::Fixture { command } => {
+            let manifest = match command {
+                FixtureCommand::Wav(command) => reference::prepare_wav_fixture(
+                    &command.input,
+                    &command.output,
+                    &command.name,
+                    &command.license,
+                    command.sha256.as_deref(),
+                )?,
+                FixtureCommand::Generated(command) => reference::prepare_generated_fixture(
+                    &command.output,
+                    match command.kind {
+                        GeneratedFixtureKind::Silence => "silence",
+                        GeneratedFixtureKind::Synthetic => "synthetic",
+                    },
+                    command.seconds,
+                    command.kind == GeneratedFixtureKind::Synthetic,
+                )?,
+            };
+            println!("samples: {}", manifest.sample_count);
+            println!("samples sha256: {}", manifest.samples_sha256);
+        }
+        ReferenceCommand::Compare(command) => {
+            let tolerances = reference::load_tolerance_profile(&command.tolerances)?;
+            let report =
+                reference::compare_artifacts(&command.expected, &command.actual, &tolerances)?;
+            if let Some(path) = command.report {
+                reference::write_comparison_report(&path, &report)?;
+            }
+            println!("records compared: {}", report.records_compared);
+            println!("values compared: {}", report.values_compared);
+            println!("max absolute error: {}", report.maximum_absolute_error);
+            if let Some(difference) = &report.first_difference {
+                println!(
+                    "first difference: {}/{}[{}], expected {}, actual {}, allowed {}",
+                    difference.layer,
+                    difference.component,
+                    difference.index,
+                    difference.expected,
+                    difference.actual,
+                    difference.allowed_error
+                );
+            }
+            for difference in &report.structural_differences {
+                println!("structure: {difference}");
+            }
+            if !report.compatible {
+                return Err("reference artifacts differ".into());
+            }
+        }
+        #[cfg(feature = "runtime")]
+        ReferenceCommand::Capture(command) => {
+            reference_runtime::capture(reference_runtime::CaptureRequest {
+                model_path: &command.model,
+                fixture_root: &command.fixture,
+                output: &command.output,
+                execution: match command.execution {
+                ReferenceExecution::Standard => reference_runtime::Execution::Standard,
+                ReferenceExecution::InteractiveRandom => {
+                    reference_runtime::Execution::InteractiveRandom
+                }
+                ReferenceExecution::InteractiveAll => reference_runtime::Execution::InteractiveAll,
+                ReferenceExecution::BlendshapeCpu => reference_runtime::Execution::BlendshapeCpu,
+                ReferenceExecution::BlendshapeGpu => reference_runtime::Execution::BlendshapeGpu,
+                },
+                precision: &command.precision,
+                tracks: command.tracks,
+                seed: command.seed,
+                selected_frame: command.frame,
+            })?
+        }
     }
     Ok(())
 }

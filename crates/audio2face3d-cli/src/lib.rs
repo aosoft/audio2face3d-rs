@@ -1,6 +1,7 @@
 //! Rust-native model acquisition for Audio2Face-3D.
 
 mod engine;
+pub mod reference;
 
 pub use engine::{
     EngineBuildDisposition, EngineBuildReceipt, EnginePrecision, ModelEngineBuildRequest,

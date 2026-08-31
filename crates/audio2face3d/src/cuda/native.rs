@@ -925,6 +925,38 @@ impl<'a, T> DeviceView<'a, T> {
         self.pointer
     }
 
+    /// Copies this view to host memory and synchronizes before returning.
+    ///
+    /// This is primarily useful for diagnostics and reference capture inside
+    /// a device-result callback. Production consumers should normally enqueue
+    /// their dependent GPU work directly on the callback stream.
+    pub fn copy_to(self, destination: &mut [T], stream: &CudaStream) -> Result<()> {
+        ensure_same_device(self.device, stream.device_id())?;
+        if destination.len() != self.len {
+            return Err(Error::InvalidSchema(format!(
+                "copy length {} does not match view length {}",
+                destination.len(),
+                self.len
+            )));
+        }
+        stream.device.make_current()?;
+        // SAFETY: the borrowed view covers the validated byte count and its
+        // owner remains live for this call. Synchronization keeps destination
+        // unavailable until the transfer completes.
+        unsafe {
+            check(
+                cuMemcpyDtoHAsync_v2(
+                    destination.as_mut_ptr().cast(),
+                    self.pointer,
+                    std::mem::size_of_val(destination),
+                    stream.raw,
+                ),
+                "cuMemcpyDtoHAsync",
+            )?;
+        }
+        stream.synchronize()
+    }
+
     pub fn slice(self, offset: usize, len: usize) -> Result<DeviceView<'a, T>> {
         let end = offset.checked_add(len).ok_or(Error::IntegerOverflow {
             field: "device_view_end",
