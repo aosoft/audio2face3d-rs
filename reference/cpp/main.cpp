@@ -314,11 +314,17 @@ int main(int argc, char** argv) try {
     if (initialization == nullptr) {
       throw std::runtime_error("regression model has no teeth initialization data");
     }
-    SdkPtr<nva2f::IAnimatorTeeth> animator(nva2f::CreateAnimatorTeeth());
+    SdkPtr<nva2x::ICudaStream> stream(nva2x::CreateCudaStream());
+    SdkPtr<nva2f::IMultiTrackAnimatorTeeth> animator(nva2f::CreateMultiTrackAnimatorTeeth());
+    if (!stream) throw std::runtime_error("SDK CUDA stream creation failed");
     if (!animator) throw std::runtime_error("SDK teeth animator creation failed");
-    check(animator->Init(initialization->params), "teeth Init");
+    check(animator->SetCudaStream(stream->Data()), "teeth SetCudaStream");
+    check(animator->Init(initialization->params, tracks), "teeth Init");
     check(animator->SetAnimatorData(initialization->data), "teeth SetAnimatorData");
     const auto pose_size = initialization->data.neutralJaw.Size();
+    const nva2x::TensorBatchInfo input_info{2, pose_size, pose_size + 3};
+    const nva2x::TensorBatchInfo output_info{3, 16, 20};
+    std::vector<float> deltas(input_info.stride * tracks);
     for (std::size_t track = 0; track < tracks; ++track) {
       auto parameters = initialization->params;
       if (track % 3 == 1) {
@@ -330,18 +336,31 @@ int main(int argc, char** argv) try {
         parameters.lowerTeethHeightOffset = -3.0f;
         parameters.lowerTeethDepthOffset = 3.0f;
       }
-      check(animator->SetParameters(parameters), "teeth SetParameters");
-      std::vector<float> deltas(pose_size);
+      check(animator->SetParameters(track, parameters), "teeth SetParameters");
       for (std::size_t index = 0; index < pose_size; ++index) {
-        deltas[index] = static_cast<float>((track + 1) * (index % 7 + 1)) * 0.001f;
+        deltas[track * input_info.stride + input_info.offset + index] =
+            static_cast<float>((track + 1) * (index % 7 + 1)) * 0.001f;
       }
-      std::vector<float> transform(16);
-      check(animator->ComputeJawTransform(
-                nva2x::HostTensorFloatView(transform.data(), transform.size()),
-                nva2x::HostTensorFloatConstView(deltas.data(), deltas.size())),
-            "teeth ComputeJawTransform");
+    }
+    SdkPtr<nva2x::IDeviceTensorFloat> input(nva2x::CreateDeviceTensorFloat(
+        nva2x::HostTensorFloatConstView(deltas.data(), deltas.size()), stream->Data()));
+    SdkPtr<nva2x::IDeviceTensorFloat> device_output(
+        nva2x::CreateDeviceTensorFloat(output_info.stride * tracks));
+    if (!input || !device_output) throw std::runtime_error("SDK teeth tensor creation failed");
+    check(animator->ComputeJawTransform(
+              static_cast<nva2x::DeviceTensorFloatConstView>(*input), input_info,
+              static_cast<nva2x::DeviceTensorFloatView>(*device_output), output_info),
+          "teeth ComputeJawTransform");
+    check(stream->Synchronize(), "teeth Synchronize");
+    std::vector<float> transforms(output_info.stride * tracks);
+    check(nva2x::CopyDeviceToHost(
+              nva2x::HostTensorFloatView(transforms.data(), transforms.size()),
+              static_cast<nva2x::DeviceTensorFloatConstView>(*device_output)),
+          "teeth CopyDeviceToHost");
+    for (std::size_t track = 0; track < tracks; ++track) {
       writer.push_host("standalone-teeth", "jaw", track, 0, 0, 0,
-                       transform.data(), transform.size());
+                       transforms.data() + track * output_info.stride + output_info.offset,
+                       output_info.size);
     }
     writer.finish(pipeline, execution, precision, seed, tracks, fixture, model);
     return 0;

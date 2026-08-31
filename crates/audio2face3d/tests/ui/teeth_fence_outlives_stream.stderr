@@ -1,0 +1,12 @@
+error[E0515]: cannot return value referencing local variable `stream`
+  --> tests/ui/teeth_fence_outlives_stream.rs:16:5
+   |
+16 | /     animator
+17 | |         .compute(
+18 | |             GpuTeethInputBatch::new(input, input_info),
+19 | |             GpuTeethOutputBatch::new(output, output_info),
+20 | |             &stream,
+   | |             ------- `stream` is borrowed here
+21 | |         )
+22 | |         .unwrap()
+   | |_________________^ returns a value referencing data owned by the current function

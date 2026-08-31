@@ -103,9 +103,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File reference\build-cpp-runner.p
 Run a complete capture and comparison with one command. `-Execution` accepts
 `standard`, `interactive-random`, `interactive-all`, `blendshape-cpu`,
 `blendshape-gpu`, or `teeth-standalone`; Audio2Emotion currently uses
-`standard`. The standalone teeth case compares the original host
-`IAnimatorTeeth` result with the Rust multi-track CUDA animator using the same
-model neutral jaw, deterministic deltas, and per-track parameters.
+`standard`. The standalone teeth case compares the original
+`IMultiTrackAnimatorTeeth` with the Rust multi-track CUDA animator using the
+same model neutral jaw, deterministic deltas, per-track parameters, and padded
+input/output rows with non-zero offsets.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File reference\run-sdk-compatibility.ps1 `

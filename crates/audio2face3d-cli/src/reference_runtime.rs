@@ -162,9 +162,17 @@ fn capture_teeth(
     for track in 0..tracks {
         animator.set_parameters(track, teeth_parameters(default, track), &stream)?;
     }
-    let input_info = animator.input_batch_info();
-    let output_info = animator.output_batch_info();
-    let deltas = teeth_deltas(tracks, data.jaw_neutral_pose.len());
+    let input_info = TensorBatchInfo {
+        offset: 2,
+        size: data.jaw_neutral_pose.len(),
+        stride: data.jaw_neutral_pose.len() + 3,
+    };
+    let output_info = TensorBatchInfo {
+        offset: 3,
+        size: 16,
+        stride: 20,
+    };
+    let deltas = teeth_deltas(tracks, input_info);
     let mut input = device.allocate(deltas.len())?;
     input.copy_from(&deltas, &stream)?;
     let mut output = device.allocate(output_info.stride * tracks)?;
@@ -216,16 +224,12 @@ fn teeth_parameters(default: JawParameters, track: usize) -> JawParameters {
     }
 }
 
-fn teeth_deltas(tracks: usize, pose_size: usize) -> Vec<f32> {
-    let info = TensorBatchInfo {
-        offset: 0,
-        size: pose_size,
-        stride: pose_size,
-    };
+fn teeth_deltas(tracks: usize, info: TensorBatchInfo) -> Vec<f32> {
     let mut values = vec![0.0; info.stride * tracks];
     for track in 0..tracks {
         for index in 0..info.size {
-            values[track * info.stride + index] = ((track + 1) * (index % 7 + 1)) as f32 * 0.001;
+            values[track * info.stride + info.offset + index] =
+                ((track + 1) * (index % 7 + 1)) as f32 * 0.001;
         }
     }
     values
