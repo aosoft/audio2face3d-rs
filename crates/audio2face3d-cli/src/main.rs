@@ -127,6 +127,8 @@ enum ReferenceExecution {
     Standard,
     InteractiveRandom,
     InteractiveAll,
+    InteractiveBlendshapeRandom,
+    InteractiveBlendshapeAll,
     BlendshapeCpu,
     BlendshapeGpu,
     TeethStandalone,
@@ -457,6 +459,12 @@ fn run_reference(command: ReferenceCommand) -> Result<(), Box<dyn std::error::Er
                     }
                     ReferenceExecution::InteractiveAll => {
                         reference_runtime::Execution::InteractiveAll
+                    }
+                    ReferenceExecution::InteractiveBlendshapeRandom => {
+                        reference_runtime::Execution::InteractiveBlendshapeRandom
+                    }
+                    ReferenceExecution::InteractiveBlendshapeAll => {
+                        reference_runtime::Execution::InteractiveBlendshapeAll
                     }
                     ReferenceExecution::BlendshapeCpu => {
                         reference_runtime::Execution::BlendshapeCpu

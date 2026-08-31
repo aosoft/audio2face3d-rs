@@ -248,8 +248,8 @@ static void blendshape_host_callback(void* opaque,
                                      std::error_code error) {
   if (error) return;
   auto& data = *static_cast<CallbackData*>(opaque);
-  std::size_t frame = 0;
-  {
+  auto frame = data.fixed_frame;
+  if (frame == static_cast<std::size_t>(-1)) {
     const std::scoped_lock lock(data.mutex);
     frame = data.frames.at(result.trackIndex)++;
   }
@@ -261,8 +261,8 @@ static void blendshape_host_callback(void* opaque,
 static bool blendshape_device_callback(
     void* opaque, const nva2f::IBlendshapeExecutor::DeviceResults& result) {
   auto& data = *static_cast<CallbackData*>(opaque);
-  std::size_t frame = 0;
-  {
+  auto frame = data.fixed_frame;
+  if (frame == static_cast<std::size_t>(-1)) {
     const std::scoped_lock lock(data.mutex);
     frame = data.frames.at(result.trackIndex)++;
   }
@@ -283,7 +283,7 @@ static std::vector<float> read_samples(const fs::path& path) {
 int main(int argc, char** argv) try {
   if (argc != 9) {
     std::cerr << "usage: audio2face3d-cpp-reference <regression|diffusion|emotion> "
-                 "<standard|interactive-random|interactive-all|blendshape-cpu|blendshape-gpu|teeth-standalone> <model.json> "
+                 "<standard|interactive-random|interactive-all|interactive-blendshape-random|interactive-blendshape-all|blendshape-cpu|blendshape-gpu|teeth-standalone> <model.json> "
                  "<samples.f32le> <output> <fp32|fp16> <tracks> <seed>\n";
     return 2;
   }
@@ -393,6 +393,112 @@ int main(int argc, char** argv) try {
     while (nva2x::GetNbReadyTracks(bundle->GetExecutor()) > 0) {
       check(bundle->GetExecutor().Execute(nullptr), "Execute");
     }
+    writer.finish(pipeline, execution, precision, seed, tracks, fixture, model);
+    return 0;
+  }
+
+  if (execution == "interactive-blendshape-random" ||
+      execution == "interactive-blendshape-all") {
+    if (tracks != 1) throw std::runtime_error("interactive execution requires one track");
+    SdkPtr<nva2x::ICudaStream> stream(nva2x::CreateCudaStream());
+    SdkPtr<nva2x::IAudioAccumulator> audio(nva2x::CreateAudioAccumulator(16000, 0));
+    if (!stream || !audio) throw std::runtime_error("interactive accumulator creation failed");
+
+    nva2f::GeometryExecutorCreationParameters parameters;
+    parameters.cudaStream = stream->Data();
+    parameters.nbTracks = 1;
+    const nva2x::IAudioAccumulator* audio_pointer = audio.get();
+    parameters.sharedAudioAccumulators = &audio_pointer;
+    SdkPtr<nva2x::IEmotionAccumulator> emotion;
+    SdkPtr<nva2f::IGeometryInteractiveExecutor> geometry;
+    SdkPtr<nva2f::IBlendshapeInteractiveExecutor> executor;
+
+    if (pipeline == "regression") {
+      SdkPtr<nva2f::IRegressionModel::IGeometryModelInfo> geometry_info(
+          nva2f::ReadRegressionModelInfo(model.string().c_str()));
+      SdkPtr<nva2f::IRegressionModel::IBlendshapeSolveModelInfo> blendshape_info(
+          nva2f::ReadRegressionBlendshapeSolveModelInfo(model.string().c_str()));
+      if (!geometry_info || !blendshape_info) {
+        throw std::runtime_error("regression interactive model info creation failed");
+      }
+      const auto emotion_size = geometry_info->GetNetworkInfo().GetEmotionsCount();
+      emotion.reset(nva2x::CreateEmotionAccumulator(emotion_size, 300, 0));
+      const nva2x::IEmotionAccumulator* emotion_pointer = emotion.get();
+      parameters.sharedEmotionAccumulators = &emotion_pointer;
+      const auto geometry_creation = geometry_info->GetExecutorCreationParameters(
+          nva2f::IGeometryExecutor::ExecutionOption::All, 30, 1);
+      geometry.reset(nva2f::CreateRegressionGeometryInteractiveExecutor(
+          parameters, geometry_creation, 0));
+      const auto blendshape_creation = blendshape_info->GetExecutorCreationParameters(
+          nva2f::IGeometryExecutor::ExecutionOption::All);
+      nva2f::DeviceBlendshapeSolveExecutorCreationParameters blendshape_parameters;
+      blendshape_parameters.initializationSkinParams =
+          blendshape_creation.initializationSkinParams;
+      blendshape_parameters.initializationTongueParams =
+          blendshape_creation.initializationTongueParams;
+      executor.reset(nva2f::CreateDeviceBlendshapeSolveInteractiveExecutor(
+          geometry.release(), blendshape_parameters));
+      std::vector<float> defaults(emotion_size, 0.0f);
+      check(emotion->Accumulate(
+                0, nva2x::HostTensorFloatConstView(defaults.data(), defaults.size()),
+                stream->Data()),
+            "emotion Accumulate");
+    } else if (pipeline == "diffusion") {
+      SdkPtr<nva2f::IDiffusionModel::IGeometryModelInfo> geometry_info(
+          nva2f::ReadDiffusionModelInfo(model.string().c_str()));
+      SdkPtr<nva2f::IDiffusionModel::IBlendshapeSolveModelInfo> blendshape_info(
+          nva2f::ReadDiffusionBlendshapeSolveModelInfo(model.string().c_str()));
+      if (!geometry_info || !blendshape_info) {
+        throw std::runtime_error("diffusion interactive model info creation failed");
+      }
+      const auto emotion_size = geometry_info->GetNetworkInfo().GetEmotionsCount();
+      emotion.reset(nva2x::CreateEmotionAccumulator(emotion_size, 300, 0));
+      const nva2x::IEmotionAccumulator* emotion_pointer = emotion.get();
+      parameters.sharedEmotionAccumulators = &emotion_pointer;
+      const auto geometry_creation = geometry_info->GetExecutorCreationParameters(
+          nva2f::IGeometryExecutor::ExecutionOption::All, 0, true);
+      geometry.reset(nva2f::CreateDiffusionGeometryInteractiveExecutor(
+          parameters, geometry_creation, 0));
+      const auto blendshape_creation = blendshape_info->GetExecutorCreationParameters(
+          nva2f::IGeometryExecutor::ExecutionOption::All, 0);
+      nva2f::DeviceBlendshapeSolveExecutorCreationParameters blendshape_parameters;
+      blendshape_parameters.initializationSkinParams =
+          blendshape_creation.initializationSkinParams;
+      blendshape_parameters.initializationTongueParams =
+          blendshape_creation.initializationTongueParams;
+      executor.reset(nva2f::CreateDeviceBlendshapeSolveInteractiveExecutor(
+          geometry.release(), blendshape_parameters));
+      std::vector<float> defaults(emotion_size, 0.0f);
+      check(emotion->Accumulate(
+                0, nva2x::HostTensorFloatConstView(defaults.data(), defaults.size()),
+                stream->Data()),
+            "emotion Accumulate");
+    } else {
+      throw std::runtime_error("interactive BlendShape requires a geometry pipeline");
+    }
+    if (!executor) throw std::runtime_error("interactive BlendShape executor creation failed");
+    check(emotion->Close(), "emotion Close");
+    check(audio->Accumulate(nva2x::HostTensorFloatConstView(samples.data(), samples.size()),
+                            stream->Data()), "audio Accumulate");
+    check(audio->Close(), "audio Close");
+    check(executor->SetResultsCallback(blendshape_device_callback, &callback),
+          "SetResultsCallback");
+    const auto target = executor->GetTotalNbFrames() / 2;
+    if (execution == "interactive-blendshape-all") {
+      callback.layer = "interactive-blendshape-all";
+      check(executor->ComputeAllFrames(), "BlendShape ComputeAllFrames");
+    } else {
+      callback.fixed_frame = target;
+      callback.layer = "interactive-blendshape-random";
+      check(executor->ComputeFrame(target), "BlendShape ComputeFrame random");
+      callback.layer = "interactive-blendshape-replay";
+      check(executor->ComputeFrame(target), "BlendShape ComputeFrame replay");
+      check(executor->Invalidate(nva2f::IBlendshapeInteractiveExecutor::kLayerBlendshapeWeights),
+            "Invalidate BlendShape weights");
+      callback.layer = "interactive-blendshape-invalidation";
+      check(executor->ComputeFrame(target), "BlendShape ComputeFrame invalidated");
+    }
+    check(stream->Synchronize(), "interactive BlendShape Synchronize");
     writer.finish(pipeline, execution, precision, seed, tracks, fixture, model);
     return 0;
   }

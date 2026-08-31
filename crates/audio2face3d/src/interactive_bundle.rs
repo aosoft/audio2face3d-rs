@@ -3,8 +3,9 @@
 use crate::animation::{
     BlendshapeData, BlendshapeInvalidationLayer, CpuBlendshapeSolver, DiffusionBackend,
     DiffusionContract, DiffusionPostprocessor, GeometryInvalidationLayer, GeometryModelData,
-    InteractiveBlendshapeLayer, InteractiveBlendshapeWeights, InteractiveDiffusionExecutor,
-    InteractiveGeometryInterrupt, InteractiveGeometryMetadata, InteractiveGeometryStatus,
+    GpuBlendshapeSolver, InteractiveBlendshapeLayer, InteractiveBlendshapeWeights,
+    InteractiveDiffusionExecutor, InteractiveGeometryInterrupt, InteractiveGeometryMetadata,
+    InteractiveGeometryStatus, InteractiveGpuBlendshapeLayer, InteractiveGpuBlendshapeOutput,
     InteractiveRegressionExecutor, LayeredGeometryPostprocessor, RegressionBackend,
     RegressionContract, RegressionGeometry, RegressionPostprocessor, TensorRtDiffusionBackend,
     TensorRtRegressionBackend,
@@ -51,6 +52,12 @@ pub enum InteractiveGeometryExecutorBundle {
 pub struct InteractiveBlendshapeExecutorBundle {
     geometry: InteractiveGeometryExecutorBundle,
     blendshape: InteractiveBlendshapeLayer,
+}
+
+/// Interactive geometry plus device-resident Skin/Tongue BlendShape solving.
+pub struct InteractiveGpuBlendshapeExecutorBundle {
+    geometry: InteractiveGeometryExecutorBundle,
+    blendshape: InteractiveGpuBlendshapeLayer,
 }
 
 /// Typed construction entry points for model-driven and user-owned interactive components.
@@ -125,6 +132,12 @@ pub struct InteractiveBlendshapeExecutorBundleBuilder {
     blendshape: InteractiveBlendshapeLayer,
 }
 
+/// Moves interactive geometry and GPU BlendShape resources into one bundle.
+pub struct InteractiveGpuBlendshapeExecutorBundleBuilder {
+    geometry: InteractiveGeometryExecutorBundle,
+    blendshape: InteractiveGpuBlendshapeLayer,
+}
+
 impl InteractiveBlendshapeExecutorBundleBuilder {
     pub fn from_model(model: &Model, options: InteractivePipelineOptions) -> Result<Self> {
         Ok(Self {
@@ -151,6 +164,42 @@ impl InteractiveBlendshapeExecutorBundleBuilder {
             return Err(invalid("interactive BlendShape requires geometry"));
         }
         Ok(InteractiveBlendshapeExecutorBundle {
+            geometry: self.geometry,
+            blendshape: self.blendshape,
+        })
+    }
+}
+
+impl InteractiveGpuBlendshapeExecutorBundleBuilder {
+    pub fn from_model(model: &Model, options: InteractivePipelineOptions) -> Result<Self> {
+        let geometry = InteractiveGeometryExecutorBundleBuilder::from_model(model, options)?;
+        let device = GpuDevice::new(options.device_ordinal)?;
+        let stream = device.create_stream()?;
+        let skin = load_gpu_blendshape_component(model, "skin", &device, &stream)?;
+        let tongue = load_gpu_blendshape_component(model, "tongue", &device, &stream)?;
+        let blendshape =
+            InteractiveGpuBlendshapeLayer::with_default_cache(device, stream, skin, tongue)?;
+        Ok(Self {
+            geometry,
+            blendshape,
+        })
+    }
+
+    pub fn from_components(
+        geometry: InteractiveGeometryExecutorBundle,
+        blendshape: InteractiveGpuBlendshapeLayer,
+    ) -> Self {
+        Self {
+            geometry,
+            blendshape,
+        }
+    }
+
+    pub fn build(self) -> Result<InteractiveGpuBlendshapeExecutorBundle> {
+        if self.geometry.kind() == ModelKind::Emotion {
+            return Err(invalid("interactive GPU BlendShape requires geometry"));
+        }
+        Ok(InteractiveGpuBlendshapeExecutorBundle {
             geometry: self.geometry,
             blendshape: self.blendshape,
         })
@@ -232,6 +281,98 @@ impl InteractiveBlendshapeExecutorBundle {
             }
         })?;
         solve_error.map_or(Ok(status), Err)
+    }
+}
+
+impl InteractiveGpuBlendshapeExecutorBundle {
+    pub fn load(model: &Model, options: InteractivePipelineOptions) -> Result<Self> {
+        InteractiveGpuBlendshapeExecutorBundleBuilder::from_model(model, options)?.build()
+    }
+
+    pub fn geometry(&self) -> &InteractiveGeometryExecutorBundle {
+        &self.geometry
+    }
+
+    /// Invalidates cached weights before exposing mutable geometry parameters.
+    pub fn geometry_mut(&mut self) -> &mut InteractiveGeometryExecutorBundle {
+        self.blendshape.invalidate_geometry();
+        &mut self.geometry
+    }
+
+    pub fn blendshape(&self) -> &InteractiveGpuBlendshapeLayer {
+        &self.blendshape
+    }
+
+    pub fn blendshape_mut(&mut self) -> &mut InteractiveGpuBlendshapeLayer {
+        &mut self.blendshape
+    }
+
+    pub fn invalidate_geometry(&mut self, layer: GeometryInvalidationLayer) {
+        self.geometry.invalidate(layer);
+        if layer != GeometryInvalidationLayer::None {
+            self.blendshape.invalidate_geometry();
+        }
+    }
+
+    pub fn invalidate_blendshape(&mut self, layer: BlendshapeInvalidationLayer) {
+        self.blendshape.invalidate(layer);
+    }
+
+    pub fn compute_frame<C>(
+        &mut self,
+        frame: usize,
+        mut callback: C,
+    ) -> Result<InteractiveGeometryStatus>
+    where
+        C: for<'output> FnMut(
+            InteractiveGeometryMetadata,
+            InteractiveGpuBlendshapeOutput<'output>,
+        ) -> bool,
+    {
+        let total_frames = self.geometry.total_frames()?;
+        let blendshape = &mut self.blendshape;
+        let mut solve_error = None;
+        let status = self.geometry.compute_frame(frame, |metadata, geometry| {
+            match blendshape.compute_frame(frame, total_frames, geometry, |output| {
+                callback(metadata, output)
+            }) {
+                Ok(keep_going) => keep_going,
+                Err(error) => {
+                    solve_error = Some(error);
+                    false
+                }
+            }
+        })?;
+        solve_error.map_or(Ok(status), Err)
+    }
+
+    pub fn compute_all_frames<C>(&mut self, mut callback: C) -> Result<InteractiveGeometryStatus>
+    where
+        C: for<'output> FnMut(
+            InteractiveGeometryMetadata,
+            InteractiveGpuBlendshapeOutput<'output>,
+        ) -> bool,
+    {
+        self.blendshape
+            .begin_all_frames(self.geometry.total_frames()?)?;
+        let blendshape = &mut self.blendshape;
+        let mut solve_error = None;
+        let status = self.geometry.compute_all_frames(|metadata, geometry| {
+            match blendshape.compute_next_frame(metadata.frame, geometry, |output| {
+                callback(metadata, output)
+            }) {
+                Ok(keep_going) => keep_going,
+                Err(error) => {
+                    solve_error = Some(error);
+                    false
+                }
+            }
+        })?;
+        solve_error.map_or(Ok(status), Err)
+    }
+
+    pub fn wait(&self) -> Result<()> {
+        self.blendshape.wait()
     }
 }
 
@@ -432,6 +573,20 @@ fn load_blendshape_component(model: &Model, name: &str) -> Result<Option<CpuBlen
     let mut solver = CpuBlendshapeSolver::from_config(data, &config)?;
     solver.prepare()?;
     Ok(Some(solver))
+}
+
+fn load_gpu_blendshape_component(
+    model: &Model,
+    name: &str,
+    device: &std::rc::Rc<GpuDevice>,
+    stream: &crate::cuda::CudaStream,
+) -> Result<Option<GpuBlendshapeSolver>> {
+    let Some(paths) = component_paths(model, name)? else {
+        return Ok(None);
+    };
+    let data = BlendshapeData::load_npz(&paths.data)?;
+    let config = load_blendshape_config(&paths.config)?.blendshape_params;
+    GpuBlendshapeSolver::new(device, stream, data, &config).map(Some)
 }
 
 fn component_paths<'a>(model: &'a Model, name: &str) -> Result<Option<&'a ModelDataPaths>> {

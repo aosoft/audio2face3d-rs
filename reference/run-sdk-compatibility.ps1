@@ -3,7 +3,7 @@ param(
     [string]$Pipeline = "regression",
     [ValidateSet("fp32", "fp16")]
     [string]$Precision = "fp32",
-    [ValidateSet("standard", "interactive-random", "interactive-all", "blendshape-cpu", "blendshape-gpu", "teeth-standalone")]
+    [ValidateSet("standard", "interactive-random", "interactive-all", "interactive-blendshape-random", "interactive-blendshape-all", "blendshape-cpu", "blendshape-gpu", "teeth-standalone")]
     [string]$Execution = "standard",
     [int]$Tracks = 1,
     [UInt64]$Seed = 0

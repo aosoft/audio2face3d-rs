@@ -220,6 +220,31 @@ impl GpuBlendshapeSolver {
         output: &'a mut DeviceBuffer<f32>,
         stream: &'a CudaStream,
     ) -> Result<GpuBlendshapeSolveFence<'a>> {
+        self.solve_async_with_temporal_beta(target, output, stream, self.temporal_beta)
+    }
+
+    /// Enqueues a solve that does not depend on the solver's previous result.
+    ///
+    /// Interactive random access uses this path to match the original SDK's
+    /// temporary `TemporalReg=0` scope. The solve still updates the internal
+    /// previous-weight buffer, so callers must reset before another stateless
+    /// solve or before beginning an ordered sequence.
+    pub(crate) fn solve_stateless_async<'a>(
+        &'a mut self,
+        target: &'a DeviceBuffer<f32>,
+        output: &'a mut DeviceBuffer<f32>,
+        stream: &'a CudaStream,
+    ) -> Result<GpuBlendshapeSolveFence<'a>> {
+        self.solve_async_with_temporal_beta(target, output, stream, 0.0)
+    }
+
+    fn solve_async_with_temporal_beta<'a>(
+        &'a mut self,
+        target: &'a DeviceBuffer<f32>,
+        output: &'a mut DeviceBuffer<f32>,
+        stream: &'a CudaStream,
+        temporal_beta: f32,
+    ) -> Result<GpuBlendshapeSolveFence<'a>> {
         ensure_same_device(stream.device_id(), target.device_id())?;
         ensure_same_device(stream.device_id(), output.device_id())?;
         if target.len() != self.data.neutral_pose.len() || output.len() != self.pose_count {
@@ -272,7 +297,7 @@ impl GpuBlendshapeSolver {
                 self.active_count,
                 CublasTranspose::Transpose,
                 1.0,
-                self.temporal_beta,
+                temporal_beta,
                 stream,
             )?;
         }

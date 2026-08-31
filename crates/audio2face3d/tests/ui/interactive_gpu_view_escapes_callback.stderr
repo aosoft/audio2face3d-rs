@@ -1,0 +1,10 @@
+error[E0521]: borrowed data escapes outside of closure
+  --> tests/ui/interactive_gpu_view_escapes_callback.rs:11:13
+   |
+ 8 |     let mut escaped = None;
+   |         ----------- `escaped` declared here, outside of the closure body
+ 9 |     layer
+10 |         .compute_frame(0, 1, geometry, |output| {
+   |                                         ------ `output` is a reference that is only valid in the closure body
+11 |             escaped = output.skin_weights;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `output` escapes the closure body here

@@ -7,8 +7,9 @@ use audio2face3d::cuda::GpuDevice;
 use audio2face3d::{
     BlendshapeExecutorBundle, BlendshapeOutput, CallbackMetadata, ComposedGeometryExecutorBundle,
     GeometryExecutorBundle, GeometryFrame, GeometryObserver, InteractiveGeometryExecutorBundle,
-    InteractivePipelineOptions, Model, ModelKind, ModelParameters, PipelineOptions, PipelineOutput,
-    PipelineStatus, TensorRtPipeline, TrackParameters,
+    InteractiveGpuBlendshapeExecutorBundle, InteractivePipelineOptions, Model, ModelKind,
+    ModelParameters, PipelineOptions, PipelineOutput, PipelineStatus, TensorRtPipeline,
+    TrackParameters,
 };
 use audio2face3d_cli::reference::{
     ArtifactWriter, Case, FileProvenance, Producer, RecordMetadata, load_fixture, sha256_file,
@@ -23,6 +24,8 @@ pub enum Execution {
     Standard,
     InteractiveRandom,
     InteractiveAll,
+    InteractiveBlendshapeRandom,
+    InteractiveBlendshapeAll,
     BlendshapeCpu,
     BlendshapeGpu,
     TeethStandalone,
@@ -71,6 +74,8 @@ pub fn capture(request: CaptureRequest<'_>) -> Result<(), Box<dyn std::error::Er
         Execution::Standard => "standard",
         Execution::InteractiveRandom => "interactive-random",
         Execution::InteractiveAll => "interactive-all",
+        Execution::InteractiveBlendshapeRandom => "interactive-blendshape-random",
+        Execution::InteractiveBlendshapeAll => "interactive-blendshape-all",
         Execution::BlendshapeCpu => "blendshape-cpu",
         Execution::BlendshapeGpu => "blendshape-gpu",
         Execution::TeethStandalone => "teeth-standalone",
@@ -108,6 +113,22 @@ pub fn capture(request: CaptureRequest<'_>) -> Result<(), Box<dyn std::error::Er
         Execution::InteractiveAll => {
             capture_interactive(&model, seed, &samples, selected_frame, true, &mut writer)?
         }
+        Execution::InteractiveBlendshapeRandom => capture_interactive_blendshape(
+            &model,
+            seed,
+            &samples,
+            selected_frame,
+            false,
+            &mut writer,
+        )?,
+        Execution::InteractiveBlendshapeAll => capture_interactive_blendshape(
+            &model,
+            seed,
+            &samples,
+            selected_frame,
+            true,
+            &mut writer,
+        )?,
         Execution::BlendshapeCpu => capture_blendshape(
             &model,
             tracks,
@@ -411,6 +432,121 @@ fn capture_interactive(
         .counters
         .insert("total_frames".into(), total as u64);
     Ok(())
+}
+
+fn capture_interactive_blendshape(
+    model: &Model,
+    seed: u64,
+    samples: &[f32],
+    selected_frame: Option<usize>,
+    all_frames: bool,
+    writer: &mut ArtifactWriter,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut bundle = InteractiveGpuBlendshapeExecutorBundle::load(
+        model,
+        InteractivePipelineOptions {
+            diffusion_seed: seed,
+            ..InteractivePipelineOptions::default()
+        },
+    )?;
+    bundle.geometry().audio().accumulate(samples)?;
+    bundle.geometry().audio().close()?;
+    bundle.geometry().emotions().close()?;
+    let total = bundle.geometry().total_frames()?;
+    let frame = selected_frame.unwrap_or(total / 2);
+    if frame >= total {
+        return Err(format!("selected frame {frame} is outside {total} frames").into());
+    }
+    if all_frames {
+        let mut callback_error = None;
+        bundle.compute_all_frames(|metadata, output| {
+            if let Err(error) = push_interactive_gpu_blendshape(
+                writer,
+                "interactive-blendshape-all",
+                metadata,
+                output,
+            ) {
+                callback_error = Some(error);
+                false
+            } else {
+                true
+            }
+        })?;
+        if let Some(error) = callback_error {
+            return Err(error.into());
+        }
+    } else {
+        for (layer, invalidate) in [
+            ("interactive-blendshape-random", false),
+            ("interactive-blendshape-replay", false),
+            ("interactive-blendshape-invalidation", true),
+        ] {
+            if invalidate {
+                bundle.invalidate_blendshape(
+                    audio2face3d::animation::BlendshapeInvalidationLayer::Weights,
+                );
+                *writer
+                    .manifest_mut()
+                    .counters
+                    .entry("invalidation.weights".into())
+                    .or_default() += 1;
+            }
+            let mut callback_error = None;
+            bundle.compute_frame(frame, |metadata, output| {
+                if let Err(error) = push_interactive_gpu_blendshape(writer, layer, metadata, output)
+                {
+                    callback_error = Some(error);
+                    false
+                } else {
+                    true
+                }
+            })?;
+            if let Some(error) = callback_error {
+                return Err(error.into());
+            }
+        }
+    }
+    bundle.wait()?;
+    writer
+        .manifest_mut()
+        .counters
+        .insert("total_frames".into(), total as u64);
+    Ok(())
+}
+
+fn push_interactive_gpu_blendshape(
+    writer: &mut ArtifactWriter,
+    layer: &str,
+    metadata: audio2face3d::animation::InteractiveGeometryMetadata,
+    output: audio2face3d::animation::InteractiveGpuBlendshapeOutput<'_>,
+) -> io::Result<()> {
+    let mut skin = vec![0.0; output.skin_weight_count()];
+    let mut tongue = vec![0.0; output.tongue_weight_count()];
+    output
+        .skin_weights
+        .map(|weights| weights.copy_to(&mut skin, output.stream))
+        .transpose()
+        .map_err(io::Error::other)?;
+    output
+        .tongue_weights
+        .map(|weights| weights.copy_to(&mut tongue, output.stream))
+        .transpose()
+        .map_err(io::Error::other)?;
+    let mut weights = skin;
+    weights.extend(tongue);
+    writer.push_f32(
+        RecordMetadata {
+            layer: layer.into(),
+            component: "weights".into(),
+            track: 0,
+            frame: Some(metadata.frame),
+            inference: metadata.inference,
+            timestamp: Some(metadata.timestamp),
+            next_timestamp: Some(metadata.next_timestamp),
+            shape: vec![weights.len()],
+        },
+        &weights,
+    )
 }
 
 fn execute_to_completion(

@@ -17,6 +17,8 @@ mod gpu_blendshape;
 mod gpu_teeth;
 mod interactive;
 mod interactive_blendshape;
+#[cfg(feature = "cuda")]
+mod interactive_gpu_blendshape;
 mod jaw;
 mod model_buffers;
 mod model_data;
@@ -67,6 +69,11 @@ pub use interactive::{
 };
 pub use interactive_blendshape::{
     BlendshapeInvalidationLayer, InteractiveBlendshapeLayer, InteractiveBlendshapeWeights,
+};
+#[cfg(feature = "cuda")]
+pub use interactive_gpu_blendshape::{
+    DEFAULT_INTERACTIVE_GPU_CACHE_FRAMES, InteractiveGpuBlendshapeLayer,
+    InteractiveGpuBlendshapeOutput,
 };
 pub use jaw::{
     JawParameters, JawTransform, TeethAnimator, TeethAnimatorParameters, rigid_transform,

@@ -101,8 +101,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File reference\build-cpp-runner.p
 ```
 
 Run a complete capture and comparison with one command. `-Execution` accepts
-`standard`, `interactive-random`, `interactive-all`, `blendshape-cpu`,
-`blendshape-gpu`, or `teeth-standalone`; Audio2Emotion currently uses
+`standard`, `interactive-random`, `interactive-all`,
+`interactive-blendshape-random`, `interactive-blendshape-all`,
+`blendshape-cpu`, `blendshape-gpu`, or `teeth-standalone`; Audio2Emotion currently uses
 `standard`. The standalone teeth case compares the original
 `IMultiTrackAnimatorTeeth` with the Rust multi-track CUDA animator using the
 same model neutral jaw, deterministic deltas, per-track parameters, and padded
@@ -138,7 +139,8 @@ committed. Only the runner source, schema, case catalog, and tolerance profile
 remain tracked.
 
 The case catalog is `cases.json`. Standard Regression, Diffusion, and
-Audio2Emotion, Regression/Diffusion interactive random/all-frame execution, and
+Audio2Emotion, Regression/Diffusion interactive random/all-frame execution,
+interactive GPU BlendShape random/all-frame execution, and
 CPU/GPU BlendShape and standalone Teeth capture use the same artifact contract.
 The older ignored TensorRT fixture test remains the low-level binding/inference
 check.

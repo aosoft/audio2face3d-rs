@@ -36,6 +36,7 @@ pub use composition::{
 pub use interactive_bundle::{
     InteractiveBlendshapeExecutorBundle, InteractiveBlendshapeExecutorBundleBuilder,
     InteractiveGeometryExecutorBundle, InteractiveGeometryExecutorBundleBuilder,
+    InteractiveGpuBlendshapeExecutorBundle, InteractiveGpuBlendshapeExecutorBundleBuilder,
     InteractivePipelineOptions,
 };
 pub use model::{Model, ModelKind, ModelParameters};
