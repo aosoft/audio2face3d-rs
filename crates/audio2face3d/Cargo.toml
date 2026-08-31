@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 repository.workspace = true
 readme.workspace = true
 description = "Unofficial Rust runtime for NVIDIA Audio2Face-3D and Audio2Emotion"

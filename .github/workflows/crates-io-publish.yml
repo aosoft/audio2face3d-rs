@@ -1,0 +1,109 @@
+name: crates.io-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Publish mode
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - publish
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crates-io-publish
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate workspace versions and release ref
+        id: release
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          GIT_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          metadata="$(cargo metadata --locked --no-deps --format-version 1)"
+          package_names="$(jq -r '.packages[].name' <<<"$metadata" | sort)"
+          expected_names=$'audio2face3d\naudio2face3d-cli'
+          if [[ "$package_names" != "$expected_names" ]]; then
+            printf 'Unexpected publishable packages:\n%s\n' "$package_names" >&2
+            exit 1
+          fi
+
+          versions="$(jq -r '.packages[].version' <<<"$metadata" | sort -u)"
+          if [[ "$(wc -l <<<"$versions")" -ne 1 ]]; then
+            printf 'Workspace crate versions differ:\n%s\n' "$versions" >&2
+            exit 1
+          fi
+          version="$versions"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [[ "$MODE" == "publish" && "$GIT_REF" != "refs/tags/v$version" ]]; then
+            echo "Publishing requires workflow ref refs/tags/v$version; got $GIT_REF" >&2
+            exit 1
+          fi
+
+      - name: Run portable tests
+        run: cargo test --workspace --locked
+
+      - name: Audit release contract
+        run: cargo run --locked -p audio2face3d-cli -- release audit
+
+      - name: Show package contents
+        run: cargo package --workspace --locked --list
+
+      - name: Publish dry-run
+        if: ${{ inputs.mode == 'dry-run' }}
+        run: cargo publish --workspace --locked --dry-run --registry crates-io
+
+      - name: Require crates.io token
+        if: ${{ inputs.mode == 'publish' }}
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATESIO_TOKEN }}
+        run: |
+          if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
+            echo 'Repository secret CRATESIO_TOKEN is required.' >&2
+            exit 1
+          fi
+
+      - name: Publish workspace to crates.io
+        if: ${{ inputs.mode == 'publish' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATESIO_TOKEN }}
+        run: cargo publish --workspace --locked --registry crates-io --verbose
+
+      - name: Write summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ steps.release.outputs.version }}
+          GIT_REF: ${{ github.ref }}
+        run: |
+          {
+            echo '## crates.io publish'
+            echo
+            echo "- Mode: \`$MODE\`"
+            echo "- Version: \`$VERSION\`"
+            echo "- Ref: \`$GIT_REF\`"
+          } >> "$GITHUB_STEP_SUMMARY"
