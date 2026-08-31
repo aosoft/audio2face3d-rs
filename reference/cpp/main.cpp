@@ -283,7 +283,7 @@ static std::vector<float> read_samples(const fs::path& path) {
 int main(int argc, char** argv) try {
   if (argc != 9) {
     std::cerr << "usage: audio2face3d-cpp-reference <regression|diffusion|emotion> "
-                 "<standard|interactive-random|interactive-all|blendshape-cpu|blendshape-gpu> <model.json> "
+                 "<standard|interactive-random|interactive-all|blendshape-cpu|blendshape-gpu|teeth-standalone> <model.json> "
                  "<samples.f32le> <output> <fp32|fp16> <tracks> <seed>\n";
     return 2;
   }
@@ -300,6 +300,52 @@ int main(int argc, char** argv) try {
   const auto samples = read_samples(fixture);
   ArtifactWriter writer(output);
   CallbackData callback{&writer, std::vector<std::size_t>(tracks)};
+
+  if (execution == "teeth-standalone") {
+    if (pipeline != "regression") {
+      throw std::runtime_error("standalone teeth reference currently requires a regression model");
+    }
+    SdkPtr<nva2f::IRegressionModel::IGeometryModelInfo> info(
+        nva2f::ReadRegressionModelInfo(model.string().c_str()));
+    if (!info) throw std::runtime_error("regression model info creation failed");
+    const auto creation = info->GetExecutorCreationParameters(
+        nva2f::IGeometryExecutor::ExecutionOption::All, 30, 1);
+    const auto* initialization = creation.initializationTeethParams;
+    if (initialization == nullptr) {
+      throw std::runtime_error("regression model has no teeth initialization data");
+    }
+    SdkPtr<nva2f::IAnimatorTeeth> animator(nva2f::CreateAnimatorTeeth());
+    if (!animator) throw std::runtime_error("SDK teeth animator creation failed");
+    check(animator->Init(initialization->params), "teeth Init");
+    check(animator->SetAnimatorData(initialization->data), "teeth SetAnimatorData");
+    const auto pose_size = initialization->data.neutralJaw.Size();
+    for (std::size_t track = 0; track < tracks; ++track) {
+      auto parameters = initialization->params;
+      if (track % 3 == 1) {
+        parameters.lowerTeethStrength = 0.5f;
+        parameters.lowerTeethHeightOffset = 0.25f;
+        parameters.lowerTeethDepthOffset = -0.5f;
+      } else if (track % 3 == 2) {
+        parameters.lowerTeethStrength = 2.0f;
+        parameters.lowerTeethHeightOffset = -3.0f;
+        parameters.lowerTeethDepthOffset = 3.0f;
+      }
+      check(animator->SetParameters(parameters), "teeth SetParameters");
+      std::vector<float> deltas(pose_size);
+      for (std::size_t index = 0; index < pose_size; ++index) {
+        deltas[index] = static_cast<float>((track + 1) * (index % 7 + 1)) * 0.001f;
+      }
+      std::vector<float> transform(16);
+      check(animator->ComputeJawTransform(
+                nva2x::HostTensorFloatView(transform.data(), transform.size()),
+                nva2x::HostTensorFloatConstView(deltas.data(), deltas.size())),
+            "teeth ComputeJawTransform");
+      writer.push_host("standalone-teeth", "jaw", track, 0, 0, 0,
+                       transform.data(), transform.size());
+    }
+    writer.finish(pipeline, execution, precision, seed, tracks, fixture, model);
+    return 0;
+  }
 
   if (pipeline == "emotion") {
     if (execution != "standard") {

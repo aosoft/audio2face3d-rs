@@ -13,6 +13,8 @@ mod diffusion_tensorrt_backend;
 mod executor;
 #[cfg(feature = "cuda")]
 mod gpu_blendshape;
+#[cfg(feature = "cuda")]
+mod gpu_teeth;
 mod interactive;
 mod interactive_blendshape;
 mod jaw;
@@ -55,6 +57,10 @@ pub use executor::{
 };
 #[cfg(feature = "cuda")]
 pub use gpu_blendshape::{GpuBlendshapeSolveFence, GpuBlendshapeSolver};
+#[cfg(feature = "cuda")]
+pub use gpu_teeth::{
+    GpuMultiTrackTeethAnimator, GpuMultiTrackTeethFence, GpuTeethInputBatch, GpuTeethOutputBatch,
+};
 pub use interactive::{
     GeometryInvalidationLayer, InteractiveDiffusionExecutor, InteractiveGeometryInterrupt,
     InteractiveGeometryMetadata, InteractiveGeometryStatus, InteractiveRegressionExecutor,
@@ -62,7 +68,9 @@ pub use interactive::{
 pub use interactive_blendshape::{
     BlendshapeInvalidationLayer, InteractiveBlendshapeLayer, InteractiveBlendshapeWeights,
 };
-pub use jaw::{JawParameters, JawTransform, rigid_transform};
+pub use jaw::{
+    JawParameters, JawTransform, TeethAnimator, TeethAnimatorParameters, rigid_transform,
+};
 pub use model_buffers::{
     DiffusionBufferContract, GeometryResultLayout, ModelBindingContract, RegressionBufferContract,
     RuntimeBinding, TensorBatchInfo,

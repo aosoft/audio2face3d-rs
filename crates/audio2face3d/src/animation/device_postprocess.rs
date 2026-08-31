@@ -632,5 +632,42 @@ mod tests {
         for (actual, expected) in actual_jaw.into_iter().zip(expected_jaw) {
             assert!((actual - expected).abs() < 1.0e-5);
         }
+
+        // The standalone animator uses the same jaw contract without owning a
+        // Regression executor or any Skin/Tongue/Eyes state.
+        let mut standalone = crate::animation::GpuMultiTrackTeethAnimator::new(
+            &device,
+            &stream,
+            &jaw_neutral,
+            JawParameters::default(),
+            1,
+        )
+        .unwrap();
+        let mut standalone_input = device.allocate(jaw_neutral.len()).unwrap();
+        standalone_input
+            .copy_from(&host_input[6..15], &stream)
+            .unwrap();
+        let mut standalone_output = device.allocate(16).unwrap();
+        let standalone_input_info = standalone.input_batch_info();
+        let standalone_output_info = standalone.output_batch_info();
+        let fence = standalone
+            .compute(
+                crate::animation::GpuTeethInputBatch::new(&standalone_input, standalone_input_info),
+                crate::animation::GpuTeethOutputBatch::new(
+                    &mut standalone_output,
+                    standalone_output_info,
+                ),
+                &stream,
+            )
+            .unwrap();
+        fence.synchronize().unwrap();
+        drop(fence);
+        let mut standalone_jaw = [0.0; 16];
+        standalone_output
+            .copy_to(&mut standalone_jaw, &stream)
+            .unwrap();
+        for (standalone, pipeline) in standalone_jaw.into_iter().zip(actual_jaw) {
+            assert!((standalone - pipeline).abs() < 1.0e-5);
+        }
     }
 }

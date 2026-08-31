@@ -56,6 +56,14 @@
       "precision": "fp32",
       "tracks": 1,
       "seed": 0
+    },
+    {
+      "name": "mark-teeth-standalone-fp32",
+      "pipeline": "regression",
+      "execution": "teeth-standalone",
+      "precision": "fp32",
+      "tracks": 2,
+      "seed": 0
     }
   ]
 }

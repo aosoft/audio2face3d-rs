@@ -1,5 +1,9 @@
-use audio2face3d::animation::{BlendshapeSolverKind, GeometryInvalidationLayer};
+use audio2face3d::animation::{
+    BlendshapeSolverKind, GeometryInvalidationLayer, GeometryModelData, GpuMultiTrackTeethAnimator,
+    GpuTeethInputBatch, GpuTeethOutputBatch, JawParameters, TensorBatchInfo,
+};
 use audio2face3d::common::{GeometryParameters, NetworkDocument};
+use audio2face3d::cuda::GpuDevice;
 use audio2face3d::{
     BlendshapeExecutorBundle, BlendshapeOutput, CallbackMetadata, ComposedGeometryExecutorBundle,
     GeometryExecutorBundle, GeometryFrame, GeometryObserver, InteractiveGeometryExecutorBundle,
@@ -21,6 +25,7 @@ pub enum Execution {
     InteractiveAll,
     BlendshapeCpu,
     BlendshapeGpu,
+    TeethStandalone,
 }
 
 pub struct CaptureRequest<'a> {
@@ -68,6 +73,7 @@ pub fn capture(request: CaptureRequest<'_>) -> Result<(), Box<dyn std::error::Er
         Execution::InteractiveAll => "interactive-all",
         Execution::BlendshapeCpu => "blendshape-cpu",
         Execution::BlendshapeGpu => "blendshape-gpu",
+        Execution::TeethStandalone => "teeth-standalone",
     };
     if model.kind() == ModelKind::Emotion && !matches!(execution, Execution::Standard) {
         return Err("Audio2Emotion capture currently supports standard execution".into());
@@ -118,12 +124,111 @@ pub fn capture(request: CaptureRequest<'_>) -> Result<(), Box<dyn std::error::Er
             BlendshapeSolverKind::Gpu,
             &mut writer,
         )?,
+        Execution::TeethStandalone => capture_teeth(&model, tracks, &mut writer)?,
     }
     let manifest = writer.finish()?;
     println!("artifact: {}", output.join("artifact.json").display());
     println!("records: {}", manifest.records.len());
     println!("data sha256: {}", manifest.data_sha256);
     Ok(())
+}
+
+fn capture_teeth(
+    model: &Model,
+    tracks: usize,
+    writer: &mut ArtifactWriter,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data = match model.kind() {
+        ModelKind::Regression => GeometryModelData::load_regression(model.model_data_path(0)?)?,
+        ModelKind::Diffusion => GeometryModelData::load_diffusion(model.model_data_path(0)?)?,
+        ModelKind::Emotion => {
+            return Err("standalone teeth capture requires a geometry model".into());
+        }
+    };
+    let default = match model.parameters(0)? {
+        ModelParameters::Geometry(value) => JawParameters {
+            strength: value.lower_teeth_strength,
+            height_offset: value.lower_teeth_height_offset,
+            depth_offset: value.lower_teeth_depth_offset,
+        },
+        ModelParameters::Emotion(_) => {
+            return Err("geometry model does not expose teeth parameters".into());
+        }
+    };
+    let device = GpuDevice::new(0)?;
+    let stream = device.create_stream()?;
+    let mut animator =
+        GpuMultiTrackTeethAnimator::new(&device, &stream, &data.jaw_neutral_pose, default, tracks)?;
+    for track in 0..tracks {
+        animator.set_parameters(track, teeth_parameters(default, track), &stream)?;
+    }
+    let input_info = animator.input_batch_info();
+    let output_info = animator.output_batch_info();
+    let deltas = teeth_deltas(tracks, data.jaw_neutral_pose.len());
+    let mut input = device.allocate(deltas.len())?;
+    input.copy_from(&deltas, &stream)?;
+    let mut output = device.allocate(output_info.stride * tracks)?;
+    let fence = animator.compute(
+        GpuTeethInputBatch::new(&input, input_info),
+        GpuTeethOutputBatch::new(&mut output, output_info),
+        &stream,
+    )?;
+    fence.synchronize()?;
+    drop(fence);
+    let mut transforms = vec![0.0; output_info.stride * tracks];
+    output.copy_to(&mut transforms, &stream)?;
+    for track in 0..tracks {
+        let start = track * output_info.stride + output_info.offset;
+        writer.push_f32(
+            RecordMetadata {
+                layer: "standalone-teeth".into(),
+                component: "jaw".into(),
+                track,
+                frame: Some(0),
+                inference: None,
+                timestamp: Some(0),
+                next_timestamp: Some(0),
+                shape: vec![output_info.size],
+            },
+            &transforms[start..start + output_info.size],
+        )?;
+    }
+    writer
+        .manifest_mut()
+        .counters
+        .insert("teeth-tracks".into(), tracks as u64);
+    Ok(())
+}
+
+fn teeth_parameters(default: JawParameters, track: usize) -> JawParameters {
+    match track % 3 {
+        0 => default,
+        1 => JawParameters {
+            strength: 0.5,
+            height_offset: 0.25,
+            depth_offset: -0.5,
+        },
+        _ => JawParameters {
+            strength: 2.0,
+            height_offset: -3.0,
+            depth_offset: 3.0,
+        },
+    }
+}
+
+fn teeth_deltas(tracks: usize, pose_size: usize) -> Vec<f32> {
+    let info = TensorBatchInfo {
+        offset: 0,
+        size: pose_size,
+        stride: pose_size,
+    };
+    let mut values = vec![0.0; info.stride * tracks];
+    for track in 0..tracks {
+        for index in 0..info.size {
+            values[track * info.stride + index] = ((track + 1) * (index % 7 + 1)) as f32 * 0.001;
+        }
+    }
+    values
 }
 
 fn capture_standard(

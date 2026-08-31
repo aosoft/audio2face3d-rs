@@ -71,6 +71,15 @@ pub struct JawTransform {
     neutral_pose: Vec<f32>,
 }
 
+/// Semantic name for [`JawTransform`] matching the original teeth animator.
+///
+/// The animator computes a lower-teeth/jaw transform; it does not mutate a
+/// mesh or solve BlendShape weights.
+pub type TeethAnimator = JawTransform;
+
+/// Semantic name for [`JawParameters`] matching the original teeth animator.
+pub type TeethAnimatorParameters = JawParameters;
+
 impl JawTransform {
     pub fn new(neutral_pose: Vec<f32>) -> Result<Self> {
         validate_pose("neutral jaw", &neutral_pose)?;

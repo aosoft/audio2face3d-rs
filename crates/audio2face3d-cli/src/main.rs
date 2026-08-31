@@ -129,6 +129,7 @@ enum ReferenceExecution {
     InteractiveAll,
     BlendshapeCpu,
     BlendshapeGpu,
+    TeethStandalone,
 }
 
 #[cfg(feature = "runtime")]
@@ -462,6 +463,9 @@ fn run_reference(command: ReferenceCommand) -> Result<(), Box<dyn std::error::Er
                     }
                     ReferenceExecution::BlendshapeGpu => {
                         reference_runtime::Execution::BlendshapeGpu
+                    }
+                    ReferenceExecution::TeethStandalone => {
+                        reference_runtime::Execution::TeethStandalone
                     }
                 },
                 precision: &command.precision,

@@ -100,6 +100,17 @@ checks before execution. `InteractiveGeometryExecutorBundleBuilder` provides
 typed Regression and Diffusion constructors for custom backends,
 post-processors, accumulators, and contracts without type erasure.
 
+## Standalone teeth animation
+
+`TeethAnimator` is the host-side semantic name for `JawTransform` and matches
+the original `IAnimatorTeeth` parameter and column-major transform contract.
+With the `cuda` feature, `GpuMultiTrackTeethAnimator` runs independently of a
+Regression executor. Caller-owned device tensors are described by
+`GpuTeethInputBatch` / `GpuTeethOutputBatch` and `TensorBatchInfo`, while the
+returned fence retains the animator, buffers, and stream until CUDA completes.
+The animator is stateless and, like the original SDK, always computes every
+track; active-track masks are accepted but intentionally ignored.
+
 ## Runtime setup
 
 CUDA 12 and TensorRT 10 must be installed separately. The initial validated versions are CUDA 12.9 and TensorRT 10.16.1.11.
