@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "mark-standard-fp32",
+      "pipeline": "regression",
+      "execution": "standard",
+      "precision": "fp32",
+      "tracks": 1,
+      "seed": 0
+    },
+    {
+      "name": "multi-diffusion-standard-fp32",
+      "pipeline": "diffusion",
+      "execution": "standard",
+      "precision": "fp32",
+      "tracks": 2,
+      "seed": 0
+    },
+    {
+      "name": "multi-diffusion-interactive-random-fp32",
+      "pipeline": "diffusion",
+      "execution": "interactive-random",
+      "precision": "fp32",
+      "tracks": 1,
+      "seed": 0
+    },
+    {
+      "name": "multi-diffusion-interactive-all-fp32",
+      "pipeline": "diffusion",
+      "execution": "interactive-all",
+      "precision": "fp32",
+      "tracks": 1,
+      "seed": 0
+    },
+    {
+      "name": "audio2emotion-standard-fp32",
+      "pipeline": "emotion",
+      "execution": "standard",
+      "precision": "fp32",
+      "tracks": 1,
+      "seed": 0
+    },
+    {
+      "name": "mark-blendshape-cpu-fp32",
+      "pipeline": "regression",
+      "execution": "blendshape-cpu",
+      "precision": "fp32",
+      "tracks": 1,
+      "seed": 0
+    },
+    {
+      "name": "mark-blendshape-gpu-fp32",
+      "pipeline": "regression",
+      "execution": "blendshape-gpu",
+      "precision": "fp32",
+      "tracks": 1,
+      "seed": 0
+    }
+  ]
+}

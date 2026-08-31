@@ -18,6 +18,9 @@ target
 docs/
 /models/
 
+# Local inputs and generated outputs for the original-SDK compatibility harness
+/reference/compatible_test/
+
 # Downloaded or generated model artifacts
 *.onnx
 *.onnx.data

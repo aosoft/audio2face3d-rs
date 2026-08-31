@@ -450,13 +450,19 @@ fn run_reference(command: ReferenceCommand) -> Result<(), Box<dyn std::error::Er
                 fixture_root: &command.fixture,
                 output: &command.output,
                 execution: match command.execution {
-                ReferenceExecution::Standard => reference_runtime::Execution::Standard,
-                ReferenceExecution::InteractiveRandom => {
-                    reference_runtime::Execution::InteractiveRandom
-                }
-                ReferenceExecution::InteractiveAll => reference_runtime::Execution::InteractiveAll,
-                ReferenceExecution::BlendshapeCpu => reference_runtime::Execution::BlendshapeCpu,
-                ReferenceExecution::BlendshapeGpu => reference_runtime::Execution::BlendshapeGpu,
+                    ReferenceExecution::Standard => reference_runtime::Execution::Standard,
+                    ReferenceExecution::InteractiveRandom => {
+                        reference_runtime::Execution::InteractiveRandom
+                    }
+                    ReferenceExecution::InteractiveAll => {
+                        reference_runtime::Execution::InteractiveAll
+                    }
+                    ReferenceExecution::BlendshapeCpu => {
+                        reference_runtime::Execution::BlendshapeCpu
+                    }
+                    ReferenceExecution::BlendshapeGpu => {
+                        reference_runtime::Execution::BlendshapeGpu
+                    }
                 },
                 precision: &command.precision,
                 tracks: command.tracks,

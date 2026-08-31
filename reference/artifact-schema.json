@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aosoft/audio2face3d-rs/reference/artifact-schema.json",
+  "title": "Audio2Face-3D reference artifact",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "producer",
+    "case",
+    "fixture",
+    "records",
+    "data_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "producer": {
+      "type": "object",
+      "required": ["implementation", "version"],
+      "properties": {
+        "implementation": { "enum": ["cpp", "rust"] },
+        "version": { "type": "string" },
+        "revision": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "required": ["name", "pipeline", "execution", "precision", "seed", "track_count"],
+      "properties": {
+        "name": { "type": "string" },
+        "pipeline": { "enum": ["regression", "diffusion", "emotion"] },
+        "execution": {
+          "enum": ["standard", "interactive-random", "interactive-all", "blendshape-cpu", "blendshape-gpu"]
+        },
+        "precision": { "enum": ["fp32", "fp16"] },
+        "seed": { "type": "integer", "minimum": 0 },
+        "track_count": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "fixture": { "$ref": "#/$defs/file" },
+    "model_files": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/file" }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "counters": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/record" }
+    },
+    "data_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9A-F]{64}$" },
+    "file": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "sequence", "layer", "component", "track", "dtype", "shape",
+        "offset_bytes", "byte_length", "sha256"
+      ],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0 },
+        "layer": { "type": "string" },
+        "component": { "type": "string" },
+        "track": { "type": "integer", "minimum": 0 },
+        "frame": { "type": "integer", "minimum": 0 },
+        "inference": { "type": "integer", "minimum": 0 },
+        "timestamp": { "type": "integer" },
+        "next_timestamp": { "type": "integer" },
+        "dtype": { "const": "f32le" },
+        "shape": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "offset_bytes": { "type": "integer", "minimum": 0 },
+        "byte_length": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

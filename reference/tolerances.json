@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "exact_metadata": true,
+  "default": {
+    "fp32": {
+      "absolute": 0.001,
+      "relative": 0.0001
+    },
+    "fp16": {
+      "absolute": 0.01,
+      "relative": 0.005
+    }
+  },
+  "components": {
+    "jaw": {
+      "fp32": {
+        "absolute": 0.002,
+        "relative": 0.0001
+      },
+      "fp16": {
+        "absolute": 0.005,
+        "relative": 0.002
+      }
+    },
+    "eyes-left": {
+      "fp32": {
+        "absolute": 0.002,
+        "relative": 0.0001
+      },
+      "fp16": {
+        "absolute": 0.005,
+        "relative": 0.002
+      }
+    },
+    "eyes-right": {
+      "fp32": {
+        "absolute": 0.002,
+        "relative": 0.0001
+      },
+      "fp16": {
+        "absolute": 0.005,
+        "relative": 0.002
+      }
+    },
+    "weights": {
+      "fp32": {
+        "absolute": 0.0005,
+        "relative": 0.0005
+      },
+      "fp16": {
+        "absolute": 0.01,
+        "relative": 0.005
+      }
+    }
+  }
+}
