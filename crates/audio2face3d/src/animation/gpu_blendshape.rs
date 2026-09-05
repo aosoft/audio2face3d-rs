@@ -220,6 +220,15 @@ impl GpuBlendshapeSolver {
         output: &'a mut DeviceBuffer<f32>,
         stream: &'a CudaStream,
     ) -> Result<GpuBlendshapeSolveFence<'a>> {
+        self.solve_async_view(target.view(), output, stream)
+    }
+
+    pub(crate) fn solve_async_view<'a>(
+        &'a mut self,
+        target: DeviceView<'a, f32>,
+        output: &'a mut DeviceBuffer<f32>,
+        stream: &'a CudaStream,
+    ) -> Result<GpuBlendshapeSolveFence<'a>> {
         self.solve_async_with_temporal_beta(target, output, stream, self.temporal_beta)
     }
 
@@ -235,12 +244,12 @@ impl GpuBlendshapeSolver {
         output: &'a mut DeviceBuffer<f32>,
         stream: &'a CudaStream,
     ) -> Result<GpuBlendshapeSolveFence<'a>> {
-        self.solve_async_with_temporal_beta(target, output, stream, 0.0)
+        self.solve_async_with_temporal_beta(target.view(), output, stream, 0.0)
     }
 
     fn solve_async_with_temporal_beta<'a>(
         &'a mut self,
-        target: &'a DeviceBuffer<f32>,
+        target: DeviceView<'a, f32>,
         output: &'a mut DeviceBuffer<f32>,
         stream: &'a CudaStream,
         temporal_beta: f32,
@@ -257,7 +266,7 @@ impl GpuBlendshapeSolver {
         let mut pose_count = checked_u32(self.pose_count, "pose count")?;
 
         let mut target_delta = self.target_delta.view().as_raw();
-        let mut target_pointer = target.view().as_raw();
+        let mut target_pointer = target.as_raw();
         let mut neutral = self.neutral.view().as_raw();
         let mut coordinate_indices = self.coordinate_indices.view().as_raw();
         let mut gather_params = params![
@@ -475,7 +484,7 @@ pub struct GpuBlendshapeSolveFence<'a> {
     stream: &'a CudaStream,
     _resources: PhantomData<(
         &'a mut GpuBlendshapeSolver,
-        &'a DeviceBuffer<f32>,
+        DeviceView<'a, f32>,
         &'a mut DeviceBuffer<f32>,
         &'a CudaStream,
     )>,

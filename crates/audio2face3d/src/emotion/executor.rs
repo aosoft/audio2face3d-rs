@@ -382,6 +382,146 @@ impl EmotionExecutor {
         self.inner.state.execute(tracks, backend, callback)
     }
 
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn execute_device<C>(
+        &mut self,
+        tracks: &[EmotionTrack<'_>],
+        backend: &mut crate::emotion::TensorRtClassifierBackend,
+        processor: &mut crate::emotion::GpuEmotionPostProcessor,
+        output: &mut crate::cuda::DeviceBuffer<f32>,
+        mut callback: C,
+    ) -> Result<EmotionExecutionStatus>
+    where
+        C: for<'a> FnMut(
+            EmotionCallbackMetadata,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::CudaStreamRef<'a>,
+        ) -> bool,
+    {
+        let state = &mut self.inner.state;
+        if tracks.len() != state.processors.len() || processor.track_count() != tracks.len() {
+            return Err(invalid("emotion executor track count mismatch"));
+        }
+        backend.validate_track_count(tracks.len())?;
+        let output_stride = state.output_emotion_length();
+        let expected_output = output_stride
+            .checked_mul(tracks.len())
+            .ok_or_else(|| invalid("emotion device output size overflow"))?;
+        if output.len() != expected_output {
+            return Err(invalid("emotion device output dimensions mismatch"));
+        }
+
+        let mut pending = Vec::new();
+        let mut incomplete = false;
+        for (track_index, track) in tracks.iter().enumerate() {
+            if !track.input_strength.is_finite() {
+                return Err(invalid("emotion input strength must be finite"));
+            }
+            let inference_index = state.inference_indices[track_index];
+            let window = state.contract.inference_progress.window(inference_index)?;
+            let audio_end = i64::try_from(track.audio.nb_accumulated_samples()).unwrap_or(i64::MAX);
+            if track.audio.is_closed() && window.target >= audio_end {
+                continue;
+            }
+            incomplete = true;
+            let available = state
+                .contract
+                .inference_progress
+                .available_windows(audio_end, track.audio.is_closed())?;
+            if inference_index >= available {
+                continue;
+            }
+            let audio = track.audio.read(
+                window.start,
+                state.contract.buffer_length,
+                track.input_strength,
+            )?;
+            pending.push((track_index, inference_index, audio));
+        }
+        if pending.is_empty() {
+            return Ok(if incomplete {
+                EmotionExecutionStatus::AwaitingInput
+            } else {
+                EmotionExecutionStatus::Complete
+            });
+        }
+
+        let backend_inputs = pending
+            .iter()
+            .map(|(track, _, audio)| (*track, audio.clone()))
+            .collect::<Vec<_>>();
+        let logits = backend.run_device_batch(&backend_inputs)?;
+        let input_stride = state.contract.emotion_length;
+        if logits.len() != input_stride.saturating_mul(pending.len()) {
+            return Err(invalid(
+                "classifier backend returned invalid device output dimensions",
+            ));
+        }
+
+        let mut callback_frames = 0;
+        let mut callback_active = vec![true; pending.len()];
+        for offset in 0..state.contract.frames_per_inference() {
+            for (pending_index, (track, inference, _)) in pending.iter().enumerate() {
+                if !callback_active[pending_index] {
+                    continue;
+                }
+                let first_frame = inference * state.contract.frames_per_inference();
+                let frame = first_frame + offset;
+                let timestamp = state.contract.frame_timestamp(frame)?;
+                if timestamp
+                    >= i64::try_from(tracks[*track].audio.nb_accumulated_samples())
+                        .unwrap_or(i64::MAX)
+                {
+                    callback_active[pending_index] = false;
+                    continue;
+                }
+                if processor.preferred_enabled(*track)?
+                    && let Some(accumulator) = tracks[*track].preferred_emotions
+                {
+                    let preferred = accumulator.read(timestamp).map_err(|error| {
+                        invalid(format!("preferred emotion read failed: {error}"))
+                    })?;
+                    processor.set_preferred(*track, &preferred, backend.stream())?;
+                }
+                let input = logits
+                    .view()
+                    .slice(pending_index * input_stride, input_stride)?;
+                let fence = processor.enqueue_view(
+                    input,
+                    input_stride,
+                    output,
+                    output_stride,
+                    std::slice::from_ref(track),
+                    backend.stream(),
+                )?;
+                fence.synchronize()?;
+                drop(fence);
+
+                let values = output.view().slice(*track * output_stride, output_stride)?;
+                callback_frames += 1;
+                if !callback(
+                    EmotionCallbackMetadata {
+                        track: *track,
+                        frame,
+                        timestamp,
+                        next_timestamp: state.contract.frame_timestamp(frame + 1)?,
+                    },
+                    values,
+                    backend.stream().as_ref(),
+                ) {
+                    callback_active[pending_index] = false;
+                }
+            }
+        }
+        for (track, _, _) in &pending {
+            state.inference_indices[*track] += 1;
+        }
+        Ok(EmotionExecutionStatus::Executed {
+            tracks: backend_inputs.len(),
+            frames: callback_frames,
+        })
+    }
+
     pub fn contract(&self) -> &ClassifierContract {
         self.inner.contract()
     }

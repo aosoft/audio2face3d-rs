@@ -1,9 +1,10 @@
 use crate::animation::{
-    EyesAnimatorParams, JawParameters, SkinAnimatorParams, TongueAnimatorParams,
+    EyesAnimatorParams, JawParameters, RegressionResultLayout, SkinAnimatorParams,
+    TongueAnimatorParams,
 };
 use crate::common::{Error, Result};
 use crate::cuda::{
-    CudaEvent, CudaModule, CudaStream, DeviceBuffer, GpuDevice, ensure_same_device,
+    CudaEvent, CudaModule, CudaStream, DeviceBuffer, DeviceView, GpuDevice, ensure_same_device,
     regression_jaw_ptx, regression_postprocess_ptx,
 };
 use std::ffi::c_void;
@@ -70,6 +71,152 @@ pub struct GpuRegressionPostprocessor {
     tongue_pose_size: usize,
     jaw_pose_size: usize,
     dt: f32,
+}
+
+/// Device-resident Regression PCA reconstruction followed by the shared
+/// geometry animator pipeline.
+pub(crate) struct GpuRegressionPcaPostprocessor {
+    postprocessor: GpuRegressionPostprocessor,
+    blas: crate::cuda::CublasHandle,
+    skin_shapes: DeviceBuffer<f32>,
+    tongue_shapes: DeviceBuffer<f32>,
+    skin_temporary: DeviceBuffer<f32>,
+    tongue_temporary: DeviceBuffer<f32>,
+    expanded: DeviceBuffer<f32>,
+    raw_layout: RegressionResultLayout,
+    expanded_stride: usize,
+    track_count: usize,
+}
+
+impl GpuRegressionPcaPostprocessor {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        device: &Arc<GpuDevice>,
+        stream: &CudaStream,
+        model: GpuRegressionModel<'_>,
+        tracks: &[GpuRegressionTrackParams],
+        dt: f32,
+        skin_shapes: &[f32],
+        tongue_shapes: &[f32],
+        raw_layout: RegressionResultLayout,
+    ) -> Result<Self> {
+        let track_count = tracks.len();
+        let skin_size = model.skin_neutral_pose.len();
+        let tongue_size = model.tongue_neutral_pose.len();
+        if skin_shapes.len() != skin_size.saturating_mul(raw_layout.skin)
+            || tongue_shapes.len() != tongue_size.saturating_mul(raw_layout.tongue)
+        {
+            return Err(invalid("Regression PCA matrix dimensions mismatch"));
+        }
+        let expanded_stride = skin_size
+            .checked_add(tongue_size)
+            .and_then(|value| value.checked_add(raw_layout.jaw))
+            .and_then(|value| value.checked_add(raw_layout.eyes))
+            .ok_or_else(|| invalid("Regression expanded result size overflow"))?;
+        let upload = |values: &[f32]| -> Result<DeviceBuffer<f32>> {
+            let mut output = device.allocate(values.len())?;
+            output.copy_from(values, stream)?;
+            Ok(output)
+        };
+        Ok(Self {
+            postprocessor: GpuRegressionPostprocessor::new(device, stream, model, tracks, dt)?,
+            blas: crate::cuda::CublasHandle::new(stream)?,
+            skin_shapes: upload(skin_shapes)?,
+            tongue_shapes: upload(tongue_shapes)?,
+            skin_temporary: device.allocate(skin_size)?,
+            tongue_temporary: device.allocate(tongue_size)?,
+            expanded: device.allocate(expanded_stride.saturating_mul(track_count))?,
+            raw_layout,
+            expanded_stride,
+            track_count,
+        })
+    }
+
+    pub(crate) fn reset_track(&mut self, track: usize, stream: &CudaStream) -> Result<()> {
+        self.postprocessor.reset_track(track, stream)
+    }
+
+    pub(crate) fn enqueue<'a>(
+        &'a mut self,
+        raw: DeviceView<'a, f32>,
+        active_tracks: &[usize],
+        outputs: GpuRegressionOutputs<'a>,
+        stream: &'a CudaStream,
+    ) -> Result<GpuRegressionPostprocessFence<'a>> {
+        let raw_stride = self.raw_layout.total()?;
+        if raw.len() < raw_stride.saturating_mul(self.track_count) {
+            return Err(invalid("Regression device result dimensions mismatch"));
+        }
+        let skin_size = self.skin_temporary.len();
+        let tongue_size = self.tongue_temporary.len();
+        for &track in active_tracks {
+            if track >= self.track_count {
+                return Err(invalid("Regression active track is out of range"));
+            }
+            let raw_base = track * raw_stride;
+            let skin_coefficients = raw.slice(raw_base, self.raw_layout.skin)?;
+            let fence = self.blas.pca_reconstruct_views(
+                self.skin_shapes.view(),
+                skin_coefficients,
+                &mut self.skin_temporary,
+                crate::cuda::PcaDimensions {
+                    shape_size: skin_size,
+                    shape_count: self.raw_layout.skin,
+                    batch_size: 1,
+                },
+                stream,
+            )?;
+            fence.synchronize()?;
+            drop(fence);
+            self.expanded.copy_from_device_range(
+                track * self.expanded_stride,
+                &self.skin_temporary,
+                0,
+                skin_size,
+                stream,
+            )?;
+
+            let tongue_coefficients =
+                raw.slice(raw_base + self.raw_layout.skin, self.raw_layout.tongue)?;
+            let fence = self.blas.pca_reconstruct_views(
+                self.tongue_shapes.view(),
+                tongue_coefficients,
+                &mut self.tongue_temporary,
+                crate::cuda::PcaDimensions {
+                    shape_size: tongue_size,
+                    shape_count: self.raw_layout.tongue,
+                    batch_size: 1,
+                },
+                stream,
+            )?;
+            fence.synchronize()?;
+            drop(fence);
+            let expanded_base = track * self.expanded_stride;
+            self.expanded.copy_from_device_range(
+                expanded_base + skin_size,
+                &self.tongue_temporary,
+                0,
+                tongue_size,
+                stream,
+            )?;
+            let raw_tail = self.raw_layout.jaw + self.raw_layout.eyes;
+            self.expanded.copy_from_device_view_range(
+                expanded_base + skin_size + tongue_size,
+                raw,
+                raw_base + self.raw_layout.skin + self.raw_layout.tongue,
+                raw_tail,
+                stream,
+            )?;
+        }
+        self.postprocessor.enqueue_view(
+            self.expanded.view(),
+            self.expanded_stride,
+            0,
+            active_tracks,
+            outputs,
+            stream,
+        )
+    }
 }
 
 impl GpuRegressionPostprocessor {
@@ -200,6 +347,23 @@ impl GpuRegressionPostprocessor {
         zero_buffer(&mut self.eyes_live_time, stream)
     }
 
+    pub(crate) fn reset_track(&mut self, track: usize, stream: &CudaStream) -> Result<()> {
+        if track >= self.track_count {
+            return Err(invalid("GPU postprocessor reset track is out of range"));
+        }
+        let function = self.module.function("audio2face3d_reset_track")?;
+        let mut args = [
+            self.initialized_tracks.view().as_raw(),
+            self.skin_interp.view().as_raw(),
+            4,
+            self.skin_pose_size as u64,
+            self.eyes_live_time.view().as_raw(),
+            track as u64,
+        ];
+        launch(&function, self.skin_pose_size.max(1), stream, &mut args)?;
+        stream.synchronize()
+    }
+
     /// Enqueues skin, tongue, jaw and eyes kernels on one stream.
     ///
     /// The returned fence borrows all input/output/state allocations until the
@@ -212,15 +376,38 @@ impl GpuRegressionPostprocessor {
         outputs: GpuRegressionOutputs<'a>,
         stream: &'a CudaStream,
     ) -> Result<GpuRegressionPostprocessFence<'a>> {
-        let expected_input = input_stride
-            .checked_mul(self.track_count)
+        self.enqueue_view(
+            network_result.view(),
+            input_stride,
+            0,
+            active_tracks,
+            outputs,
+            stream,
+        )
+    }
+
+    pub(crate) fn enqueue_view<'a>(
+        &'a mut self,
+        network_result: DeviceView<'a, f32>,
+        input_stride: usize,
+        input_offset: usize,
+        active_tracks: &[usize],
+        outputs: GpuRegressionOutputs<'a>,
+        stream: &'a CudaStream,
+    ) -> Result<GpuRegressionPostprocessFence<'a>> {
+        let minimum_stride = self.skin_pose_size + self.tongue_pose_size + self.jaw_pose_size + 4;
+        let expected_input = self
+            .track_count
+            .checked_sub(1)
+            .and_then(|tracks| tracks.checked_mul(input_stride))
+            .and_then(|elements| elements.checked_add(input_offset))
+            .and_then(|elements| elements.checked_add(minimum_stride))
             .ok_or_else(|| invalid("network result size overflow"))?;
         ensure_same_device(stream.device_id(), network_result.device_id())?;
         ensure_same_device(stream.device_id(), outputs.skin.device_id())?;
         ensure_same_device(stream.device_id(), outputs.tongue.device_id())?;
         ensure_same_device(stream.device_id(), outputs.jaw_transforms.device_id())?;
         ensure_same_device(stream.device_id(), outputs.eyes_rotations.device_id())?;
-        let minimum_stride = self.skin_pose_size + self.tongue_pose_size + self.jaw_pose_size + 4;
         if input_stride < minimum_stride || network_result.len() < expected_input {
             return Err(invalid("network result layout is too small"));
         }
@@ -247,8 +434,8 @@ impl GpuRegressionPostprocessor {
                 .copy_from_async(&self.active_staging, stream)?;
         }
 
-        let skin_offset = 0;
-        let tongue_offset = self.skin_pose_size;
+        let skin_offset = input_offset;
+        let tongue_offset = skin_offset + self.skin_pose_size;
         let jaw_offset = tongue_offset + self.tongue_pose_size;
         let eyes_offset = jaw_offset + self.jaw_pose_size;
         self.launch_skin(
@@ -291,7 +478,7 @@ impl GpuRegressionPostprocessor {
 
     fn launch_skin(
         &mut self,
-        input: &DeviceBuffer<f32>,
+        input: DeviceView<'_, f32>,
         stride: usize,
         output: &mut DeviceBuffer<f32>,
         offset: usize,
@@ -302,7 +489,7 @@ impl GpuRegressionPostprocessor {
             output.view().as_raw(),
             0,
             self.skin_pose_size as u64,
-            input.view().as_raw(),
+            input.as_raw(),
             offset as u64,
             stride as u64,
             self.skin_animator_data.view().as_raw(),
@@ -335,7 +522,7 @@ impl GpuRegressionPostprocessor {
     }
     fn launch_tongue(
         &self,
-        input: &DeviceBuffer<f32>,
+        input: DeviceView<'_, f32>,
         stride: usize,
         output: &mut DeviceBuffer<f32>,
         offset: usize,
@@ -346,7 +533,7 @@ impl GpuRegressionPostprocessor {
             output.view().as_raw(),
             0,
             self.tongue_pose_size as u64,
-            input.view().as_raw(),
+            input.as_raw(),
             offset as u64,
             stride as u64,
             self.tongue_neutral_pose.view().as_raw(),
@@ -365,7 +552,7 @@ impl GpuRegressionPostprocessor {
     }
     fn launch_jaw(
         &self,
-        input: &DeviceBuffer<f32>,
+        input: DeviceView<'_, f32>,
         stride: usize,
         output: &mut DeviceBuffer<f32>,
         offset: usize,
@@ -380,7 +567,7 @@ impl GpuRegressionPostprocessor {
                 .checked_mul(stride)
                 .and_then(|base| base.checked_add(offset))
                 .ok_or_else(|| invalid("jaw input offset overflow"))?;
-            let input_pointer = input.view().as_raw() + (input_element * size_of::<f32>()) as u64;
+            let input_pointer = input.as_raw() + (input_element * size_of::<f32>()) as u64;
             let params_pointer = self.jaw_params.view().as_raw()
                 + (track * JAW_PARAM_STRIDE * size_of::<f32>()) as u64;
             let output_pointer = output.view().as_raw() + (track * 16 * size_of::<f32>()) as u64;
@@ -402,7 +589,7 @@ impl GpuRegressionPostprocessor {
     }
     fn launch_eyes(
         &self,
-        input: &DeviceBuffer<f32>,
+        input: DeviceView<'_, f32>,
         stride: usize,
         output: &mut DeviceBuffer<f32>,
         offset: usize,
@@ -414,7 +601,7 @@ impl GpuRegressionPostprocessor {
             output.view().as_raw(),
             0,
             6,
-            input.view().as_raw(),
+            input.as_raw(),
             offset as u64,
             stride as u64,
             self.eyes_params.view().as_raw(),
@@ -435,7 +622,7 @@ pub struct GpuRegressionPostprocessFence<'a> {
     _resources: PhantomData<(
         &'a mut GpuRegressionPostprocessor,
         &'a CudaStream,
-        &'a DeviceBuffer<f32>,
+        DeviceView<'a, f32>,
         &'a mut DeviceBuffer<f32>,
     )>,
 }
@@ -633,6 +820,33 @@ mod tests {
             assert!((actual - expected).abs() < 1.0e-5);
         }
 
+        postprocessor.reset_track(0, &stream).unwrap();
+        let mut framed_input = vec![0.0; host_input.len()];
+        framed_input.extend(host_input);
+        let mut framed = device.allocate(framed_input.len()).unwrap();
+        framed.copy_from(&framed_input, &stream).unwrap();
+        let fence = postprocessor
+            .enqueue_view(
+                framed.view(),
+                framed_input.len(),
+                host_input.len(),
+                &[0],
+                GpuRegressionOutputs {
+                    skin: &mut skin,
+                    tongue: &mut tongue,
+                    jaw_transforms: &mut jaw,
+                    eyes_rotations: &mut eyes,
+                },
+                &stream,
+            )
+            .unwrap();
+        fence.synchronize().unwrap();
+        drop(fence);
+        skin.copy_to(&mut actual_skin, &stream).unwrap();
+        tongue.copy_to(&mut actual_tongue, &stream).unwrap();
+        assert_eq!(actual_skin, [2.0, 4.0, 6.0]);
+        assert_eq!(actual_tongue, [2.0, 14.0, 26.0]);
+
         // The standalone animator uses the same jaw contract without owning a
         // Regression executor or any Skin/Tongue/Eyes state.
         let mut standalone = crate::animation::GpuMultiTrackTeethAnimator::new(
@@ -669,5 +883,70 @@ mod tests {
         for (standalone, pipeline) in standalone_jaw.into_iter().zip(actual_jaw) {
             assert!((standalone - pipeline).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn regression_pca_stays_on_device_before_animation() {
+        let device = GpuDevice::new(0).unwrap();
+        let stream = device.create_stream().unwrap();
+        let skin_neutral = [0.0, 0.0, 0.0];
+        let tongue_neutral = [1.0, 2.0, 3.0];
+        let jaw_neutral = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let layout = RegressionResultLayout {
+            skin: 1,
+            tongue: 1,
+            jaw: 9,
+            eyes: 4,
+        };
+        let mut pipeline = GpuRegressionPcaPostprocessor::new(
+            &device,
+            &stream,
+            GpuRegressionModel {
+                skin_neutral_pose: &skin_neutral,
+                skin_lip_open_delta: &[0.0; 3],
+                skin_eye_close_delta: &[0.0; 3],
+                tongue_neutral_pose: &tongue_neutral,
+                jaw_neutral_pose: &jaw_neutral,
+                saccade_rotation: &[0.0, 0.0],
+            },
+            &[track_params()],
+            1.0 / 30.0,
+            &[1.0, 2.0, 3.0],
+            &[0.5, 1.0, 1.5],
+            layout,
+        )
+        .unwrap();
+        let raw = [
+            1.0, 1.0, // PCA coefficients
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // jaw
+            1.0, 2.0, 3.0, 4.0, // eyes
+        ];
+        let mut input = device.allocate(raw.len()).unwrap();
+        input.copy_from(&raw, &stream).unwrap();
+        let mut skin = device.allocate(3).unwrap();
+        let mut tongue = device.allocate(3).unwrap();
+        let mut jaw = device.allocate(16).unwrap();
+        let mut eyes = device.allocate(6).unwrap();
+        let fence = pipeline
+            .enqueue(
+                input.view(),
+                &[0],
+                GpuRegressionOutputs {
+                    skin: &mut skin,
+                    tongue: &mut tongue,
+                    jaw_transforms: &mut jaw,
+                    eyes_rotations: &mut eyes,
+                },
+                &stream,
+            )
+            .unwrap();
+        fence.synchronize().unwrap();
+        drop(fence);
+        let mut actual_skin = [0.0; 3];
+        let mut actual_tongue = [0.0; 3];
+        skin.copy_to(&mut actual_skin, &stream).unwrap();
+        tongue.copy_to(&mut actual_tongue, &stream).unwrap();
+        assert_eq!(actual_skin, [2.0, 4.0, 6.0]);
+        assert_eq!(actual_tongue, [2.0, 14.0, 26.0]);
     }
 }

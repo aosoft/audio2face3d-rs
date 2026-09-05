@@ -95,8 +95,8 @@ pub struct ClassifierEmotionExecutor {
     input_strength: f32,
     frame_rate: FrameRate,
     sample_rate: usize,
+    gpu_processor: crate::emotion::GpuEmotionPostProcessor,
     device_output: crate::cuda::DeviceBuffer<f32>,
-    result_stream: crate::cuda::CudaStream,
 }
 
 /// Non-generic owning interactive classifier emotion executor facade.
@@ -159,14 +159,29 @@ impl ClassifierEmotionExecutor {
             contract.clone(),
         )?;
         backend.validate_track_count(parameters.common.tracks.len())?;
+        let gpu_parameters = vec![model_parameters.clone(); parameters.common.tracks.len()];
+        let gpu_processor = crate::emotion::GpuEmotionPostProcessor::new(
+            &device,
+            backend.stream(),
+            data.clone(),
+            &gpu_parameters,
+        )?;
         let execution = EmotionExecutor::new(
             contract.clone(),
             data,
             model_parameters,
             parameters.common.tracks.len(),
         )?;
-        let device_output = device.allocate(execution.output_emotion_length())?;
-        let result_stream = device.create_stream()?;
+        let device_output = device.allocate(
+            execution
+                .output_emotion_length()
+                .checked_mul(parameters.common.tracks.len())
+                .ok_or(crate::Error::IntegerOverflow {
+                    field: "emotion_device_output",
+                    value: parameters.common.tracks.len(),
+                    target: "usize",
+                })?,
+        )?;
         let sample_rate = network.audio_params.samplerate;
         let preferred_emotions = parameters.preferred_emotions;
         Ok(Self {
@@ -178,8 +193,8 @@ impl ClassifierEmotionExecutor {
             input_strength: parameters.input_strength,
             frame_rate: parameters.frame_rate,
             sample_rate,
+            gpu_processor,
             device_output,
-            result_stream,
         })
     }
 
@@ -259,7 +274,8 @@ impl crate::audio2x::Executor for ClassifierEmotionExecutor {
         {
             return Err(crate::Error::InputHistoryUnavailable { track });
         }
-        self.execution.reset(track)
+        self.execution.reset(track)?;
+        self.gpu_processor.reset_track(track, self.backend.stream())
     }
 
     fn has_execution_started(&self, track: usize) -> crate::Result<bool> {
@@ -352,19 +368,14 @@ impl crate::audio2emotion::EmotionExecutor for ClassifierEmotionExecutor {
             })
             .collect::<Vec<_>>();
         let output = &mut self.device_output;
-        let stream = &self.result_stream;
+        let processor = &mut self.gpu_processor;
         let mut emitted_frames = 0;
-        let mut callback_error = None;
-        let status = self
-            .execution
-            .execute(&tracks, &mut self.backend, |metadata, values| {
-                if callback_error.is_some() {
-                    return false;
-                }
-                if let Err(error) = output.copy_from(values, stream) {
-                    callback_error = Some(error);
-                    return false;
-                }
+        let status = self.execution.execute_device(
+            &tracks,
+            &mut self.backend,
+            processor,
+            output,
+            |metadata, values, stream| {
                 emitted_frames += 1;
                 matches!(
                     callback(crate::audio2emotion::EmotionResults {
@@ -374,17 +385,12 @@ impl crate::audio2emotion::EmotionExecutor for ClassifierEmotionExecutor {
                             timestamp: metadata.timestamp,
                             next_timestamp: metadata.next_timestamp,
                         },
-                        emotions: crate::audio2x::DeviceComponentResults {
-                            values: output.view(),
-                            stream: stream.as_ref(),
-                        },
+                        emotions: crate::audio2x::DeviceComponentResults { values, stream },
                     }),
                     ControlFlow::Continue(())
                 )
-            })?;
-        if let Some(error) = callback_error {
-            return Err(error);
-        }
+            },
+        )?;
         let (state, executed_tracks) = match status {
             crate::emotion::EmotionExecutionStatus::AwaitingInput => {
                 (crate::audio2x::ExecutionState::AwaitingInput, 0)

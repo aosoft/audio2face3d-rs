@@ -510,13 +510,21 @@ pub struct DeviceBlendshapeSolveExecutor {
     #[cfg(feature = "tensorrt")]
     source: GeometrySource,
     #[cfg(feature = "tensorrt")]
-    skin_solvers: Vec<Option<crate::animation::CpuBlendshapeSolver>>,
+    skin_solvers: Vec<Option<crate::animation::GpuBlendshapeSolver>>,
     #[cfg(feature = "tensorrt")]
-    tongue_solvers: Vec<Option<crate::animation::CpuBlendshapeSolver>>,
+    tongue_solvers: Vec<Option<crate::animation::GpuBlendshapeSolver>>,
+    #[cfg(feature = "tensorrt")]
+    skin_weights: Option<crate::cuda::DeviceBuffer<f32>>,
+    #[cfg(feature = "tensorrt")]
+    tongue_weights: Option<crate::cuda::DeviceBuffer<f32>>,
+    #[cfg(feature = "tensorrt")]
+    skin_weight_count: usize,
     #[cfg(feature = "tensorrt")]
     output: crate::cuda::DeviceBuffer<f32>,
     #[cfg(feature = "tensorrt")]
     stream: crate::cuda::CudaStream,
+    #[cfg(feature = "tensorrt")]
+    device: Arc<crate::cuda::GpuDevice>,
     #[cfg(feature = "tensorrt")]
     weight_count: usize,
     #[cfg(not(feature = "tensorrt"))]
@@ -544,6 +552,35 @@ impl GeometrySource {
         match self {
             Self::Regression(source) => source.device_arc(),
             Self::Diffusion(source) => source.device_arc(),
+        }
+    }
+
+    fn set_execution_option(&mut self, option: GeometryExecutionOption) -> Result<()> {
+        match self {
+            Self::Regression(source) => GeometryExecutor::set_execution_option(source, option),
+            Self::Diffusion(source) => GeometryExecutor::set_execution_option(source, option),
+        }
+    }
+
+    fn execute_device(
+        &mut self,
+        results: &mut dyn for<'a> FnMut(GeometryResults<'a>) -> ControlFlow<()>,
+    ) -> Result<Execution> {
+        match self {
+            Self::Regression(source) => GeometryExecutor::execute(
+                source,
+                GeometryCallbacks {
+                    results,
+                    emotions: None,
+                },
+            ),
+            Self::Diffusion(source) => GeometryExecutor::execute(
+                source,
+                GeometryCallbacks {
+                    results,
+                    emotions: None,
+                },
+            ),
         }
     }
 
@@ -689,10 +726,10 @@ impl GeometrySource {
 }
 
 #[cfg(feature = "tensorrt")]
-fn create_cpu_solver(
+fn owned_blendshape_data(
     component: &BlendshapeSolveComponentParameters<'_>,
-) -> Result<crate::animation::CpuBlendshapeSolver> {
-    let data = crate::animation::BlendshapeData {
+) -> crate::animation::BlendshapeData {
+    crate::animation::BlendshapeData {
         neutral_pose: component.data.neutral_pose.to_vec(),
         delta_poses: component.data.delta_poses.to_vec(),
         pose_names: component
@@ -702,7 +739,34 @@ fn create_cpu_solver(
             .map(|name| (*name).to_owned())
             .collect(),
         pose_mask: component.data.pose_mask.map(<[usize]>::to_vec),
-    };
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+fn owned_blendshape_config(
+    component: &BlendshapeSolveComponentParameters<'_>,
+) -> crate::common::BlendshapeConfig {
+    crate::common::BlendshapeConfig {
+        l2_regularization: component.params.l2_regularization,
+        temporal_regularization: component.params.temporal_regularization,
+        l1_regularization: component.params.l1_regularization,
+        symmetry_regularization: component.params.symmetry_regularization,
+        num_poses: component.data.pose_names.len(),
+        active_poses: component.config.active_poses.to_vec(),
+        cancel_poses: component.config.cancel_poses.to_vec(),
+        symmetry_poses: component.config.symmetry_poses.to_vec(),
+        multipliers: component.config.multipliers.to_vec(),
+        offsets: component.config.offsets.to_vec(),
+        template_bb_size: component.params.template_bounding_box_size,
+        tolerance: component.params.tolerance,
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+fn create_cpu_solver(
+    component: &BlendshapeSolveComponentParameters<'_>,
+) -> Result<crate::animation::CpuBlendshapeSolver> {
+    let data = owned_blendshape_data(component);
     let mut solver = crate::animation::CpuBlendshapeSolver::new(data)?;
     solver.set_parameters(crate::animation::BlendshapeSolverParameters {
         l1_regularization: component.params.l1_regularization,
@@ -771,6 +835,20 @@ fn create_solvers(
             .as_ref()
             .map_or(0, |solver| solver.data().pose_count());
     Ok((skin, tongue, count))
+}
+
+#[cfg(feature = "tensorrt")]
+fn create_gpu_solver(
+    component: &BlendshapeSolveComponentParameters<'_>,
+    device: &Arc<crate::cuda::GpuDevice>,
+    stream: &crate::cuda::CudaStream,
+) -> Result<crate::animation::GpuBlendshapeSolver> {
+    crate::animation::GpuBlendshapeSolver::new(
+        device,
+        stream,
+        owned_blendshape_data(component),
+        &owned_blendshape_config(component),
+    )
 }
 
 #[cfg(feature = "tensorrt")]
@@ -915,10 +993,10 @@ impl DeviceBlendshapeSolveExecutor {
     // The error must retain the unique owning geometry source for recovery.
     #[allow(clippy::result_large_err)]
     fn from_source(
-        source: GeometrySource,
+        mut source: GeometrySource,
         parameters: DeviceBlendshapeSolveExecutorCreationParameters<'_>,
     ) -> std::result::Result<Self, (Error, GeometrySource)> {
-        let (skin, tongue, weight_count) = match create_solvers(&source, &parameters.components) {
+        let (_, _, weight_count) = match create_solvers(&source, &parameters.components) {
             Ok(solvers) => solvers,
             Err(error) => return Err((error, source)),
         };
@@ -927,17 +1005,75 @@ impl DeviceBlendshapeSolveExecutor {
             Ok(stream) => stream,
             Err(error) => return Err((error, source)),
         };
-        let output = match device.allocate(weight_count) {
-            Ok(output) => output,
-            Err(error) => return Err((error, source)),
-        };
+        let mut option = GeometryExecutionOption::NONE;
+        if parameters.components.skin.is_some() {
+            option |= GeometryExecutionOption::SKIN;
+        }
+        if parameters.components.tongue.is_some() {
+            option |= GeometryExecutionOption::TONGUE;
+        }
+        if let Err(error) = source.set_execution_option(option) {
+            return Err((error, source));
+        }
         let track_count = source.track_count();
+        let built = (|| -> Result<_> {
+            let skin_weight_count = parameters
+                .components
+                .skin
+                .as_ref()
+                .map_or(0, |component| component.data.pose_names.len());
+            let skin_solvers = (0..track_count)
+                .map(|_| {
+                    parameters
+                        .components
+                        .skin
+                        .as_ref()
+                        .map(|component| create_gpu_solver(component, &device, &stream))
+                        .transpose()
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let tongue_solvers = (0..track_count)
+                .map(|_| {
+                    parameters
+                        .components
+                        .tongue
+                        .as_ref()
+                        .map(|component| create_gpu_solver(component, &device, &stream))
+                        .transpose()
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let skin_weights = (skin_weight_count != 0)
+                .then(|| device.allocate(skin_weight_count))
+                .transpose()?;
+            let tongue_weight_count = weight_count.saturating_sub(skin_weight_count);
+            let tongue_weights = (tongue_weight_count != 0)
+                .then(|| device.allocate(tongue_weight_count))
+                .transpose()?;
+            let output = device.allocate(weight_count)?;
+            Ok((
+                skin_solvers,
+                tongue_solvers,
+                skin_weights,
+                tongue_weights,
+                skin_weight_count,
+                output,
+            ))
+        })();
+        let (skin_solvers, tongue_solvers, skin_weights, tongue_weights, skin_weight_count, output) =
+            match built {
+                Ok(built) => built,
+                Err(error) => return Err((error, source)),
+            };
         Ok(Self {
             source,
-            skin_solvers: vec![skin; track_count],
-            tongue_solvers: vec![tongue; track_count],
+            skin_solvers,
+            tongue_solvers,
+            skin_weights,
+            tongue_weights,
+            skin_weight_count,
             output,
             stream,
+            device,
             weight_count,
             _not_sync: std::marker::PhantomData,
         })
@@ -950,30 +1086,61 @@ impl DeviceBlendshapeSolveExecutor {
     ) -> Result<Execution> {
         let skin_solvers = &mut self.skin_solvers;
         let tongue_solvers = &mut self.tongue_solvers;
+        let skin_weights = &mut self.skin_weights;
+        let tongue_weights = &mut self.tongue_weights;
+        let skin_weight_count = self.skin_weight_count;
         let output = &mut self.output;
         let stream = &self.stream;
-        let mut emitted_frames = 0;
+        let device = &self.device;
         let mut callback_error = None;
-        let (state, executed_tracks) = self.source.execute_host(|metadata, geometry| {
+        let mut geometry_callback = |geometry: GeometryResults<'_>| {
             if callback_error.is_some() {
                 return ControlFlow::Break(());
             }
-            let solve = (|| -> Result<Vec<f32>> {
-                let mut weights = Vec::new();
-                if let Some(solver) = &mut skin_solvers[metadata.track_index] {
-                    weights.extend(solver.solve(&geometry.skin)?);
+            let metadata = geometry.metadata;
+            let solve = (|| -> Result<()> {
+                let producer = geometry
+                    .skin
+                    .as_ref()
+                    .map(|component| component.stream)
+                    .or_else(|| geometry.tongue.as_ref().map(|component| component.stream))
+                    .ok_or(Error::InvalidState {
+                        operation: "device BlendShape solve",
+                        state: "geometry component is unavailable",
+                    })?;
+                device.synchronize_borrowed_stream(producer)?;
+                if let (Some(solver), Some(component), Some(weights)) = (
+                    &mut skin_solvers[metadata.track_index],
+                    geometry.skin,
+                    skin_weights.as_mut(),
+                ) {
+                    let fence = solver.solve_async_view(component.values, weights, stream)?;
+                    fence.synchronize()?;
+                    drop(fence);
+                    output.copy_from_device_range(0, weights, 0, weights.len(), stream)?;
                 }
-                if let Some(solver) = &mut tongue_solvers[metadata.track_index] {
-                    weights.extend(solver.solve(&geometry.tongue)?);
+                if let (Some(solver), Some(component), Some(weights)) = (
+                    &mut tongue_solvers[metadata.track_index],
+                    geometry.tongue,
+                    tongue_weights.as_mut(),
+                ) {
+                    let fence = solver.solve_async_view(component.values, weights, stream)?;
+                    fence.synchronize()?;
+                    drop(fence);
+                    output.copy_from_device_range(
+                        skin_weight_count,
+                        weights,
+                        0,
+                        weights.len(),
+                        stream,
+                    )?;
                 }
-                output.copy_from(&weights, stream)?;
-                Ok(weights)
+                Ok(())
             })();
             if let Err(error) = solve {
                 callback_error = Some(error);
                 return ControlFlow::Break(());
             }
-            emitted_frames += 1;
             callback(BlendshapeDeviceResults {
                 metadata,
                 weights: DeviceComponentResults {
@@ -981,15 +1148,12 @@ impl DeviceBlendshapeSolveExecutor {
                     stream: stream.as_ref(),
                 },
             })
-        })?;
+        };
+        let execution = self.source.execute_device(&mut geometry_callback)?;
         if let Some(error) = callback_error {
             return Err(error);
         }
-        Ok(Execution::ready(ExecutionReport {
-            state,
-            executed_tracks,
-            emitted_frames,
-        }))
+        Ok(execution)
     }
 }
 
@@ -1099,10 +1263,10 @@ impl Executor for DeviceBlendshapeSolveExecutor {
             index: track,
             len,
         })? {
-            solver.reset();
+            solver.reset(&self.stream)?;
         }
         if let Some(solver) = &mut self.tongue_solvers[track] {
-            solver.reset();
+            solver.reset(&self.stream)?;
         }
         Ok(())
     }

@@ -73,6 +73,21 @@ extern "C" __global__ void audio2face3d_mark_initialized(
   if (word < word_count) initialized_tracks[word] |= active_tracks[word];
 }
 
+extern "C" __global__ void audio2face3d_reset_track(
+    unsigned long long* initialized_tracks,
+    float* interp, size_t interp_stride, size_t pose_size,
+    float* eyes_live_time, size_t track) {
+  const size_t index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index == 0) {
+    initialized_tracks[track / 64] &= ~(1ULL << (track % 64));
+    eyes_live_time[track] = 0.0f;
+  }
+  if (index < pose_size) {
+    float* state = interp + (track * pose_size + index) * interp_stride;
+    for (size_t value = 0; value < interp_stride; ++value) state[value] = 0.0f;
+  }
+}
+
 // params per track: strength, height offset, depth offset.
 extern "C" __global__ void audio2face3d_tongue_postprocess(
     float* results, size_t results_offset, size_t results_stride,

@@ -93,6 +93,19 @@ impl GpuDevice {
         CurrentContextGuard::enter(self.context)
     }
 
+    pub(crate) fn synchronize_borrowed_stream(&self, stream: CudaStreamRef<'_>) -> Result<()> {
+        ensure_same_device(self.id(), stream.device_id())?;
+        let _context = self.make_current()?;
+        // SAFETY: the callback-scoped descriptor guarantees that the stream
+        // owner remains alive for this call.
+        unsafe {
+            check(
+                cuStreamSynchronize(stream.as_raw().cast()),
+                "cuStreamSynchronize",
+            )
+        }
+    }
+
     pub fn create_stream(self: &Arc<Self>) -> Result<CudaStream> {
         let _context = self.make_current()?;
         let mut raw = ptr::null_mut();
@@ -941,9 +954,22 @@ impl<T> DeviceBuffer<T> {
         stream: &CudaStream,
     ) -> Result<()> {
         ensure_same_device(self.device.id(), source.device.id())?;
+        self.copy_from_device_view_range(target_offset, source.view(), source_offset, len, stream)
+    }
+
+    /// Copies a range from a borrowed allocation view on the same device.
+    pub(crate) fn copy_from_device_view_range(
+        &mut self,
+        target_offset: usize,
+        source: DeviceView<'_, T>,
+        source_offset: usize,
+        len: usize,
+        stream: &CudaStream,
+    ) -> Result<()> {
+        ensure_same_device(self.device.id(), source.device_id())?;
         ensure_same_device(self.device.id(), stream.device_id())?;
         let target = self.view().slice(target_offset, len)?;
-        let source = source.view().slice(source_offset, len)?;
+        let source = source.slice(source_offset, len)?;
         let _context = self.device.make_current()?;
         let bytes = len
             .checked_mul(size_of::<T>())
@@ -1073,6 +1099,34 @@ DONE:
     ret;
 }
 "#;
+
+    #[test]
+    fn native_entry_points_restore_the_callers_current_context() {
+        let device = GpuDevice::new(0).unwrap();
+        let mut original = ptr::null_mut();
+        // SAFETY: CUDA writes the calling thread's current context to a valid
+        // output pointer. The same handle is restored before this test exits.
+        unsafe { check(cuCtxGetCurrent(&mut original), "cuCtxGetCurrent").unwrap() };
+
+        // SAFETY: a null handle clears only this calling thread's current CUDA
+        // context; `original` remains retained by its owner or the driver.
+        unsafe { check(cuCtxSetCurrent(ptr::null_mut()), "cuCtxSetCurrent").unwrap() };
+        let stream = device.create_stream().unwrap();
+        let mut after_create = original;
+        // SAFETY: CUDA writes one context handle to the valid output pointer.
+        unsafe { check(cuCtxGetCurrent(&mut after_create), "cuCtxGetCurrent").unwrap() };
+        assert!(after_create.is_null());
+
+        drop(stream);
+        let mut after_drop = original;
+        // SAFETY: CUDA writes one context handle to the valid output pointer.
+        unsafe { check(cuCtxGetCurrent(&mut after_drop), "cuCtxGetCurrent").unwrap() };
+        assert!(after_drop.is_null());
+
+        // SAFETY: restore the context observed at test entry for subsequent
+        // tests that may execute on this worker thread.
+        unsafe { check(cuCtxSetCurrent(original), "cuCtxSetCurrent").unwrap() };
+    }
 
     #[test]
     fn stream_event_orders_device_memory() {

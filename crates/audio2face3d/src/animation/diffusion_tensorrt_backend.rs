@@ -16,6 +16,11 @@ pub struct TensorRtDiffusionBackend {
     stream: CudaStream,
 }
 
+pub(crate) struct DiffusionDeviceBatch {
+    pub state_output: Vec<Vec<f32>>,
+    pub prediction: DiffusionInferenceOutputBuffers,
+}
+
 impl TensorRtDiffusionBackend {
     pub fn load(
         device: Arc<GpuDevice>,
@@ -56,17 +61,34 @@ impl TensorRtDiffusionBackend {
         &mut self,
         inputs: &[(usize, DiffusionFrameInput)],
     ) -> Result<Vec<DiffusionInferenceOutput>> {
-        if inputs.is_empty() {
-            return Err(invalid("empty diffusion inference batch"));
-        }
-        let batch = inputs.len();
-        let state_size = self.contract.state_size()?;
+        let device_batch = self.run_device_batch(inputs)?;
+        let prediction_output = device_batch.prediction.copy_to_host(&self.stream)?;
         let result_size = self.contract.result_layout.total()?;
         let prediction_size = self
             .contract
             .total_frames()
             .checked_mul(result_size)
             .ok_or_else(|| invalid("diffusion prediction size overflow"))?;
+        let mut outputs = Vec::with_capacity(inputs.len());
+        for (track, state) in device_batch.state_output.into_iter().enumerate() {
+            let offset = track * prediction_size;
+            outputs.push(DiffusionInferenceOutput {
+                output_latents: state,
+                prediction: prediction_output[offset..offset + prediction_size].to_vec(),
+            });
+        }
+        Ok(outputs)
+    }
+
+    pub(crate) fn run_device_batch(
+        &mut self,
+        inputs: &[(usize, DiffusionFrameInput)],
+    ) -> Result<DiffusionDeviceBatch> {
+        if inputs.is_empty() {
+            return Err(invalid("empty diffusion inference batch"));
+        }
+        let batch = inputs.len();
+        let state_size = self.contract.state_size()?;
         for (_, input) in inputs {
             if input.audio.len() != self.contract.audio_size
                 || input.emotions.len() != self.contract.center_frames * self.contract.emotion_size
@@ -95,16 +117,10 @@ impl TensorRtDiffusionBackend {
             .map_err(inference_error)?;
 
         let state_output = state.copy_output_tracks_to_host(&self.stream)?;
-        let prediction_output = output.copy_to_host(&self.stream)?;
-        let mut outputs = Vec::with_capacity(batch);
-        for (track, state) in state_output.into_iter().enumerate() {
-            let offset = track * prediction_size;
-            outputs.push(DiffusionInferenceOutput {
-                output_latents: state,
-                prediction: prediction_output[offset..offset + prediction_size].to_vec(),
-            });
-        }
-        Ok(outputs)
+        Ok(DiffusionDeviceBatch {
+            state_output,
+            prediction: output,
+        })
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::common::{BindingSchema, Dimension, ElementType, Error, IoMode, Result};
-use crate::cuda::{CudaStream, GpuDevice};
+use crate::cuda::{CudaStream, DeviceBuffer, GpuDevice};
 use crate::emotion::{ClassifierBackend, ClassifierContract};
 use crate::tensorrt::{BindingBuffer, DeviceBindings, TensorRtSession};
 use std::path::Path;
@@ -47,7 +47,39 @@ impl TensorRtClassifierBackend {
         Ok(())
     }
 
+    pub(crate) fn stream(&self) -> &CudaStream {
+        &self.stream
+    }
+
+    /// Runs a packed classifier batch and retains its logits on the device.
+    ///
+    /// This is the primary path used by the owning facade. The legacy
+    /// `ClassifierBackend` adapter copies this buffer to the host only for
+    /// callers that explicitly use the old host-output scheduler.
+    pub(crate) fn run_device_batch(
+        &mut self,
+        inputs: &[(usize, Vec<f32>)],
+    ) -> Result<DeviceBuffer<f32>> {
+        let inputs = inputs
+            .iter()
+            .map(|(_, audio)| audio.as_slice())
+            .collect::<Vec<_>>();
+        self.run_device_slices(&inputs)
+    }
+
     fn run_batch(&mut self, inputs: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
+        let slices = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let output = self.run_device_slices(&slices)?;
+        let output_elements = output.len();
+        let mut host = vec![0.0; output_elements];
+        output.copy_to(&mut host, &self.stream)?;
+        Ok(host
+            .chunks_exact(self.contract.emotion_length)
+            .map(<[f32]>::to_vec)
+            .collect())
+    }
+
+    fn run_device_slices(&mut self, inputs: &[&[f32]]) -> Result<DeviceBuffer<f32>> {
         if inputs.is_empty() || inputs.len() > self.max_batch_size {
             return Err(invalid(format!(
                 "invalid classifier inference batch {}; engine accepts at most {}",
@@ -70,7 +102,10 @@ impl TensorRtClassifierBackend {
             .ok_or_else(|| invalid("classifier output allocation overflow"))?;
         let mut audio = self.device.allocate::<f32>(audio_elements)?;
         let output = self.device.allocate::<f32>(output_elements)?;
-        let host = inputs.iter().flatten().copied().collect::<Vec<_>>();
+        let host = inputs
+            .iter()
+            .flat_map(|values| values.iter().copied())
+            .collect::<Vec<_>>();
         audio.copy_from(&host, &self.stream)?;
         let mut bindings = DeviceBindings::new();
         bindings
@@ -100,12 +135,7 @@ impl TensorRtClassifierBackend {
             .map_err(inference_error)?
             .synchronize()
             .map_err(inference_error)?;
-        let mut host = vec![0.0; output_elements];
-        output.copy_to(&mut host, &self.stream)?;
-        Ok(host
-            .chunks_exact(self.contract.emotion_length)
-            .map(<[f32]>::to_vec)
-            .collect())
+        Ok(output)
     }
 }
 

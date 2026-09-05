@@ -280,6 +280,205 @@ impl DiffusionExecutionState {
         })
     }
 
+    #[cfg(feature = "tensorrt")]
+    // The device path keeps each independently-owned output allocation explicit
+    // so callback lifetimes cannot be hidden behind an untracked aggregate.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_device<C>(
+        &self,
+        tracks: &[DiffusionTrack<'_>],
+        backend: &mut crate::animation::TensorRtDiffusionBackend,
+        postprocessor: &mut crate::animation::GpuRegressionPostprocessor,
+        skin: &mut crate::cuda::DeviceBuffer<f32>,
+        tongue: &mut crate::cuda::DeviceBuffer<f32>,
+        jaw: &mut crate::cuda::DeviceBuffer<f32>,
+        eyes: &mut crate::cuda::DeviceBuffer<f32>,
+        mut callback: C,
+    ) -> Result<DiffusionExecutionStatus>
+    where
+        C: for<'a> FnMut(
+            DiffusionCallbackMetadata,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::CudaStreamRef<'a>,
+        ) -> bool,
+    {
+        {
+            let mut state = self.state.lock().map_err(|_| poisoned())?;
+            if tracks.len() != state.inferences.len() {
+                return Err(invalid("diffusion track count mismatch"));
+            }
+            if state.running {
+                return Err(invalid("diffusion executor is already running"));
+            }
+            state.running = true;
+        }
+        let _running = DiffusionRunningGuard { execution: self };
+        let inference_indices = self
+            .state
+            .lock()
+            .map_err(|_| poisoned())?
+            .inferences
+            .clone();
+        let mut pending = Vec::new();
+        for (track_index, track) in tracks.iter().enumerate() {
+            let inference = inference_indices[track_index];
+            if self.finished(track, inference)? || !self.ready(track, inference)? {
+                continue;
+            }
+            pending.push((
+                track_index,
+                self.prepare_input(track_index, inference, track)?,
+            ));
+        }
+        if pending.is_empty() {
+            return Ok(
+                if tracks
+                    .iter()
+                    .zip(inference_indices)
+                    .all(|(track, inference)| self.finished(track, inference).unwrap_or(false))
+                {
+                    DiffusionExecutionStatus::Complete
+                } else {
+                    DiffusionExecutionStatus::AwaitingInput
+                },
+            );
+        }
+
+        let noise_size = self.contract.noise_size()?;
+        let expected_state = self.contract.state_size()?;
+        let full_batch = (0..tracks.len())
+            .map(|track| {
+                pending
+                    .iter()
+                    .find(|(pending_track, _)| *pending_track == track)
+                    .map_or_else(
+                        || {
+                            (
+                                track,
+                                DiffusionFrameInput {
+                                    audio: vec![0.0; self.contract.audio_size],
+                                    emotions: vec![
+                                        0.0;
+                                        self.contract.center_frames
+                                            * self.contract.emotion_size
+                                    ],
+                                    identity: vec![0.0; self.contract.identity_size],
+                                    noise: vec![0.0; noise_size],
+                                    input_latents: vec![0.0; expected_state],
+                                },
+                            )
+                        },
+                        |(_, input)| (track, input.clone()),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let device_batch = backend.run_device_batch(&full_batch)?;
+        if device_batch.state_output.len() != tracks.len()
+            || device_batch
+                .state_output
+                .iter()
+                .any(|state| state.len() != expected_state)
+        {
+            return Err(invalid("diffusion backend output dimensions mismatch"));
+        }
+        {
+            let updates = pending
+                .iter()
+                .map(|(track, _)| (*track, device_batch.state_output[*track].as_slice()))
+                .collect::<Vec<_>>();
+            self.recurrent
+                .lock()
+                .map_err(|_| poisoned())?
+                .commit_tracks(&updates)?;
+        }
+
+        let result_size = self.contract.result_layout.total()?;
+        let input_stride = self
+            .contract
+            .total_frames()
+            .checked_mul(result_size)
+            .ok_or_else(|| invalid("diffusion prediction size overflow"))?;
+        let stream = backend.stream();
+        let mut callback_active = vec![false; tracks.len()];
+        for (track, _) in &pending {
+            callback_active[*track] = true;
+        }
+        for frame_offset in 0..self.contract.center_frames {
+            for (track, _) in &pending {
+                if !callback_active[*track] {
+                    continue;
+                }
+                let inference = inference_indices[*track];
+                let frame = inference * self.contract.center_frames + frame_offset;
+                let window = self.contract.frame_progress.window(frame)?;
+                if window.target < 0 {
+                    continue;
+                }
+                if window.target
+                    >= i64::try_from(tracks[*track].audio.nb_accumulated_samples())
+                        .unwrap_or(i64::MAX)
+                {
+                    callback_active[*track] = false;
+                    continue;
+                }
+                let prediction_frame = self.contract.left_frames + frame_offset;
+                let fence = postprocessor.enqueue_view(
+                    device_batch.prediction.result_tensor(),
+                    input_stride,
+                    prediction_frame * result_size,
+                    std::slice::from_ref(track),
+                    crate::animation::GpuRegressionOutputs {
+                        skin,
+                        tongue,
+                        jaw_transforms: jaw,
+                        eyes_rotations: eyes,
+                    },
+                    stream,
+                )?;
+                fence.synchronize()?;
+                drop(fence);
+                let skin_view = skin.view().slice(
+                    *track * self.contract.result_layout.skin,
+                    self.contract.result_layout.skin,
+                )?;
+                let tongue_view = tongue.view().slice(
+                    *track * self.contract.result_layout.tongue,
+                    self.contract.result_layout.tongue,
+                )?;
+                let jaw_view = jaw.view().slice(*track * 16, 16)?;
+                let eyes_view = eyes.view().slice(*track * 6, 6)?;
+                if !callback(
+                    DiffusionCallbackMetadata {
+                        track: *track,
+                        inference,
+                        frame,
+                        timestamp: window.target,
+                        next_timestamp: self.contract.frame_progress.window(frame + 1)?.target,
+                    },
+                    skin_view,
+                    tongue_view,
+                    jaw_view,
+                    eyes_view,
+                    stream.as_ref(),
+                ) {
+                    callback_active[*track] = false;
+                }
+            }
+        }
+
+        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        for (track, _) in &pending {
+            state.inferences[*track] += 1;
+            self.drop_consumed(&tracks[*track], state.inferences[*track])?;
+        }
+        Ok(DiffusionExecutionStatus::Executed {
+            tracks: pending.len(),
+        })
+    }
+
     fn prepare_input(
         &self,
         track_index: usize,
@@ -451,6 +650,42 @@ impl DiffusionExecutor {
         C: FnMut(DiffusionCallbackMetadata, &[f32]) -> bool,
     {
         self.inner.state.execute(tracks, backend, callback)
+    }
+
+    #[cfg(feature = "tensorrt")]
+    // Mirrors the explicit allocation ownership of the state implementation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_device<C>(
+        &self,
+        tracks: &[DiffusionTrack<'_>],
+        backend: &mut crate::animation::TensorRtDiffusionBackend,
+        postprocessor: &mut crate::animation::GpuRegressionPostprocessor,
+        skin: &mut crate::cuda::DeviceBuffer<f32>,
+        tongue: &mut crate::cuda::DeviceBuffer<f32>,
+        jaw: &mut crate::cuda::DeviceBuffer<f32>,
+        eyes: &mut crate::cuda::DeviceBuffer<f32>,
+        callback: C,
+    ) -> Result<DiffusionExecutionStatus>
+    where
+        C: for<'a> FnMut(
+            DiffusionCallbackMetadata,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::DeviceView<'a, f32>,
+            crate::cuda::CudaStreamRef<'a>,
+        ) -> bool,
+    {
+        self.inner.state.execute_device(
+            tracks,
+            backend,
+            postprocessor,
+            skin,
+            tongue,
+            jaw,
+            eyes,
+            callback,
+        )
     }
 
     pub fn reset(&self, track: usize) -> Result<()> {

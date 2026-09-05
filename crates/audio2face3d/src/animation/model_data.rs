@@ -96,6 +96,82 @@ impl GeometryModelData {
         )
     }
 
+    #[cfg(feature = "cuda")]
+    pub(crate) fn gpu_postprocessor(
+        &self,
+        device: &std::sync::Arc<crate::cuda::GpuDevice>,
+        stream: &crate::cuda::CudaStream,
+        config: &GeometryConfig,
+        track_count: usize,
+        dt: f32,
+    ) -> Result<crate::animation::GpuRegressionPostprocessor> {
+        let skin = self.skin_animator(config)?;
+        let tongue = self.tongue_animator(config)?;
+        let eyes = self.eyes_animator(config)?;
+        let track = crate::animation::GpuRegressionTrackParams {
+            skin: skin.parameters(),
+            tongue: tongue.parameters(),
+            jaw: jaw_parameters(config),
+            eyes: eyes.parameters(),
+        };
+        crate::animation::GpuRegressionPostprocessor::new(
+            device,
+            stream,
+            crate::animation::GpuRegressionModel {
+                skin_neutral_pose: &self.skin_neutral_pose,
+                skin_lip_open_delta: &self.skin_lip_open_delta,
+                skin_eye_close_delta: &self.skin_eye_close_delta,
+                tongue_neutral_pose: &self.tongue_neutral_pose,
+                jaw_neutral_pose: &self.jaw_neutral_pose,
+                saccade_rotation: &self.saccade_rotation,
+            },
+            &vec![track; track_count],
+            dt,
+        )
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(crate) fn gpu_regression_postprocessor(
+        &self,
+        device: &std::sync::Arc<crate::cuda::GpuDevice>,
+        stream: &crate::cuda::CudaStream,
+        config: &GeometryConfig,
+        track_count: usize,
+        dt: f32,
+        raw_layout: crate::animation::RegressionResultLayout,
+    ) -> Result<crate::animation::GpuRegressionPcaPostprocessor> {
+        let skin = self.skin_animator(config)?;
+        let tongue = self.tongue_animator(config)?;
+        let eyes = self.eyes_animator(config)?;
+        let track = crate::animation::GpuRegressionTrackParams {
+            skin: skin.parameters(),
+            tongue: tongue.parameters(),
+            jaw: jaw_parameters(config),
+            eyes: eyes.parameters(),
+        };
+        crate::animation::GpuRegressionPcaPostprocessor::new(
+            device,
+            stream,
+            crate::animation::GpuRegressionModel {
+                skin_neutral_pose: &self.skin_neutral_pose,
+                skin_lip_open_delta: &self.skin_lip_open_delta,
+                skin_eye_close_delta: &self.skin_eye_close_delta,
+                tongue_neutral_pose: &self.tongue_neutral_pose,
+                jaw_neutral_pose: &self.jaw_neutral_pose,
+                saccade_rotation: &self.saccade_rotation,
+            },
+            &vec![track; track_count],
+            dt,
+            self.skin_shapes
+                .as_deref()
+                .ok_or_else(|| invalid("regression skin PCA data is unavailable"))?,
+            self.tongue_shapes
+                .as_deref()
+                .ok_or_else(|| invalid("regression tongue PCA data is unavailable"))?,
+            raw_layout,
+        )
+    }
+
     fn skin_animator(&self, config: &GeometryConfig) -> Result<SkinAnimator> {
         SkinAnimator::new(
             SkinAnimatorParams {

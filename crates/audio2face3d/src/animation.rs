@@ -39,6 +39,8 @@ pub use blendshape::{
 #[cfg(feature = "cuda")]
 pub use device_noise::GpuPhiloxNoise;
 #[cfg(feature = "cuda")]
+pub(crate) use device_postprocess::GpuRegressionPcaPostprocessor;
+#[cfg(feature = "cuda")]
 pub use device_postprocess::{
     GpuRegressionModel, GpuRegressionOutputs, GpuRegressionPostprocessFence,
     GpuRegressionPostprocessor, GpuRegressionTrackParams,

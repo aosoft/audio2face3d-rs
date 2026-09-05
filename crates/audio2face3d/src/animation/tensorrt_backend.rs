@@ -58,6 +58,19 @@ impl TensorRtRegressionBackend {
     }
 
     fn run_batch(&mut self, inputs: &[RegressionFrameInput]) -> Result<Vec<Vec<f32>>> {
+        let output = self.run_device_batch(inputs)?;
+        let result_size = self.contract.result_layout.total()?;
+        let host = output.copy_to_host(&self.stream)?;
+        Ok(host
+            .chunks_exact(result_size)
+            .map(<[f32]>::to_vec)
+            .collect())
+    }
+
+    pub(crate) fn run_device_batch(
+        &mut self,
+        inputs: &[RegressionFrameInput],
+    ) -> Result<RegressionInferenceOutputBuffers> {
         if inputs.is_empty() {
             return Err(Error::InvalidSchema(
                 "empty regression inference batch".into(),
@@ -74,12 +87,7 @@ impl TensorRtRegressionBackend {
             .map_err(inference_error)?
             .synchronize()
             .map_err(inference_error)?;
-        let result_size = self.contract.result_layout.total()?;
-        let host = output.copy_to_host(&self.stream)?;
-        Ok(host
-            .chunks_exact(result_size)
-            .map(<[f32]>::to_vec)
-            .collect())
+        Ok(output)
     }
 }
 

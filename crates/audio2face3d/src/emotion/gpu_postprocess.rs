@@ -1,7 +1,7 @@
 use crate::common::{Error, Result};
 use crate::cuda::{
-    CudaEvent, CudaModule, CudaStream, DeviceBuffer, GpuDevice, emotion_postprocess_ptx,
-    ensure_same_device,
+    CudaEvent, CudaModule, CudaStream, DeviceBuffer, DeviceView, GpuDevice,
+    emotion_postprocess_ptx, ensure_same_device,
 };
 use crate::emotion::{EmotionPostProcessData, EmotionPostProcessParameters};
 use std::ffi::c_void;
@@ -103,6 +103,13 @@ impl GpuEmotionPostProcessor {
         self.track_count
     }
 
+    pub(crate) fn preferred_enabled(&self, track: usize) -> Result<bool> {
+        self.host_parameters
+            .get(track)
+            .map(|parameters| parameters.enable_preferred_emotion)
+            .ok_or_else(|| invalid("GPU preferred emotion track is out of range"))
+    }
+
     pub fn selected_path(&self) -> GpuEmotionKernelPath {
         if self.data.inference_emotion_length <= 32 && self.data.output_emotion_length <= 32 {
             GpuEmotionKernelPath::Local
@@ -179,6 +186,24 @@ impl GpuEmotionPostProcessor {
         stream.synchronize()
     }
 
+    pub(crate) fn reset_track(&mut self, track: usize, stream: &CudaStream) -> Result<()> {
+        if track >= self.track_count {
+            return Err(invalid("GPU emotion reset track is out of range"));
+        }
+        let function = self.module.function("emotion_postprocess_reset")?;
+        let offset = track
+            .checked_mul(self.state_stride)
+            .ok_or_else(|| invalid("GPU emotion state offset overflow"))?;
+        let mut state = self.state.view().slice(offset, self.state_stride)?.as_raw();
+        let mut state_stride = self.state_stride as u64;
+        let mut track_count = 1_u32;
+        let mut arguments = params![state, state_stride, track_count];
+        // SAFETY: the pointer is restricted to one validated state row and the
+        // kernel is launched for exactly one logical track.
+        unsafe { function.launch_raw((1, 1, 1), (1, 1, 1), 0, stream, &mut arguments)? };
+        stream.synchronize()
+    }
+
     /// Enqueues post-processing. Input rows are packed in `active_tracks`
     /// order; output rows retain their full track index.
     ///
@@ -187,6 +212,25 @@ impl GpuEmotionPostProcessor {
     pub fn enqueue<'a>(
         &'a mut self,
         input: &'a DeviceBuffer<f32>,
+        input_stride: usize,
+        output: &'a mut DeviceBuffer<f32>,
+        output_stride: usize,
+        active_tracks: &[usize],
+        stream: &'a CudaStream,
+    ) -> Result<GpuEmotionPostProcessFence<'a>> {
+        self.enqueue_view(
+            input.view(),
+            input_stride,
+            output,
+            output_stride,
+            active_tracks,
+            stream,
+        )
+    }
+
+    pub(crate) fn enqueue_view<'a>(
+        &'a mut self,
+        input: DeviceView<'a, f32>,
         input_stride: usize,
         output: &'a mut DeviceBuffer<f32>,
         output_stride: usize,
@@ -232,7 +276,7 @@ impl GpuEmotionPostProcessor {
         })?;
         let mut output_pointer = output.view().as_raw();
         let mut output_stride = output_stride as u64;
-        let mut input_pointer = input.view().as_raw();
+        let mut input_pointer = input.as_raw();
         let mut input_stride = input_stride as u64;
         let mut correspondence = self.correspondence.view().as_raw();
         let mut parameters = self.parameters.view().as_raw();
@@ -285,7 +329,7 @@ pub struct GpuEmotionPostProcessFence<'a> {
     path: GpuEmotionKernelPath,
     _resources: PhantomData<(
         &'a mut GpuEmotionPostProcessor,
-        &'a DeviceBuffer<f32>,
+        DeviceView<'a, f32>,
         &'a mut DeviceBuffer<f32>,
         &'a CudaStream,
     )>,

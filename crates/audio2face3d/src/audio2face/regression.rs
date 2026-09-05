@@ -96,6 +96,7 @@ pub struct RegressionGeometryExecutor {
     execution: RegressionExecutor,
     backend: TensorRtRegressionBackend,
     postprocessors: Vec<RegressionPostprocessor>,
+    gpu_postprocessor: crate::animation::GpuRegressionPcaPostprocessor,
     contract: RegressionContract,
     tracks: Vec<crate::audio2face::GeometryTrackResources>,
     implicit_emotions: Vec<Vec<f32>>,
@@ -235,17 +236,33 @@ impl RegressionGeometryExecutor {
         let sample_rate = contract.sample_rate;
         let owned_contract = contract.clone();
         let track_count = parameters.common.tracks.len();
+        let dt =
+            parameters.frame_rate.denominator() as f32 / parameters.frame_rate.numerator() as f32;
+        let gpu_postprocessor = model_data.gpu_regression_postprocessor(
+            &device,
+            backend.stream(),
+            config,
+            track_count,
+            dt,
+            owned_contract.result_layout,
+        )?;
         let execution = RegressionExecutor::new(contract, track_count)?;
-        let skin_output = device.allocate(owned_contract.result_skin_size)?;
-        let tongue_output = device.allocate(owned_contract.result_tongue_size)?;
-        let jaw_output = device.allocate(16)?;
-        let eyes_output = device.allocate(6)?;
+        let skin_output =
+            device.allocate(owned_contract.result_skin_size.saturating_mul(track_count))?;
+        let tongue_output = device.allocate(
+            owned_contract
+                .result_tongue_size
+                .saturating_mul(track_count),
+        )?;
+        let jaw_output = device.allocate(16_usize.saturating_mul(track_count))?;
+        let eyes_output = device.allocate(6_usize.saturating_mul(track_count))?;
         let emotion_output = device.allocate(owned_contract.emotion_size)?;
         let result_stream = device.create_stream()?;
         Ok(Self {
             execution,
             backend,
             postprocessors: processors,
+            gpu_postprocessor,
             contract: owned_contract,
             implicit_emotions: vec![vec![0.0; model_parameters.implicit_emotion_len]; track_count],
             input_strength: parameters.input_strength,
@@ -369,6 +386,8 @@ impl crate::audio2x::Executor for RegressionGeometryExecutor {
         }
         self.execution.reset(track)?;
         self.postprocessors[track].reset()?;
+        self.gpu_postprocessor
+            .reset_track(track, self.backend.stream())?;
         self.started[track] = false;
         Ok(())
     }
@@ -490,59 +509,29 @@ impl crate::audio2face::GeometryExecutor for RegressionGeometryExecutor {
                 input_strength: self.input_strength,
             })
             .collect::<Vec<_>>();
-        let mut postprocessors = std::mem::take(&mut self.postprocessors);
         let option = self.execution_option;
-        let stream = &self.result_stream;
         let skin_output = &mut self.skin_output;
         let tongue_output = &mut self.tongue_output;
         let jaw_output = &mut self.jaw_output;
         let eyes_output = &mut self.eyes_output;
         let emotion_output = &mut self.emotion_output;
+        let emotion_stream = &self.result_stream;
         let source_tracks = &self.tracks;
         let implicit_emotions = &self.implicit_emotions;
-        let dt = self.frame_rate.denominator() as f32 / self.frame_rate.numerator() as f32;
         let mut emitted_frames = 0;
         let mut active_tracks = vec![false; self.tracks.len()];
         let mut callback_error = None;
-        let status = self
-            .execution
-            .pump(&tracks, &mut self.backend, |metadata, inference| {
+        let status = self.execution.pump_device(
+            &tracks,
+            &mut self.backend,
+            &mut self.gpu_postprocessor,
+            skin_output,
+            tongue_output,
+            jaw_output,
+            eyes_output,
+            |metadata, skin, tongue, jaw, eyes, stream| {
                 active_tracks[metadata.track] = true;
                 if callback_error.is_some() {
-                    return false;
-                }
-                let geometry = match postprocessors[metadata.track].process(inference, dt) {
-                    Ok(geometry) => geometry,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        return false;
-                    }
-                };
-                let copied = (|| -> crate::Result<()> {
-                    if option.contains(crate::audio2face::GeometryExecutionOption::SKIN) {
-                        skin_output.copy_from(&geometry.skin, stream)?;
-                    }
-                    if option.contains(crate::audio2face::GeometryExecutionOption::TONGUE) {
-                        tongue_output.copy_from(&geometry.tongue, stream)?;
-                    }
-                    if option.contains(crate::audio2face::GeometryExecutionOption::JAW) {
-                        jaw_output.copy_from(&geometry.jaw_transform, stream)?;
-                    }
-                    if option.contains(crate::audio2face::GeometryExecutionOption::EYES) {
-                        let eyes = [
-                            geometry.eyes_rotation.right[0],
-                            geometry.eyes_rotation.right[1],
-                            geometry.eyes_rotation.right[2],
-                            geometry.eyes_rotation.left[0],
-                            geometry.eyes_rotation.left[1],
-                            geometry.eyes_rotation.left[2],
-                        ];
-                        eyes_output.copy_from(&eyes, stream)?;
-                    }
-                    Ok(())
-                })();
-                if let Err(error) = copied {
-                    callback_error = Some(error);
                     return false;
                 }
                 let public_metadata = crate::audio2x::CallbackMetadata {
@@ -565,7 +554,7 @@ impl crate::audio2face::GeometryExecutor for RegressionGeometryExecutor {
                         }
                     };
                     values.extend_from_slice(&implicit_emotions[metadata.track]);
-                    if let Err(error) = emotion_output.copy_from(&values, stream) {
+                    if let Err(error) = emotion_output.copy_from(&values, emotion_stream) {
                         callback_error = Some(error);
                         return false;
                     }
@@ -573,7 +562,7 @@ impl crate::audio2face::GeometryExecutor for RegressionGeometryExecutor {
                         metadata: public_metadata,
                         values: crate::audio2x::DeviceComponentResults {
                             values: emotion_output.view(),
-                            stream: stream.as_ref(),
+                            stream: emotion_stream.as_ref(),
                         },
                     });
                 }
@@ -583,33 +572,33 @@ impl crate::audio2face::GeometryExecutor for RegressionGeometryExecutor {
                         metadata: public_metadata,
                         skin: option
                             .contains(crate::audio2face::GeometryExecutionOption::SKIN)
-                            .then(|| crate::audio2x::DeviceComponentResults {
-                                values: skin_output.view(),
-                                stream: stream.as_ref(),
+                            .then_some(crate::audio2x::DeviceComponentResults {
+                                values: skin,
+                                stream,
                             }),
                         tongue: option
                             .contains(crate::audio2face::GeometryExecutionOption::TONGUE)
-                            .then(|| crate::audio2x::DeviceComponentResults {
-                                values: tongue_output.view(),
-                                stream: stream.as_ref(),
+                            .then_some(crate::audio2x::DeviceComponentResults {
+                                values: tongue,
+                                stream,
                             }),
                         jaw: option
                             .contains(crate::audio2face::GeometryExecutionOption::JAW)
-                            .then(|| crate::audio2x::DeviceComponentResults {
-                                values: jaw_output.view(),
-                                stream: stream.as_ref(),
+                            .then_some(crate::audio2x::DeviceComponentResults {
+                                values: jaw,
+                                stream,
                             }),
                         eyes: option
                             .contains(crate::audio2face::GeometryExecutionOption::EYES)
-                            .then(|| crate::audio2x::DeviceComponentResults {
-                                values: eyes_output.view(),
-                                stream: stream.as_ref(),
+                            .then_some(crate::audio2x::DeviceComponentResults {
+                                values: eyes,
+                                stream,
                             }),
                     }),
                     ControlFlow::Continue(())
                 )
-            });
-        self.postprocessors = postprocessors;
+            },
+        );
         let status = status?;
         if let Some(error) = callback_error {
             return Err(error);
