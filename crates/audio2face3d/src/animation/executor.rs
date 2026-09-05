@@ -61,23 +61,26 @@ pub struct RegressionExecutorState {
 }
 
 #[derive(Debug)]
-struct State {
+struct RegressionSchedulerState {
     running: bool,
     frames: Vec<usize>,
     stopped: Vec<bool>,
 }
 
-/// CPU orchestration for regression tracks. TensorRT and post-processing are
-/// supplied by `RegressionBackend`, keeping scheduling independently testable.
+/// Runtime state for the regression scheduler.
+///
+/// This name is intentionally implementation-oriented. The Step 3 owning
+/// facade will keep this state together with its concrete backend and
+/// post-processor in [`RegressionGeometryExecution`].
 #[derive(Debug)]
-pub struct RegressionExecutor {
+struct RegressionExecutionState {
     contract: RegressionContract,
-    state: Mutex<State>,
+    state: Mutex<RegressionSchedulerState>,
     idle: Condvar,
 }
 
-impl RegressionExecutor {
-    pub fn new(contract: RegressionContract, track_count: usize) -> Result<Self> {
+impl RegressionExecutionState {
+    fn new(contract: RegressionContract, track_count: usize) -> Result<Self> {
         if !(1..=MAX_REGRESSION_TRACKS).contains(&track_count) {
             return Err(Error::InvalidSchema(format!(
                 "regression track count must be in 1..={MAX_REGRESSION_TRACKS}"
@@ -85,7 +88,7 @@ impl RegressionExecutor {
         }
         Ok(Self {
             contract,
-            state: Mutex::new(State {
+            state: Mutex::new(RegressionSchedulerState {
                 running: false,
                 frames: vec![0; track_count],
                 stopped: vec![false; track_count],
@@ -94,7 +97,7 @@ impl RegressionExecutor {
         })
     }
 
-    pub fn pump<B, C>(
+    fn pump<B, C>(
         &self,
         tracks: &[RegressionTrack<'_>],
         backend: &mut B,
@@ -247,7 +250,7 @@ impl RegressionExecutor {
             .map_err(|error| Error::InvalidSchema(format!("emotion drop failed: {error}")))
     }
 
-    pub fn wait(&self) -> Result<()> {
+    fn wait(&self) -> Result<()> {
         let mut state = self.lock()?;
         while state.running {
             state = self
@@ -258,7 +261,7 @@ impl RegressionExecutor {
         Ok(())
     }
 
-    pub fn state(&self) -> Result<RegressionExecutorState> {
+    fn state(&self) -> Result<RegressionExecutorState> {
         let state = self.lock()?;
         Ok(RegressionExecutorState {
             running: state.running,
@@ -267,10 +270,119 @@ impl RegressionExecutor {
         })
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>> {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, RegressionSchedulerState>> {
         self.state
             .lock()
             .map_err(|_| Error::InvalidSchema("executor mutex poisoned".into()))
+    }
+}
+
+/// Internal static-dispatch execution used by the non-generic facade.
+///
+/// `B` and `P` are implementation details and this concrete name is not
+/// re-exported from [`crate::animation`]. The legacy [`RegressionExecutor`]
+/// alias remains temporarily available until Step 7.
+#[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct RegressionGeometryExecution<B, P> {
+    state: RegressionExecutionState,
+    backend: B,
+    postprocessor: P,
+}
+
+/// Legacy low-level scheduler retained until the Step 7 API removal.
+#[derive(Debug)]
+pub struct RegressionExecutor {
+    inner: RegressionGeometryExecution<(), ()>,
+}
+
+impl RegressionExecutor {
+    pub fn new(contract: RegressionContract, track_count: usize) -> Result<Self> {
+        Ok(Self {
+            inner: RegressionGeometryExecution::with_dependencies(contract, track_count, (), ())?,
+        })
+    }
+
+    pub fn pump<B, C>(
+        &self,
+        tracks: &[RegressionTrack<'_>],
+        backend: &mut B,
+        callback: C,
+    ) -> Result<PumpStatus>
+    where
+        B: RegressionBackend,
+        C: FnMut(RegressionCallbackMetadata, &B::Output) -> bool,
+    {
+        self.inner.state.pump(tracks, backend, callback)
+    }
+
+    pub fn wait(&self) -> Result<()> {
+        self.inner.wait()
+    }
+
+    pub fn state(&self) -> Result<RegressionExecutorState> {
+        self.inner.state()
+    }
+}
+
+impl<B, P> RegressionGeometryExecution<B, P> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_dependencies(
+        contract: RegressionContract,
+        track_count: usize,
+        backend: B,
+        postprocessor: P,
+    ) -> Result<Self> {
+        Ok(Self {
+            state: RegressionExecutionState::new(contract, track_count)?,
+            backend,
+            postprocessor,
+        })
+    }
+
+    pub(crate) fn wait(&self) -> Result<()> {
+        self.state.wait()
+    }
+
+    pub(crate) fn state(&self) -> Result<RegressionExecutorState> {
+        self.state.state()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn postprocessor(&self) -> &P {
+        &self.postprocessor
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn postprocessor_mut(&mut self) -> &mut P {
+        &mut self.postprocessor
+    }
+}
+
+impl<B, P> RegressionGeometryExecution<B, P>
+where
+    B: RegressionBackend,
+{
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn execute<C>(
+        &mut self,
+        tracks: &[RegressionTrack<'_>],
+        callback: C,
+    ) -> Result<PumpStatus>
+    where
+        C: FnMut(RegressionCallbackMetadata, &B::Output) -> bool,
+    {
+        self.state.pump(tracks, &mut self.backend, callback)
     }
 }
 
@@ -341,11 +453,17 @@ mod tests {
                 input_strength: 1.0,
             },
         ];
-        let executor = RegressionExecutor::new(contract(), 2).unwrap();
+        let backend = |track, input: &RegressionFrameInput| Ok((track, input.audio.clone()));
+        let mut execution =
+            RegressionGeometryExecution::with_dependencies(contract(), 2, backend, Vec::new())
+                .unwrap();
+        assert!(execution.postprocessor().is_empty());
+        execution.postprocessor_mut().push("trace");
+        let _ = execution.backend();
+        let _ = execution.backend_mut();
         let mut seen = Vec::new();
-        let mut backend = |track, input: &RegressionFrameInput| Ok((track, input.audio.clone()));
-        let status = executor
-            .pump(&tracks, &mut backend, |metadata, _| {
+        let status = execution
+            .execute(&tracks, |metadata, _| {
                 seen.push(metadata);
                 metadata.track != 0
             })
@@ -353,8 +471,8 @@ mod tests {
         assert_eq!(status, PumpStatus::Interrupted);
         assert_eq!(seen.iter().filter(|m| m.track == 0).count(), 1);
         assert_eq!(seen.iter().filter(|m| m.track == 1).count(), 0);
-        assert_eq!(executor.state().unwrap().completed_tracks, 2);
-        executor.wait().unwrap();
+        assert_eq!(execution.state().unwrap().completed_tracks, 2);
+        execution.wait().unwrap();
         assert!(audio0.nb_dropped_samples() > 0);
     }
 

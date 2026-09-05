@@ -134,14 +134,14 @@ pub enum EmotionExecutionStatus {
     Complete,
 }
 
-pub struct EmotionExecutor {
+struct ClassifierExecutionState {
     contract: ClassifierContract,
     processors: Vec<EmotionPostProcessor>,
     inference_indices: Vec<usize>,
 }
 
-impl EmotionExecutor {
-    pub fn new(
+impl ClassifierExecutionState {
+    fn new(
         contract: ClassifierContract,
         data: EmotionPostProcessData,
         parameters: EmotionPostProcessParameters,
@@ -163,21 +163,21 @@ impl EmotionExecutor {
         })
     }
 
-    pub fn contract(&self) -> &ClassifierContract {
+    fn contract(&self) -> &ClassifierContract {
         &self.contract
     }
 
-    pub fn output_emotion_length(&self) -> usize {
+    fn output_emotion_length(&self) -> usize {
         self.processors[0].data().output_emotion_length
     }
 
-    pub fn has_execution_started(&self, track: usize) -> bool {
+    fn has_execution_started(&self, track: usize) -> bool {
         self.inference_indices
             .get(track)
             .is_some_and(|index| *index != 0)
     }
 
-    pub fn reset(&mut self, track: usize) -> Result<()> {
+    fn reset(&mut self, track: usize) -> Result<()> {
         let index = self
             .inference_indices
             .get_mut(track)
@@ -187,7 +187,7 @@ impl EmotionExecutor {
         Ok(())
     }
 
-    pub fn set_parameters(
+    fn set_parameters(
         &mut self,
         track: usize,
         parameters: EmotionPostProcessParameters,
@@ -203,7 +203,7 @@ impl EmotionExecutor {
             .set_parameters(parameters)
     }
 
-    pub fn execute<B, C>(
+    fn execute<B, C>(
         &mut self,
         tracks: &[EmotionTrack<'_>],
         backend: &mut B,
@@ -333,6 +333,139 @@ impl EmotionExecutor {
     }
 }
 
+/// Internal classifier execution with an owned backend.
+///
+/// The concrete `B` remains an implementation detail. The legacy
+/// [`EmotionExecutor`] alias keeps the previous backend-as-argument API until
+/// Step 7, while Step 3 can instantiate this type with the TensorRT backend.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct ClassifierExecution<B> {
+    state: ClassifierExecutionState,
+    backend: B,
+}
+
+/// Legacy low-level classifier scheduler retained until Step 7.
+pub struct EmotionExecutor {
+    inner: ClassifierExecution<()>,
+}
+
+impl EmotionExecutor {
+    pub fn new(
+        contract: ClassifierContract,
+        data: EmotionPostProcessData,
+        parameters: EmotionPostProcessParameters,
+        track_count: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: ClassifierExecution::with_backend(contract, data, parameters, track_count, ())?,
+        })
+    }
+
+    pub fn execute<B, C>(
+        &mut self,
+        tracks: &[EmotionTrack<'_>],
+        backend: &mut B,
+        callback: C,
+    ) -> Result<EmotionExecutionStatus>
+    where
+        B: ClassifierBackend,
+        C: FnMut(EmotionCallbackMetadata, &[f32]) -> bool,
+    {
+        self.inner.state.execute(tracks, backend, callback)
+    }
+
+    pub fn contract(&self) -> &ClassifierContract {
+        self.inner.contract()
+    }
+
+    pub fn output_emotion_length(&self) -> usize {
+        self.inner.output_emotion_length()
+    }
+
+    pub fn has_execution_started(&self, track: usize) -> bool {
+        self.inner.has_execution_started(track)
+    }
+
+    pub fn reset(&mut self, track: usize) -> Result<()> {
+        self.inner.reset(track)
+    }
+
+    pub fn set_parameters(
+        &mut self,
+        track: usize,
+        parameters: EmotionPostProcessParameters,
+    ) -> Result<()> {
+        self.inner.set_parameters(track, parameters)
+    }
+}
+
+impl<B> ClassifierExecution<B> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_backend(
+        contract: ClassifierContract,
+        data: EmotionPostProcessData,
+        parameters: EmotionPostProcessParameters,
+        track_count: usize,
+        backend: B,
+    ) -> Result<Self> {
+        Ok(Self {
+            state: ClassifierExecutionState::new(contract, data, parameters, track_count)?,
+            backend,
+        })
+    }
+
+    pub(crate) fn contract(&self) -> &ClassifierContract {
+        self.state.contract()
+    }
+
+    pub(crate) fn output_emotion_length(&self) -> usize {
+        self.state.output_emotion_length()
+    }
+
+    pub(crate) fn has_execution_started(&self, track: usize) -> bool {
+        self.state.has_execution_started(track)
+    }
+
+    pub(crate) fn reset(&mut self, track: usize) -> Result<()> {
+        self.state.reset(track)
+    }
+
+    pub(crate) fn set_parameters(
+        &mut self,
+        track: usize,
+        parameters: EmotionPostProcessParameters,
+    ) -> Result<()> {
+        self.state.set_parameters(track, parameters)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+}
+
+impl<B> ClassifierExecution<B>
+where
+    B: ClassifierBackend,
+{
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn execute_internal<C>(
+        &mut self,
+        tracks: &[EmotionTrack<'_>],
+        callback: C,
+    ) -> Result<EmotionExecutionStatus>
+    where
+        C: FnMut(EmotionCallbackMetadata, &[f32]) -> bool,
+    {
+        self.state.execute(tracks, &mut self.backend, callback)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,8 +559,27 @@ mod tests {
 
     #[test]
     fn executor_batches_tracks_and_generates_skipped_frames() {
+        #[derive(Default)]
+        struct BackendTrace {
+            calls: Vec<(usize, f32)>,
+        }
+
+        impl ClassifierBackend for BackendTrace {
+            fn infer(&mut self, track: usize, input: &[f32]) -> Result<Vec<f32>> {
+                self.calls.push((track, input[4]));
+                Ok(vec![1.0, 0.0, -1.0])
+            }
+        }
+
         let (data, parameters) = processor_data();
-        let mut executor = EmotionExecutor::new(contract(1), data, parameters, 2).unwrap();
+        let mut execution = ClassifierExecution::with_backend(
+            contract(1),
+            data,
+            parameters,
+            2,
+            BackendTrace::default(),
+        )
+        .unwrap();
         let first = audio();
         let second = audio();
         let tracks = [
@@ -442,14 +594,11 @@ mod tests {
                 input_strength: 0.5,
             },
         ];
-        let mut batches = Vec::new();
-        let mut backend = |track: usize, input: &[f32]| {
-            batches.push((track, input[4]));
-            Ok(vec![1.0, 0.0, -1.0])
-        };
+        assert!(execution.backend().calls.is_empty());
+        execution.backend_mut().calls.reserve(2);
         let mut metadata = Vec::new();
-        let status = executor
-            .execute(&tracks, &mut backend, |frame, output| {
+        let status = execution
+            .execute_internal(&tracks, |frame, output| {
                 assert_eq!(output.len(), 3);
                 metadata.push(frame);
                 true
@@ -462,7 +611,7 @@ mod tests {
                 frames: 4
             }
         );
-        assert_eq!(batches, [(0, 1.0), (1, 0.5)]);
+        assert_eq!(execution.backend().calls, [(0, 1.0), (1, 0.5)]);
         assert_eq!(
             metadata
                 .iter()

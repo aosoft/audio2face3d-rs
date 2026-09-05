@@ -14,8 +14,8 @@ pub enum InteractiveEmotionStatus {
     Interrupted { frames: usize },
 }
 
-/// Offline single-track executor with separate inference and post-process caches.
-pub struct InteractiveEmotionExecutor<B> {
+/// Internal classifier execution with separate inference and post-process caches.
+pub(crate) struct ClassifierInteractiveExecution<B> {
     backend: B,
     contract: ClassifierContract,
     data: EmotionPostProcessData,
@@ -26,7 +26,70 @@ pub struct InteractiveEmotionExecutor<B> {
     cached_audio_length: Option<usize>,
 }
 
+/// Legacy generic executor retained until the Step 7 API removal.
+pub struct InteractiveEmotionExecutor<B> {
+    inner: ClassifierInteractiveExecution<B>,
+}
+
 impl<B: ClassifierBackend> InteractiveEmotionExecutor<B> {
+    pub fn new(
+        backend: B,
+        contract: ClassifierContract,
+        data: EmotionPostProcessData,
+        parameters: EmotionPostProcessParameters,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: ClassifierInteractiveExecution::new(backend, contract, data, parameters)?,
+        })
+    }
+
+    pub fn inference_cache_is_valid(&self) -> bool {
+        self.inner.inference_cache_is_valid()
+    }
+
+    pub fn invalidate_audio(&mut self) {
+        self.inner.invalidate_audio();
+    }
+
+    pub fn set_input_strength(&mut self, strength: f32) -> Result<()> {
+        self.inner.set_input_strength(strength)
+    }
+
+    pub fn set_inferences_to_skip(&mut self, skip: usize) -> Result<()> {
+        self.inner.set_inferences_to_skip(skip)
+    }
+
+    pub fn set_parameters(&mut self, parameters: EmotionPostProcessParameters) -> Result<()> {
+        self.inner.set_parameters(parameters)
+    }
+
+    pub fn compute_all<C>(
+        &mut self,
+        audio: &AudioAccumulator,
+        preferred: Option<&EmotionAccumulator>,
+        callback: C,
+    ) -> Result<InteractiveEmotionStatus>
+    where
+        C: FnMut(EmotionCallbackMetadata, &[f32]) -> bool,
+    {
+        self.inner.compute_all(audio, preferred, callback)
+    }
+
+    pub fn compute_frame<C>(
+        &mut self,
+        frame: usize,
+        audio: &AudioAccumulator,
+        preferred: Option<&EmotionAccumulator>,
+        callback: C,
+    ) -> Result<InteractiveEmotionStatus>
+    where
+        C: FnMut(EmotionCallbackMetadata, &[f32]) -> bool,
+    {
+        self.inner.compute_frame(frame, audio, preferred, callback)
+    }
+}
+
+impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
     pub fn new(
         backend: B,
         contract: ClassifierContract,
@@ -242,7 +305,7 @@ mod tests {
     use std::rc::Rc;
 
     fn setup() -> (
-        InteractiveEmotionExecutor<impl ClassifierBackend>,
+        ClassifierInteractiveExecution<impl ClassifierBackend>,
         AudioAccumulator,
         Rc<Cell<usize>>,
     ) {
@@ -271,7 +334,7 @@ mod tests {
         audio.accumulate(&[1.0; 16]).unwrap();
         audio.close().unwrap();
         (
-            InteractiveEmotionExecutor::new(backend, contract, data, parameters).unwrap(),
+            ClassifierInteractiveExecution::new(backend, contract, data, parameters).unwrap(),
             audio,
             calls,
         )

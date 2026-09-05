@@ -49,23 +49,23 @@ pub enum DiffusionExecutionStatus {
 }
 
 #[derive(Debug)]
-struct ExecutorState {
+struct DiffusionSchedulerState {
     running: bool,
     inferences: Vec<usize>,
 }
 
 /// Stateful multi-track scheduler matching the SDK's frame-major callback order.
 #[derive(Debug)]
-pub struct DiffusionExecutor {
+struct DiffusionExecutionState {
     contract: DiffusionContract,
     recurrent: Mutex<DiffusionState>,
     noise: Mutex<PhiloxNoise>,
-    state: Mutex<ExecutorState>,
+    state: Mutex<DiffusionSchedulerState>,
     idle: Condvar,
 }
 
-impl DiffusionExecutor {
-    pub fn new(contract: DiffusionContract, track_count: usize, seed: u64) -> Result<Self> {
+impl DiffusionExecutionState {
+    fn new(contract: DiffusionContract, track_count: usize, seed: u64) -> Result<Self> {
         if !(1..=MAX_DIFFUSION_TRACKS).contains(&track_count) {
             return Err(invalid(format!(
                 "diffusion track count must be in 1..={MAX_DIFFUSION_TRACKS}"
@@ -77,7 +77,7 @@ impl DiffusionExecutor {
             contract,
             recurrent: Mutex::new(recurrent),
             noise: Mutex::new(noise),
-            state: Mutex::new(ExecutorState {
+            state: Mutex::new(DiffusionSchedulerState {
                 running: false,
                 inferences: vec![0; track_count],
             }),
@@ -90,7 +90,7 @@ impl DiffusionExecutor {
     /// A callback returning false suppresses the remaining frames of that track
     /// for this inference only. Other tracks and recurrent-state advancement are
     /// intentionally unaffected, matching the original executor.
-    pub fn execute<B, C>(
+    fn execute<B, C>(
         &self,
         tracks: &[DiffusionTrack<'_>],
         backend: &mut B,
@@ -333,7 +333,7 @@ impl DiffusionExecutor {
         Ok(())
     }
 
-    pub fn reset(&self, track: usize) -> Result<()> {
+    fn reset(&self, track: usize) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| poisoned())?;
         let inference = state
             .inferences
@@ -347,12 +347,127 @@ impl DiffusionExecutor {
         self.noise.lock().map_err(|_| poisoned())?.reset(track, 0)
     }
 
-    pub fn wait(&self) -> Result<()> {
+    fn wait(&self) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| poisoned())?;
         while state.running {
             state = self.idle.wait(state).map_err(|_| poisoned())?;
         }
         Ok(())
+    }
+}
+
+/// Internal static-dispatch Diffusion execution.
+///
+/// The concrete backend and post-processor stay behind the non-generic
+/// facade. The legacy [`DiffusionExecutor`] alias is retained until Step 7.
+#[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct DiffusionGeometryExecution<B, P> {
+    state: DiffusionExecutionState,
+    backend: B,
+    postprocessor: P,
+}
+
+/// Legacy low-level scheduler retained until the Step 7 API removal.
+#[derive(Debug)]
+pub struct DiffusionExecutor {
+    inner: DiffusionGeometryExecution<(), ()>,
+}
+
+impl DiffusionExecutor {
+    pub fn new(contract: DiffusionContract, track_count: usize, seed: u64) -> Result<Self> {
+        Ok(Self {
+            inner: DiffusionGeometryExecution::with_dependencies(
+                contract,
+                track_count,
+                seed,
+                (),
+                (),
+            )?,
+        })
+    }
+
+    pub fn execute<B, C>(
+        &self,
+        tracks: &[DiffusionTrack<'_>],
+        backend: &mut B,
+        callback: C,
+    ) -> Result<DiffusionExecutionStatus>
+    where
+        B: DiffusionBackend,
+        C: FnMut(DiffusionCallbackMetadata, &[f32]) -> bool,
+    {
+        self.inner.state.execute(tracks, backend, callback)
+    }
+
+    pub fn reset(&self, track: usize) -> Result<()> {
+        self.inner.reset(track)
+    }
+
+    pub fn wait(&self) -> Result<()> {
+        self.inner.wait()
+    }
+}
+
+impl<B, P> DiffusionGeometryExecution<B, P> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_dependencies(
+        contract: DiffusionContract,
+        track_count: usize,
+        seed: u64,
+        backend: B,
+        postprocessor: P,
+    ) -> Result<Self> {
+        Ok(Self {
+            state: DiffusionExecutionState::new(contract, track_count, seed)?,
+            backend,
+            postprocessor,
+        })
+    }
+
+    pub(crate) fn reset(&self, track: usize) -> Result<()> {
+        self.state.reset(track)
+    }
+
+    pub(crate) fn wait(&self) -> Result<()> {
+        self.state.wait()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn postprocessor(&self) -> &P {
+        &self.postprocessor
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn postprocessor_mut(&mut self) -> &mut P {
+        &mut self.postprocessor
+    }
+}
+
+impl<B, P> DiffusionGeometryExecution<B, P>
+where
+    B: DiffusionBackend,
+{
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn execute_internal<C>(
+        &mut self,
+        tracks: &[DiffusionTrack<'_>],
+        callback: C,
+    ) -> Result<DiffusionExecutionStatus>
+    where
+        C: FnMut(DiffusionCallbackMetadata, &[f32]) -> bool,
+    {
+        self.state.execute(tracks, &mut self.backend, callback)
     }
 }
 
@@ -426,9 +541,8 @@ mod tests {
                 input_strength: 1.0,
             },
         ];
-        let executor = DiffusionExecutor::new(contract.clone(), 2, 9).unwrap();
         let result_size = contract.result_layout.total().unwrap();
-        let mut backend = |inputs: &[(usize, DiffusionFrameInput)]| {
+        let backend = |inputs: &[(usize, DiffusionFrameInput)]| {
             Ok(inputs
                 .iter()
                 .map(|(track, input)| DiffusionInferenceOutput {
@@ -437,22 +551,32 @@ mod tests {
                 })
                 .collect())
         };
+        let mut execution = DiffusionGeometryExecution::with_dependencies(
+            contract.clone(),
+            2,
+            9,
+            backend,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(execution.postprocessor().is_empty());
+        execution.postprocessor_mut().push("trace");
+        let _ = execution.backend();
+        let _ = execution.backend_mut();
         for _ in 0..2 {
-            executor
-                .execute(&tracks, &mut backend, |_, _| true)
-                .unwrap();
+            execution.execute_internal(&tracks, |_, _| true).unwrap();
         }
         let mut seen = Vec::new();
-        executor
-            .execute(&tracks, &mut backend, |metadata, _| {
+        execution
+            .execute_internal(&tracks, |metadata, _| {
                 seen.push(metadata);
                 metadata.track != 0
             })
             .unwrap();
         assert_eq!(seen.iter().filter(|item| item.track == 0).count(), 1);
         assert!(seen.iter().filter(|item| item.track == 1).count() > 1);
-        executor.wait().unwrap();
-        executor.reset(0).unwrap();
+        execution.wait().unwrap();
+        execution.reset(0).unwrap();
     }
 
     #[test]

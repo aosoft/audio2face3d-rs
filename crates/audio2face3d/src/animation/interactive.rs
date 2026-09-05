@@ -43,7 +43,7 @@ pub enum InteractiveGeometryStatus {
 }
 
 #[derive(Clone, Debug, Default)]
-struct FrameCache {
+struct GeometryFrameExecutionState {
     inference: Option<Vec<f32>>,
     skin: Option<Vec<f32>>,
     tongue: Option<Vec<f32>>,
@@ -51,7 +51,7 @@ struct FrameCache {
     eyes: Option<crate::animation::EyesRotation>,
 }
 
-impl FrameCache {
+impl GeometryFrameExecutionState {
     fn clear_geometry(&mut self) {
         self.skin = None;
         self.tongue = None;
@@ -108,8 +108,8 @@ impl InteractiveGeometryInterrupt {
     }
 }
 
-/// Single-track random-access Regression executor.
-pub struct InteractiveRegressionExecutor<B, P> {
+/// Internal single-track random-access Regression execution.
+pub(crate) struct RegressionGeometryInteractiveExecution<B, P> {
     backend: B,
     contract: RegressionContract,
     postprocessor: P,
@@ -117,12 +117,152 @@ pub struct InteractiveRegressionExecutor<B, P> {
     emotions: EmotionAccumulator,
     implicit_emotion: Vec<f32>,
     input_strength: f32,
-    frames: Vec<FrameCache>,
+    frames: Vec<GeometryFrameExecutionState>,
     input_signature: Option<(usize, usize)>,
     interrupted: Arc<AtomicBool>,
 }
 
+/// Legacy generic executor retained until the Step 7 API removal.
+pub struct InteractiveRegressionExecutor<B, P> {
+    inner: RegressionGeometryInteractiveExecution<B, P>,
+}
+
 impl<B, P> InteractiveRegressionExecutor<B, P>
+where
+    B: RegressionBackend<Output = Vec<f32>>,
+    P: LayeredGeometryPostprocessor,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        backend: B,
+        contract: RegressionContract,
+        postprocessor: P,
+        audio: AudioAccumulator,
+        emotions: EmotionAccumulator,
+        implicit_emotion: Vec<f32>,
+        input_strength: f32,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: RegressionGeometryInteractiveExecution::new(
+                backend,
+                contract,
+                postprocessor,
+                audio,
+                emotions,
+                implicit_emotion,
+                input_strength,
+            )?,
+        })
+    }
+
+    pub fn audio(&self) -> &AudioAccumulator {
+        self.inner.audio()
+    }
+
+    pub fn emotions(&self) -> &EmotionAccumulator {
+        self.inner.emotions()
+    }
+
+    pub fn backend(&self) -> &B {
+        self.inner.backend()
+    }
+
+    pub fn backend_mut(&mut self) -> &mut B {
+        self.inner.backend_mut()
+    }
+
+    pub fn postprocessor(&self) -> &P {
+        self.inner.postprocessor()
+    }
+
+    pub fn interrupt_handle(&self) -> InteractiveGeometryInterrupt {
+        self.inner.interrupt_handle()
+    }
+
+    pub fn total_frames(&self) -> Result<usize> {
+        self.inner.total_frames()
+    }
+
+    pub fn sampling_rate(&self) -> usize {
+        self.inner.sampling_rate()
+    }
+
+    pub fn frame_rate(&self) -> (usize, usize) {
+        self.inner.frame_rate()
+    }
+
+    pub fn frame_timestamp(&self, frame: usize) -> Result<i64> {
+        self.inner.frame_timestamp(frame)
+    }
+
+    pub fn invalidate(&mut self, layer: GeometryInvalidationLayer) {
+        self.inner.invalidate(layer);
+    }
+
+    pub fn is_valid(&self, layer: GeometryInvalidationLayer) -> bool {
+        self.inner.is_valid(layer)
+    }
+
+    pub fn set_input_strength(&mut self, value: f32) -> Result<()> {
+        self.inner.set_input_strength(value)
+    }
+
+    pub fn set_implicit_emotion(&mut self, value: Vec<f32>) -> Result<()> {
+        self.inner.set_implicit_emotion(value)
+    }
+
+    pub fn skin_parameters(&self) -> SkinAnimatorParams {
+        self.inner.skin_parameters()
+    }
+
+    pub fn set_skin_parameters(&mut self, value: SkinAnimatorParams) -> Result<()> {
+        self.inner.set_skin_parameters(value)
+    }
+
+    pub fn tongue_parameters(&self) -> TongueAnimatorParams {
+        self.inner.tongue_parameters()
+    }
+
+    pub fn set_tongue_parameters(&mut self, value: TongueAnimatorParams) -> Result<()> {
+        self.inner.set_tongue_parameters(value)
+    }
+
+    pub fn teeth_parameters(&self) -> JawParameters {
+        self.inner.teeth_parameters()
+    }
+
+    pub fn set_teeth_parameters(&mut self, value: JawParameters) -> Result<()> {
+        self.inner.set_teeth_parameters(value)
+    }
+
+    pub fn eyes_parameters(&self) -> EyesAnimatorParams {
+        self.inner.eyes_parameters()
+    }
+
+    pub fn set_eyes_parameters(&mut self, value: EyesAnimatorParams) -> Result<()> {
+        self.inner.set_eyes_parameters(value)
+    }
+
+    pub fn compute_frame<C>(
+        &mut self,
+        frame: usize,
+        callback: C,
+    ) -> Result<InteractiveGeometryStatus>
+    where
+        C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
+    {
+        self.inner.compute_frame(frame, callback)
+    }
+
+    pub fn compute_all_frames<C>(&mut self, callback: C) -> Result<InteractiveGeometryStatus>
+    where
+        C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
+    {
+        self.inner.compute_all_frames(callback)
+    }
+}
+
+impl<B, P> RegressionGeometryInteractiveExecution<B, P>
 where
     B: RegressionBackend<Output = Vec<f32>>,
     P: LayeredGeometryPostprocessor,
@@ -372,7 +512,8 @@ where
             self.invalidate(GeometryInvalidationLayer::Inference);
         }
         if self.frames.len() != total {
-            self.frames.resize_with(total, FrameCache::default);
+            self.frames
+                .resize_with(total, GeometryFrameExecutionState::default);
             self.invalidate(GeometryInvalidationLayer::Inference);
         }
         self.input_signature = Some(signature);
@@ -430,8 +571,8 @@ where
     }
 }
 
-/// Single-track random-access Diffusion executor with GRU checkpoints.
-pub struct InteractiveDiffusionExecutor<B, P> {
+/// Internal single-track random-access Diffusion execution with GRU checkpoints.
+pub(crate) struct DiffusionGeometryInteractiveExecution<B, P> {
     backend: B,
     contract: DiffusionContract,
     postprocessor: P,
@@ -442,14 +583,162 @@ pub struct InteractiveDiffusionExecutor<B, P> {
     preview_inferences: usize,
     seed: u64,
     frames_before_audio: usize,
-    frames: Vec<FrameCache>,
+    frames: Vec<GeometryFrameExecutionState>,
     checkpoints: Vec<Option<Vec<f32>>>,
     exact_checkpoints: bool,
     input_signature: Option<(usize, usize, usize)>,
     interrupted: Arc<AtomicBool>,
 }
 
+/// Legacy generic executor retained until the Step 7 API removal.
+pub struct InteractiveDiffusionExecutor<B, P> {
+    inner: DiffusionGeometryInteractiveExecution<B, P>,
+}
+
 impl<B, P> InteractiveDiffusionExecutor<B, P>
+where
+    B: DiffusionBackend,
+    P: LayeredGeometryPostprocessor,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        backend: B,
+        contract: DiffusionContract,
+        postprocessor: P,
+        audio: AudioAccumulator,
+        emotions: EmotionAccumulator,
+        identity_index: usize,
+        input_strength: f32,
+        preview_inferences: usize,
+        seed: u64,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: DiffusionGeometryInteractiveExecution::new(
+                backend,
+                contract,
+                postprocessor,
+                audio,
+                emotions,
+                identity_index,
+                input_strength,
+                preview_inferences,
+                seed,
+            )?,
+        })
+    }
+
+    pub fn audio(&self) -> &AudioAccumulator {
+        self.inner.audio()
+    }
+
+    pub fn emotions(&self) -> &EmotionAccumulator {
+        self.inner.emotions()
+    }
+
+    pub fn backend(&self) -> &B {
+        self.inner.backend()
+    }
+
+    pub fn backend_mut(&mut self) -> &mut B {
+        self.inner.backend_mut()
+    }
+
+    pub fn interrupt_handle(&self) -> InteractiveGeometryInterrupt {
+        self.inner.interrupt_handle()
+    }
+
+    pub fn preview_inferences(&self) -> usize {
+        self.inner.preview_inferences()
+    }
+
+    pub fn set_preview_inferences(&mut self, value: usize) {
+        self.inner.set_preview_inferences(value);
+    }
+
+    pub fn total_frames(&self) -> Result<usize> {
+        self.inner.total_frames()
+    }
+
+    pub fn sampling_rate(&self) -> usize {
+        self.inner.sampling_rate()
+    }
+
+    pub fn frame_rate(&self) -> (usize, usize) {
+        self.inner.frame_rate()
+    }
+
+    pub fn frame_timestamp(&self, frame: usize) -> Result<i64> {
+        self.inner.frame_timestamp(frame)
+    }
+
+    pub fn invalidate(&mut self, layer: GeometryInvalidationLayer) {
+        self.inner.invalidate(layer);
+    }
+
+    pub fn is_valid(&self, layer: GeometryInvalidationLayer) -> bool {
+        self.inner.is_valid(layer)
+    }
+
+    pub fn set_input_strength(&mut self, value: f32) -> Result<()> {
+        self.inner.set_input_strength(value)
+    }
+
+    pub fn set_identity_index(&mut self, value: usize) -> Result<()> {
+        self.inner.set_identity_index(value)
+    }
+
+    pub fn skin_parameters(&self) -> SkinAnimatorParams {
+        self.inner.skin_parameters()
+    }
+
+    pub fn set_skin_parameters(&mut self, value: SkinAnimatorParams) -> Result<()> {
+        self.inner.set_skin_parameters(value)
+    }
+
+    pub fn tongue_parameters(&self) -> TongueAnimatorParams {
+        self.inner.tongue_parameters()
+    }
+
+    pub fn set_tongue_parameters(&mut self, value: TongueAnimatorParams) -> Result<()> {
+        self.inner.set_tongue_parameters(value)
+    }
+
+    pub fn teeth_parameters(&self) -> JawParameters {
+        self.inner.teeth_parameters()
+    }
+
+    pub fn set_teeth_parameters(&mut self, value: JawParameters) -> Result<()> {
+        self.inner.set_teeth_parameters(value)
+    }
+
+    pub fn eyes_parameters(&self) -> EyesAnimatorParams {
+        self.inner.eyes_parameters()
+    }
+
+    pub fn set_eyes_parameters(&mut self, value: EyesAnimatorParams) -> Result<()> {
+        self.inner.set_eyes_parameters(value)
+    }
+
+    pub fn compute_frame<C>(
+        &mut self,
+        frame: usize,
+        callback: C,
+    ) -> Result<InteractiveGeometryStatus>
+    where
+        C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
+    {
+        self.inner.compute_frame(frame, callback)
+    }
+
+    pub fn compute_all_frames<C>(&mut self, callback: C) -> Result<InteractiveGeometryStatus>
+    where
+        C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
+    {
+        self.inner.compute_all_frames(callback)
+    }
+}
+
+impl<B, P> DiffusionGeometryInteractiveExecution<B, P>
 where
     B: DiffusionBackend,
     P: LayeredGeometryPostprocessor,
@@ -734,7 +1023,8 @@ where
             self.invalidate(GeometryInvalidationLayer::Inference);
         }
         if self.frames.len() != total {
-            self.frames.resize_with(total, FrameCache::default);
+            self.frames
+                .resize_with(total, GeometryFrameExecutionState::default);
             self.invalidate(GeometryInvalidationLayer::Inference);
         }
         self.input_signature = Some(signature);
@@ -896,14 +1186,14 @@ where
     }
 }
 
-fn layer_valid(frames: &[FrameCache], layer: GeometryInvalidationLayer) -> bool {
+fn layer_valid(frames: &[GeometryFrameExecutionState], layer: GeometryInvalidationLayer) -> bool {
     if layer == GeometryInvalidationLayer::None {
         return true;
     }
     if frames.is_empty() {
         return false;
     }
-    let valid = |frame: &FrameCache, layer| match layer {
+    let valid = |frame: &GeometryFrameExecutionState, layer| match layer {
         GeometryInvalidationLayer::None => true,
         GeometryInvalidationLayer::All => {
             frame.inference.is_some()
@@ -1126,7 +1416,7 @@ mod tests {
         let layers = MockLayers::new();
         let layer_calls = Rc::clone(&layers.calls);
         let (audio, emotions) = closed_inputs(1);
-        let mut executor = InteractiveRegressionExecutor::new(
+        let mut executor = RegressionGeometryInteractiveExecution::new(
             backend,
             regression_contract(),
             layers,
@@ -1183,7 +1473,7 @@ mod tests {
         let backend = |_: usize, input: &crate::animation::RegressionFrameInput| {
             Ok(vec![input.timestamp as f32; 9])
         };
-        let mut executor = InteractiveRegressionExecutor::new(
+        let mut executor = RegressionGeometryInteractiveExecution::new(
             backend,
             regression_contract(),
             MockLayers::new(),
@@ -1270,7 +1560,7 @@ mod tests {
                 .collect())
         };
         let (audio, emotions) = closed_inputs(1);
-        let mut executor = InteractiveDiffusionExecutor::new(
+        let mut executor = DiffusionGeometryInteractiveExecution::new(
             backend,
             contract,
             MockLayers::new(),
