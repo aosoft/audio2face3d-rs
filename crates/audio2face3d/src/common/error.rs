@@ -3,7 +3,55 @@ use thiserror::Error;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Shared failures for the SDK-facing facade and its internal adapters.
+///
+/// Corresponds to `nva2x` error categories in `audio2x-common/include/audio2x/error.h`.
+/// Normal waiting, completion, and interruption belong to execution reports.
+/// Legacy variants remain during migration; existing algorithms are not remapped here.
 pub enum Error {
+    #[error("invalid {field}: {reason}")]
+    InvalidArgument { field: &'static str, reason: String },
+    #[error("{field} index {index} is outside length {len}")]
+    OutOfBounds {
+        field: &'static str,
+        index: usize,
+        len: usize,
+    },
+    #[error("{field} has size {actual}, expected {expected}")]
+    SizeMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("cannot {operation} while {state}")]
+    InvalidState {
+        operation: &'static str,
+        state: &'static str,
+    },
+    #[error("execution has already started")]
+    ExecutionAlreadyStarted,
+    #[error("input history is unavailable for track {track}")]
+    InputHistoryUnavailable { track: usize },
+    #[error("unsupported operation: {operation}")]
+    Unsupported { operation: &'static str },
+    #[error("feature {feature} is unavailable")]
+    FeatureUnavailable { feature: &'static str },
+    #[error("model error: {message}")]
+    Model { message: String },
+    #[error("I/O {operation} failed: {message}")]
+    Io {
+        operation: &'static str,
+        message: String,
+    },
+    #[error("TensorRT {operation} failed: {message}")]
+    TensorRt {
+        operation: &'static str,
+        message: String,
+    },
+    #[error("worker failed for track {track}: {message}")]
+    Worker { track: usize, message: String },
+    #[error("{resource} lock is poisoned")]
+    Poisoned { resource: &'static str },
     #[error("{field} value {value} does not fit in {target}")]
     IntegerOverflow {
         field: &'static str,

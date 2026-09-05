@@ -1,5 +1,34 @@
 //! CUDA ownership and asynchronous resource primitives.
+//!
+//! [`DeviceView`] and [`CudaStreamRef`] are portable borrowed contracts: they
+//! are available with or without the `cuda` feature, so device-resident result
+//! signatures have one type identity in every feature configuration. Owning
+//! streams, buffers, allocation, copies, and kernel operations require the
+//! `cuda` feature.
+//!
+//! # `Send` and `Sync` implementation status
+//!
+//! Step 1 preserves all existing native-owned CUDA types as `!Send + !Sync`.
+//! Borrowed [`DeviceView`] and [`CudaStreamRef`] are also conservatively
+//! `!Send + !Sync`. The approved D-04 target matrix, not yet implemented, is:
+//!
+//! - `GpuDevice`, `CudaStream`, `CudaEvent`, `CudaModule`, and `CudaFunction`:
+//!   `Send + Sync` after context and destruction auditing.
+//! - `DeviceBuffer<T>` and [`DeviceView`]: `Send` when `T: Send`, and `Sync`
+//!   when `T: Sync`, after asynchronous lifetime and write-access auditing.
+//! - [`CudaStreamRef`]: follows the audited owning stream contract.
+//! - `CublasHandle`: at least `Send`; `Sync` only with fixed configuration and
+//!   serialized calls on one handle.
+//! - `CurandHandle`: `Send + !Sync`.
+//! - TensorRT sessions and completed executors: `Send + !Sync`.
+//!
+//! These future auto traits require Step 3 current-context restoration,
+//! concurrency control, and drop-order guarantees. No marker-only `unsafe
+//! impl` is used in Step 1. `Send` executor futures remain compatible with
+//! synchronous result callbacks because borrowed CUDA values are temporary on
+//! the polling thread and are not retained across an `.await` boundary.
 
+mod borrowed;
 pub mod build_config;
 
 #[cfg(feature = "cuda")]
@@ -10,10 +39,12 @@ mod native;
 #[cfg(feature = "cuda")]
 pub use accumulator::{DeviceAudioAccumulatorExt, DeviceFloatAccumulatorExt};
 
+pub use borrowed::{CudaStreamRef, DeviceView};
+
 #[cfg(feature = "cuda")]
 pub use native::{
     CublasFence, CublasHandle, CublasTranspose, CudaEvent, CudaFunction, CudaModule, CudaStream,
-    CurandFence, CurandHandle, DeviceBuffer, DeviceView, GpuDevice, PcaDimensions,
+    CurandFence, CurandHandle, DeviceBuffer, GpuDevice, PcaDimensions,
 };
 
 use crate::common::{Error, Result};

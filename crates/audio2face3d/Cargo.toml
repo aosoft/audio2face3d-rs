@@ -12,6 +12,10 @@ keywords = ["audio2face", "animation", "cuda", "tensorrt"]
 categories = ["multimedia", "api-bindings"]
 build = "build.rs"
 
+[package.metadata.docs.rs]
+all-features = false
+default-features = true
+
 [features]
 default = ["animation", "emotion"]
 animation = []

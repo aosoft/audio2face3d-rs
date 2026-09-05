@@ -1,5 +1,5 @@
 use crate::common::{Error, Result};
-use crate::cuda::{DeviceId, ensure_same_device};
+use crate::cuda::{CudaStreamRef, DeviceId, DeviceView, ensure_same_device};
 use cudarc::driver::sys::*;
 use std::ffi::CString;
 use std::marker::PhantomData;
@@ -150,6 +150,16 @@ impl CudaStream {
     /// destroyed. Any queued work must complete before this stream is dropped.
     pub fn as_raw(&self) -> *mut std::ffi::c_void {
         self.raw.cast()
+    }
+
+    /// Borrows this stream for a device-result callback.
+    ///
+    /// The returned reference has the same portable type regardless of whether
+    /// downstream code is type-checked with the `cuda` feature enabled.
+    pub fn as_ref(&self) -> CudaStreamRef<'_> {
+        // SAFETY: the borrow prevents this owning stream from being dropped for
+        // the returned lifetime, and the stream's device cannot change.
+        unsafe { CudaStreamRef::from_raw(self.as_raw(), self.device_id()) }
     }
 
     pub fn synchronize(&self) -> Result<()> {
@@ -401,9 +411,9 @@ impl CublasHandle {
                 m,
                 n,
                 &alpha,
-                matrix.pointer as usize as *const f32,
+                matrix.as_raw() as usize as *const f32,
                 m,
-                input.pointer as usize as *const f32,
+                input.as_raw() as usize as *const f32,
                 1,
                 &beta,
                 output.pointer as usize as *mut f32,
@@ -498,9 +508,9 @@ impl CublasHandle {
                 n,
                 k,
                 &alpha,
-                shapes.pointer as usize as *const f32,
+                shapes.as_raw() as usize as *const f32,
                 m,
-                coefficients.pointer as usize as *const f32,
+                coefficients.as_raw() as usize as *const f32,
                 k,
                 &beta,
                 output.pointer as usize as *mut f32,
@@ -729,12 +739,9 @@ impl<T> DeviceBuffer<T> {
     }
 
     pub fn view(&self) -> DeviceView<'_, T> {
-        DeviceView {
-            pointer: self.pointer,
-            len: self.len,
-            device: self.device.id(),
-            _owner: PhantomData,
-        }
+        // SAFETY: the returned lifetime is borrowed from this allocation, which
+        // owns `pointer` and keeps its device context retained.
+        unsafe { DeviceView::from_raw_parts(self.pointer, self.len, self.device.id()) }
     }
 
     /// Copies a complete host slice to this allocation.
@@ -900,43 +907,19 @@ impl<T> Drop for DeviceBuffer<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct DeviceView<'a, T> {
-    pointer: CUdeviceptr,
-    len: usize,
-    device: DeviceId,
-    _owner: PhantomData<&'a DeviceBuffer<T>>,
-}
-
 impl<'a, T> DeviceView<'a, T> {
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub const fn device_id(&self) -> DeviceId {
-        self.device
-    }
-
-    pub const fn as_raw(&self) -> CUdeviceptr {
-        self.pointer
-    }
-
     /// Copies this view to host memory and synchronizes before returning.
     ///
     /// This is primarily useful for diagnostics and reference capture inside
     /// a device-result callback. Production consumers should normally enqueue
     /// their dependent GPU work directly on the callback stream.
     pub fn copy_to(self, destination: &mut [T], stream: &CudaStream) -> Result<()> {
-        ensure_same_device(self.device, stream.device_id())?;
-        if destination.len() != self.len {
+        ensure_same_device(self.device_id(), stream.device_id())?;
+        if destination.len() != self.len() {
             return Err(Error::InvalidSchema(format!(
                 "copy length {} does not match view length {}",
                 destination.len(),
-                self.len
+                self.len()
             )));
         }
         stream.device.make_current()?;
@@ -947,7 +930,7 @@ impl<'a, T> DeviceView<'a, T> {
             check(
                 cuMemcpyDtoHAsync_v2(
                     destination.as_mut_ptr().cast(),
-                    self.pointer,
+                    self.as_raw(),
                     std::mem::size_of_val(destination),
                     stream.raw,
                 ),
@@ -955,37 +938,6 @@ impl<'a, T> DeviceView<'a, T> {
             )?;
         }
         stream.synchronize()
-    }
-
-    pub fn slice(self, offset: usize, len: usize) -> Result<DeviceView<'a, T>> {
-        let end = offset.checked_add(len).ok_or(Error::IntegerOverflow {
-            field: "device_view_end",
-            value: len,
-            target: "usize",
-        })?;
-        if end > self.len {
-            return Err(Error::InvalidSchema(format!(
-                "device view range {offset}..{end} exceeds length {}",
-                self.len
-            )));
-        }
-        let byte_offset = offset
-            .checked_mul(size_of::<T>())
-            .ok_or(Error::IntegerOverflow {
-                field: "device_view_byte_offset",
-                value: offset,
-                target: "usize",
-            })?;
-        let pointer = self
-            .pointer
-            .checked_add(byte_offset as u64)
-            .ok_or_else(|| Error::InvalidSchema("device view pointer overflow".into()))?;
-        Ok(DeviceView {
-            pointer,
-            len,
-            device: self.device,
-            _owner: PhantomData,
-        })
     }
 }
 

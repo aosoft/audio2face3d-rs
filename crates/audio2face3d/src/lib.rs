@@ -2,6 +2,11 @@
 
 #[cfg(feature = "animation")]
 pub mod animation;
+#[cfg(feature = "emotion")]
+pub mod audio2emotion;
+#[cfg(feature = "animation")]
+pub mod audio2face;
+pub mod audio2x;
 mod benchmark;
 #[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
 mod blendshape_bundle;
