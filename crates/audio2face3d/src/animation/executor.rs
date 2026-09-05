@@ -64,7 +64,7 @@ pub struct RegressionExecutorState {
 struct RegressionSchedulerState {
     running: bool,
     frames: Vec<usize>,
-    stopped: Vec<bool>,
+    completed: Vec<bool>,
 }
 
 /// Runtime state for the regression scheduler.
@@ -79,6 +79,19 @@ struct RegressionExecutionState {
     idle: Condvar,
 }
 
+struct RegressionRunningGuard<'a> {
+    execution: &'a RegressionExecutionState,
+}
+
+impl Drop for RegressionRunningGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.execution.state.lock() {
+            state.running = false;
+            self.execution.idle.notify_all();
+        }
+    }
+}
+
 impl RegressionExecutionState {
     fn new(contract: RegressionContract, track_count: usize) -> Result<Self> {
         if !(1..=MAX_REGRESSION_TRACKS).contains(&track_count) {
@@ -91,7 +104,7 @@ impl RegressionExecutionState {
             state: Mutex::new(RegressionSchedulerState {
                 running: false,
                 frames: vec![0; track_count],
-                stopped: vec![false; track_count],
+                completed: vec![false; track_count],
             }),
             idle: Condvar::new(),
         })
@@ -122,12 +135,8 @@ impl RegressionExecutionState {
         }
         state.running = true;
         drop(state);
-
-        let result = self.pump_inner(tracks, backend, &mut callback);
-        let mut state = self.lock()?;
-        state.running = false;
-        self.idle.notify_all();
-        result
+        let _running = RegressionRunningGuard { execution: self };
+        self.pump_inner(tracks, backend, &mut callback)
     }
 
     fn pump_inner<B, C>(
@@ -140,18 +149,20 @@ impl RegressionExecutionState {
         B: RegressionBackend,
         C: FnMut(RegressionCallbackMetadata, &B::Output) -> bool,
     {
+        let mut callback_active = vec![true; tracks.len()];
+        let mut interrupted = false;
         loop {
             let mut pending = Vec::new();
             for (track_index, track) in tracks.iter().enumerate() {
                 let frame = {
                     let state = self.lock()?;
-                    if state.stopped[track_index] {
+                    if state.completed[track_index] {
                         continue;
                     }
                     state.frames[track_index]
                 };
                 if self.track_finished(track, frame)? {
-                    self.lock()?.stopped[track_index] = true;
+                    self.lock()?.completed[track_index] = true;
                     continue;
                 }
                 if !self.track_ready(track, frame)? {
@@ -168,40 +179,57 @@ impl RegressionExecutionState {
             }
             if pending.is_empty() {
                 let state = self.lock()?;
-                if state.stopped.iter().all(|stopped| *stopped) {
+                if interrupted {
+                    return Ok(PumpStatus::Interrupted);
+                }
+                if state.completed.iter().all(|completed| *completed) {
                     return Ok(PumpStatus::Complete);
                 }
                 return Ok(PumpStatus::AwaitingInput);
             }
-            let inference_inputs: Vec<_> = pending
-                .iter()
-                .map(|(track, _, input)| (*track, input.clone()))
-                .collect();
+            let inference_inputs = (0..tracks.len())
+                .map(|track| {
+                    pending
+                        .iter()
+                        .find(|(pending_track, _, _)| *pending_track == track)
+                        .map_or_else(
+                            || {
+                                (
+                                    track,
+                                    RegressionFrameInput {
+                                        timestamp: 0,
+                                        next_timestamp: 0,
+                                        audio: vec![0.0; self.contract.audio_size],
+                                        emotion: vec![0.0; self.contract.emotion_size],
+                                    },
+                                )
+                            },
+                            |(_, _, input)| (track, input.clone()),
+                        )
+                })
+                .collect::<Vec<_>>();
             let outputs = backend.infer_batch(&inference_inputs)?;
-            if outputs.len() != pending.len() {
+            if outputs.len() != tracks.len() {
                 return Err(Error::InvalidSchema(
-                    "regression backend returned the wrong batch size".into(),
+                    "regression backend returned a non-fixed batch size".into(),
                 ));
             }
-            for ((track_index, frame, input), output) in pending.into_iter().zip(outputs.iter()) {
+            for (track_index, frame, input) in pending {
                 let metadata = RegressionCallbackMetadata {
                     track: track_index,
                     frame,
                     timestamp: input.timestamp,
                     next_timestamp: input.next_timestamp,
                 };
-                let keep_running = callback(metadata, output);
+                if callback_active[track_index] && !callback(metadata, &outputs[track_index]) {
+                    callback_active[track_index] = false;
+                    interrupted = true;
+                }
                 {
                     let mut state = self.lock()?;
                     state.frames[track_index] += 1;
-                    if !keep_running {
-                        state.stopped.fill(true);
-                    }
                 }
                 self.drop_consumed(&tracks[track_index], frame)?;
-                if !keep_running {
-                    return Ok(PumpStatus::Interrupted);
-                }
             }
         }
     }
@@ -265,9 +293,42 @@ impl RegressionExecutionState {
         let state = self.lock()?;
         Ok(RegressionExecutorState {
             running: state.running,
-            completed_tracks: state.stopped.iter().filter(|stopped| **stopped).count(),
+            completed_tracks: state
+                .completed
+                .iter()
+                .filter(|completed| **completed)
+                .count(),
             track_count: state.frames.len(),
         })
+    }
+
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    fn next_frame_index(&self, track: usize) -> Result<usize> {
+        let state = self.lock()?;
+        state.frames.get(track).copied().ok_or(Error::OutOfBounds {
+            field: "track",
+            index: track,
+            len: state.frames.len(),
+        })
+    }
+
+    fn reset(&self, track: usize) -> Result<()> {
+        let mut state = self.lock()?;
+        if state.running {
+            return Err(Error::InvalidState {
+                operation: "reset regression track",
+                state: "execution is running",
+            });
+        }
+        let len = state.frames.len();
+        let frame = state.frames.get_mut(track).ok_or(Error::OutOfBounds {
+            field: "track",
+            index: track,
+            len,
+        })?;
+        *frame = 0;
+        state.completed[track] = false;
+        Ok(())
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, RegressionSchedulerState>> {
@@ -323,6 +384,15 @@ impl RegressionExecutor {
     pub fn state(&self) -> Result<RegressionExecutorState> {
         self.inner.state()
     }
+
+    pub fn reset(&self, track: usize) -> Result<()> {
+        self.inner.reset(track)
+    }
+
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    pub(crate) fn next_frame_index(&self, track: usize) -> Result<usize> {
+        self.inner.state.next_frame_index(track)
+    }
 }
 
 impl<B, P> RegressionGeometryExecution<B, P> {
@@ -346,6 +416,10 @@ impl<B, P> RegressionGeometryExecution<B, P> {
 
     pub(crate) fn state(&self) -> Result<RegressionExecutorState> {
         self.state.state()
+    }
+
+    pub(crate) fn reset(&self, track: usize) -> Result<()> {
+        self.state.reset(track)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -426,6 +500,27 @@ mod tests {
         (audio, emotion)
     }
 
+    #[derive(Default)]
+    struct FixedBatchTrace {
+        batches: Vec<Vec<(usize, RegressionFrameInput)>>,
+    }
+
+    impl RegressionBackend for FixedBatchTrace {
+        type Output = usize;
+
+        fn infer(&mut self, track: usize, _: &RegressionFrameInput) -> Result<Self::Output> {
+            Ok(track)
+        }
+
+        fn infer_batch(
+            &mut self,
+            inputs: &[(usize, RegressionFrameInput)],
+        ) -> Result<Vec<Self::Output>> {
+            self.batches.push(inputs.to_vec());
+            Ok(inputs.iter().map(|(track, _)| *track).collect())
+        }
+    }
+
     #[test]
     fn rejects_zero_and_over_max_tracks() {
         assert!(RegressionExecutor::new(contract(), 0).is_err());
@@ -436,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_interrupts_all_tracks_and_metadata_is_ordered() {
+    fn callback_interrupts_only_its_track_for_the_current_call() {
         let (audio0, emotion0) = input();
         let (audio1, emotion1) = input();
         let tracks = [
@@ -470,10 +565,110 @@ mod tests {
             .unwrap();
         assert_eq!(status, PumpStatus::Interrupted);
         assert_eq!(seen.iter().filter(|m| m.track == 0).count(), 1);
-        assert_eq!(seen.iter().filter(|m| m.track == 1).count(), 0);
+        assert_eq!(seen.iter().filter(|m| m.track == 1).count(), 3);
         assert_eq!(execution.state().unwrap().completed_tracks, 2);
         execution.wait().unwrap();
         assert!(audio0.nb_dropped_samples() > 0);
+    }
+
+    #[test]
+    fn fixed_batch_keeps_inactive_track_slots_without_advancing_them() {
+        let (audio0, emotion0) = input();
+        let audio1 = AudioAccumulator::new(1, 0).unwrap();
+        let emotion1 = EmotionAccumulator::new(1, 1).unwrap();
+        emotion1.accumulate(0, &[0.0]).unwrap();
+        emotion1.accumulate(3, &[1.0]).unwrap();
+        let (audio2, emotion2) = input();
+        let audio3 = AudioAccumulator::new(1, 0).unwrap();
+        let emotion3 = EmotionAccumulator::new(1, 1).unwrap();
+        emotion3.accumulate(0, &[0.0]).unwrap();
+        let tracks = [
+            RegressionTrack {
+                audio: &audio0,
+                emotions: &emotion0,
+                implicit_emotion: &[0.5],
+                input_strength: 1.0,
+            },
+            RegressionTrack {
+                audio: &audio1,
+                emotions: &emotion1,
+                implicit_emotion: &[0.5],
+                input_strength: 1.0,
+            },
+            RegressionTrack {
+                audio: &audio2,
+                emotions: &emotion2,
+                implicit_emotion: &[0.5],
+                input_strength: 1.0,
+            },
+            RegressionTrack {
+                audio: &audio3,
+                emotions: &emotion3,
+                implicit_emotion: &[0.5],
+                input_strength: 1.0,
+            },
+        ];
+        let mut backend = FixedBatchTrace::default();
+        let mut first_seen = Vec::new();
+        let executor = RegressionExecutor::new(contract(), 4).unwrap();
+
+        assert_eq!(
+            executor
+                .pump(&tracks, &mut backend, |metadata, output| {
+                    first_seen.push((metadata.track, metadata.frame, *output));
+                    true
+                })
+                .unwrap(),
+            PumpStatus::AwaitingInput
+        );
+        assert!(
+            first_seen
+                .iter()
+                .all(|(track, _, output)| { matches!(*track, 0 | 2) && track == output })
+        );
+        assert!(backend.batches.iter().all(|batch| batch.len() == 4));
+        assert!(backend.batches.iter().all(|batch| {
+            batch[1].1.audio.iter().all(|sample| *sample == 0.0)
+                && batch[3].1.audio.iter().all(|sample| *sample == 0.0)
+        }));
+        assert_eq!(executor.state().unwrap().completed_tracks, 2);
+
+        audio1.accumulate(&[1.0, 2.0, 3.0]).unwrap();
+        audio1.close().unwrap();
+        emotion1.close().unwrap();
+        let mut resumed_frames = Vec::new();
+        assert_eq!(
+            executor
+                .pump(&tracks, &mut backend, |metadata, _| {
+                    resumed_frames.push((metadata.track, metadata.frame));
+                    true
+                })
+                .unwrap(),
+            PumpStatus::AwaitingInput
+        );
+        assert_eq!(resumed_frames.first(), Some(&(1, 0)));
+        assert!(resumed_frames.iter().all(|(track, _)| *track == 1));
+    }
+
+    #[test]
+    fn callback_panic_releases_running_guard() {
+        let (audio, emotions) = input();
+        let track = RegressionTrack {
+            audio: &audio,
+            emotions: &emotions,
+            implicit_emotion: &[0.5],
+            input_strength: 1.0,
+        };
+        let executor = RegressionExecutor::new(contract(), 1).unwrap();
+        let mut backend = |track, _: &RegressionFrameInput| Ok(track);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = executor.pump(&[track], &mut backend, |_, _| -> bool {
+                panic!("callback panic")
+            });
+        }));
+        assert!(panic.is_err());
+        assert!(!executor.state().unwrap().running);
+        executor.reset(0).unwrap();
     }
 
     #[test]

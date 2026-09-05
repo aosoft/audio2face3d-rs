@@ -17,7 +17,7 @@ use audio2face3d_cli::reference::sha256_file;
 use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub fn run(
     descriptor: &Path,
@@ -130,7 +130,7 @@ enum Workload {
         output: DeviceBuffer<f32>,
         host_output: Vec<f32>,
         stream: CudaStream,
-        _device: Rc<GpuDevice>,
+        _device: Arc<GpuDevice>,
     },
     InteractiveGpuReplay {
         layer: Box<InteractiveGpuBlendshapeLayer>,
@@ -266,7 +266,7 @@ impl Workload {
                 let solver = GpuBlendshapeSolver::new(&device, &stream, data, &config)?;
                 if scope == "interactive-gpu-replay" {
                     let mut layer = InteractiveGpuBlendshapeLayer::new(
-                        Rc::clone(&device),
+                        Arc::clone(&device),
                         stream,
                         Some(solver),
                         None,

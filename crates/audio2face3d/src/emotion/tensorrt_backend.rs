@@ -3,23 +3,24 @@ use crate::cuda::{CudaStream, GpuDevice};
 use crate::emotion::{ClassifierBackend, ClassifierContract};
 use crate::tensorrt::{BindingBuffer, DeviceBindings, TensorRtSession};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub struct TensorRtClassifierBackend {
     contract: ClassifierContract,
     max_batch_size: usize,
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     session: TensorRtSession,
     stream: CudaStream,
 }
 
 impl TensorRtClassifierBackend {
     pub fn load(
-        device: Rc<GpuDevice>,
+        device: Arc<GpuDevice>,
         engine: &Path,
         contract: ClassifierContract,
     ) -> Result<Self> {
-        let session = TensorRtSession::load(Rc::clone(&device), engine).map_err(inference_error)?;
+        let session =
+            TensorRtSession::load(Arc::clone(&device), engine).map_err(inference_error)?;
         validate_schema(session.metadata(), &contract)?;
         let max_batch_size = classifier_max_batch_size(session.metadata())?;
         let stream = device.create_stream()?;

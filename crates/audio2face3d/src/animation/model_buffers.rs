@@ -7,7 +7,7 @@ use crate::common::{BindingSchema, Dimension, ElementType, Error, IoMode, Result
 #[cfg(feature = "cuda")]
 use crate::cuda::{CudaStream, DeviceBuffer, DeviceView, GpuDevice};
 #[cfg(feature = "cuda")]
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Offset, component size, and distance between consecutive batch elements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,7 +371,7 @@ pub struct RegressionInferenceInputBuffers {
 
 #[cfg(feature = "cuda")]
 impl RegressionInferenceInputBuffers {
-    pub fn allocate(device: &Rc<GpuDevice>, contract: &RegressionBufferContract) -> Result<Self> {
+    pub fn allocate(device: &Arc<GpuDevice>, contract: &RegressionBufferContract) -> Result<Self> {
         Ok(Self {
             count: contract.count(),
             implicit_emotion_size: contract.implicit_emotion_size,
@@ -461,7 +461,7 @@ pub struct RegressionInferenceOutputBuffers {
 
 #[cfg(feature = "cuda")]
 impl RegressionInferenceOutputBuffers {
-    pub fn allocate(device: &Rc<GpuDevice>, contract: &RegressionBufferContract) -> Result<Self> {
+    pub fn allocate(device: &Arc<GpuDevice>, contract: &RegressionBufferContract) -> Result<Self> {
         Ok(Self {
             count: contract.count(),
             layout: contract.inference_layout,
@@ -525,7 +525,7 @@ pub struct GeometryResultBuffers {
 #[cfg(feature = "cuda")]
 impl GeometryResultBuffers {
     pub fn allocate(
-        device: &Rc<GpuDevice>,
+        device: &Arc<GpuDevice>,
         layout: GeometryResultLayout,
         count: usize,
     ) -> Result<Self> {
@@ -609,7 +609,7 @@ pub struct DiffusionInferenceInputBuffers {
 
 #[cfg(feature = "cuda")]
 impl DiffusionInferenceInputBuffers {
-    pub fn allocate(device: &Rc<GpuDevice>, contract: &DiffusionBufferContract) -> Result<Self> {
+    pub fn allocate(device: &Arc<GpuDevice>, contract: &DiffusionBufferContract) -> Result<Self> {
         let binding = |name| {
             contract
                 .bindings
@@ -726,7 +726,7 @@ pub struct DiffusionInferenceStateBuffers {
 
 #[cfg(feature = "cuda")]
 impl DiffusionInferenceStateBuffers {
-    pub fn allocate(device: &Rc<GpuDevice>, contract: &DiffusionBufferContract) -> Result<Self> {
+    pub fn allocate(device: &Arc<GpuDevice>, contract: &DiffusionBufferContract) -> Result<Self> {
         Ok(Self {
             count: contract.count(),
             slices: contract.diffusion_steps * contract.gru_layers,
@@ -843,7 +843,7 @@ pub struct DiffusionInferenceOutputBuffers {
 
 #[cfg(feature = "cuda")]
 impl DiffusionInferenceOutputBuffers {
-    pub fn allocate(device: &Rc<GpuDevice>, contract: &DiffusionBufferContract) -> Result<Self> {
+    pub fn allocate(device: &Arc<GpuDevice>, contract: &DiffusionBufferContract) -> Result<Self> {
         Ok(Self {
             count: contract.count(),
             layout: contract.inference_layout,

@@ -6,7 +6,7 @@ use crate::cuda::{
 use crate::emotion::{EmotionPostProcessData, EmotionPostProcessParameters};
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const PARAMETER_PREFIX: usize = 8;
 const BLOCK_SIZE: u32 = 128;
@@ -44,7 +44,7 @@ pub struct GpuEmotionPostProcessor {
 
 impl GpuEmotionPostProcessor {
     pub fn new(
-        device: &Rc<GpuDevice>,
+        device: &Arc<GpuDevice>,
         stream: &CudaStream,
         data: EmotionPostProcessData,
         parameters: &[EmotionPostProcessParameters],
@@ -302,7 +302,7 @@ impl GpuEmotionPostProcessFence<'_> {
 }
 
 fn upload<T: Copy>(
-    device: &Rc<GpuDevice>,
+    device: &Arc<GpuDevice>,
     stream: &CudaStream,
     values: &[T],
 ) -> Result<DeviceBuffer<T>> {

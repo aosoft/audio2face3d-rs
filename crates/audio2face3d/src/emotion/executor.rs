@@ -177,6 +177,14 @@ impl ClassifierExecutionState {
             .is_some_and(|index| *index != 0)
     }
 
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    fn next_inference_index(&self, track: usize) -> Result<usize> {
+        self.inference_indices
+            .get(track)
+            .copied()
+            .ok_or_else(|| invalid("emotion track is out of range"))
+    }
+
     fn reset(&mut self, track: usize) -> Result<()> {
         let index = self
             .inference_indices
@@ -388,6 +396,11 @@ impl EmotionExecutor {
 
     pub fn reset(&mut self, track: usize) -> Result<()> {
         self.inner.reset(track)
+    }
+
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    pub(crate) fn next_inference_index(&self, track: usize) -> Result<usize> {
+        self.inner.state.next_inference_index(track)
     }
 
     pub fn set_parameters(

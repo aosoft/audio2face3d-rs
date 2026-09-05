@@ -8,7 +8,7 @@ use crate::cuda::{
 };
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const BLOCK_SIZE: u32 = 256;
 const SKIN_PARAM_STRIDE: usize = 9;
@@ -74,7 +74,7 @@ pub struct GpuRegressionPostprocessor {
 
 impl GpuRegressionPostprocessor {
     pub fn new(
-        device: &Rc<GpuDevice>,
+        device: &Arc<GpuDevice>,
         stream: &CudaStream,
         model: GpuRegressionModel<'_>,
         tracks: &[GpuRegressionTrackParams],
@@ -484,7 +484,7 @@ fn make_face_mask(pose: &[f32], params: SkinAnimatorParams) -> Result<Vec<f32>> 
         })
         .collect())
 }
-fn zeroed<T>(device: &Rc<GpuDevice>, stream: &CudaStream, len: usize) -> Result<DeviceBuffer<T>> {
+fn zeroed<T>(device: &Arc<GpuDevice>, stream: &CudaStream, len: usize) -> Result<DeviceBuffer<T>> {
     let mut buffer = device.allocate(len)?;
     zero_buffer(&mut buffer, stream)?;
     Ok(buffer)

@@ -7,7 +7,7 @@ use crate::cuda::{
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const PARAMETER_STRIDE: usize = 4;
 const TRANSFORM_SIZE: usize = 16;
@@ -77,7 +77,7 @@ impl GpuMultiTrackTeethAnimator {
     /// `parameters` is copied to every track, matching the original `Init`
     /// contract. Uploads complete before this method returns.
     pub fn new(
-        device: &Rc<GpuDevice>,
+        device: &Arc<GpuDevice>,
         stream: &CudaStream,
         neutral_pose: &[f32],
         parameters: JawParameters,

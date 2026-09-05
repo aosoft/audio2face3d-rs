@@ -1,13 +1,14 @@
 use crate::common::{Binding, BindingSchema, Dimension, ElementType, IoMode, Shape};
 use crate::cuda::{CudaEvent, CudaStream, DeviceId, DeviceView, GpuDevice};
 use crate::tensorrt::{InferenceError, ffi};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
 use std::ptr::NonNull;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const ERROR_CAPACITY: usize = 4096;
 fn native_error(operation: &'static str, buffer: &[c_char]) -> InferenceError {
@@ -76,10 +77,16 @@ impl<'a> DeviceBindings<'a> {
 
 pub struct TensorRtSession {
     handle: NonNull<ffi::TrtSessionHandle>,
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     schema: BindingSchema,
     profile_count: usize,
+    _not_sync: PhantomData<Cell<()>>,
 }
+
+// SAFETY: the native TensorRT session and execution context are uniquely owned.
+// Public mutating entry points require `&mut self`, and every native call
+// establishes the retained device context. The handle is never used after Drop.
+unsafe impl Send for TensorRtSession {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeTensorShape {
@@ -104,7 +111,8 @@ pub struct EngineEnvironment {
 }
 
 impl TensorRtSession {
-    pub fn load(device: Rc<GpuDevice>, engine: &Path) -> Result<Self, InferenceError> {
+    pub fn load(device: Arc<GpuDevice>, engine: &Path) -> Result<Self, InferenceError> {
+        let _context = device.make_current().map_err(InferenceError::Cuda)?;
         let path = CString::new(engine.to_string_lossy().as_bytes())
             .map_err(|_| InferenceError::InvalidBinding("engine path contains NUL".into()))?;
         let mut error = [0; ERROR_CAPACITY];
@@ -124,6 +132,7 @@ impl TensorRtSession {
                 device,
                 schema,
                 profile_count,
+                _not_sync: PhantomData,
             }),
             Err(cause) => {
                 // SAFETY: handle was returned by create and has not been destroyed.
@@ -140,6 +149,8 @@ impl TensorRtSession {
     }
 
     pub fn logs(&self) -> Result<Vec<TensorRtLogMessage>, InferenceError> {
+        let device = Arc::clone(&self.device);
+        let _context = device.make_current().map_err(InferenceError::Cuda)?;
         // SAFETY: the session handle is live and log_count is read-only.
         let count = unsafe { ffi::trt_shim_log_count(self.handle.as_ptr()) };
         if count < 0 {
@@ -154,6 +165,8 @@ impl TensorRtSession {
     }
 
     pub fn environment(&self) -> Result<EngineEnvironment, InferenceError> {
+        let device = Arc::clone(&self.device);
+        let _context = device.make_current().map_err(InferenceError::Cuda)?;
         let (info, gpu_name) = environment(self.handle)?;
         Ok(EngineEnvironment {
             tensorrt_version: (
@@ -180,6 +193,8 @@ impl TensorRtSession {
         stream: &CudaStream,
     ) -> Result<Vec<RuntimeTensorShape>, InferenceError> {
         self.validate_profile_stream(profile, stream)?;
+        let device = Arc::clone(&self.device);
+        let _context = device.make_current().map_err(InferenceError::Cuda)?;
         // SAFETY: session and stream are live and belong to the validated device.
         call("set_profile", |e, n| unsafe {
             ffi::trt_shim_set_profile(self.handle.as_ptr(), profile as i32, stream.as_raw(), e, n)
@@ -292,6 +307,8 @@ impl TensorRtSession {
         postprocess: impl FnOnce(&CudaStream) -> Result<(), InferenceError>,
     ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
         self.validate_profile_stream(profile, stream)?;
+        let device = Arc::clone(&self.device);
+        let _context = device.make_current().map_err(InferenceError::Cuda)?;
         for name in bindings.values.keys() {
             if self.schema.get(name).is_none() {
                 return Err(InferenceError::InvalidBinding(format!(
@@ -394,6 +411,7 @@ impl TensorRtSession {
 }
 impl Drop for TensorRtSession {
     fn drop(&mut self) {
+        let _context = self.device.make_current();
         // SAFETY: this object exclusively owns the live native handle.
         unsafe { ffi::trt_shim_destroy(self.handle.as_ptr()) }
     }
@@ -748,7 +766,7 @@ mod tests {
         };
         let device = GpuDevice::new(0).unwrap();
         let stream = device.create_stream().unwrap();
-        let mut session = TensorRtSession::load(Rc::clone(&device), Path::new(&path)).unwrap();
+        let mut session = TensorRtSession::load(Arc::clone(&device), Path::new(&path)).unwrap();
         let specs = session
             .metadata()
             .bindings()
@@ -822,7 +840,7 @@ mod tests {
         };
         let device = GpuDevice::new(0).unwrap();
         let stream = device.create_stream().unwrap();
-        let mut session = TensorRtSession::load(Rc::clone(&device), Path::new(&path)).unwrap();
+        let mut session = TensorRtSession::load(Arc::clone(&device), Path::new(&path)).unwrap();
         let mut bindings = DeviceBindings::new();
         for binding in session.metadata().bindings() {
             if binding.mode == IoMode::Input {

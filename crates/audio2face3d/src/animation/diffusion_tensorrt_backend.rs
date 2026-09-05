@@ -7,18 +7,23 @@ use crate::common::{Error, Result};
 use crate::cuda::{CudaStream, GpuDevice};
 use crate::tensorrt::TensorRtSession;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub struct TensorRtDiffusionBackend {
     contract: DiffusionContract,
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     session: TensorRtSession,
     stream: CudaStream,
 }
 
 impl TensorRtDiffusionBackend {
-    pub fn load(device: Rc<GpuDevice>, engine: &Path, contract: DiffusionContract) -> Result<Self> {
-        let session = TensorRtSession::load(Rc::clone(&device), engine).map_err(inference_error)?;
+    pub fn load(
+        device: Arc<GpuDevice>,
+        engine: &Path,
+        contract: DiffusionContract,
+    ) -> Result<Self> {
+        let session =
+            TensorRtSession::load(Arc::clone(&device), engine).map_err(inference_error)?;
         DiffusionBufferContract::new(&contract, 1)?
             .bindings()
             .validate_engine_schema(session.metadata())?;

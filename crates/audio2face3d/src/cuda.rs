@@ -6,25 +6,24 @@
 //! streams, buffers, allocation, copies, and kernel operations require the
 //! `cuda` feature.
 //!
-//! # `Send` and `Sync` implementation status
+//! # `Send` and `Sync`
 //!
-//! Step 1 preserves all existing native-owned CUDA types as `!Send + !Sync`.
-//! Borrowed [`DeviceView`] and [`CudaStreamRef`] are also conservatively
-//! `!Send + !Sync`. The approved D-04 target matrix, not yet implemented, is:
+//! Native CUDA ownership follows the audited D-04 matrix:
 //!
 //! - `GpuDevice`, `CudaStream`, `CudaEvent`, `CudaModule`, and `CudaFunction`:
-//!   `Send + Sync` after context and destruction auditing.
+//!   `Send + Sync`; each native entry point installs and restores its current
+//!   context and destruction is ordered by ownership.
 //! - `DeviceBuffer<T>` and [`DeviceView`]: `Send` when `T: Send`, and `Sync`
-//!   when `T: Sync`, after asynchronous lifetime and write-access auditing.
-//! - [`CudaStreamRef`]: follows the audited owning stream contract.
+//!   when `T: Sync`.
+//! - [`CudaStreamRef`]: `Send + Sync` while its callback-scoped lifetime is
+//!   retained.
 //! - `CublasHandle`: at least `Send`; `Sync` only with fixed configuration and
 //!   serialized calls on one handle.
 //! - `CurandHandle`: `Send + !Sync`.
 //! - TensorRT sessions and completed executors: `Send + !Sync`.
 //!
-//! These future auto traits require Step 3 current-context restoration,
-//! concurrency control, and drop-order guarantees. No marker-only `unsafe
-//! impl` is used in Step 1. `Send` executor futures remain compatible with
+//! The native implementations provide the context restoration, concurrency
+//! control, and drop-order guarantees behind these traits. `Send` executor futures remain compatible with
 //! synchronous result callbacks because borrowed CUDA values are temporary on
 //! the polling thread and are not retained across an `.await` boundary.
 

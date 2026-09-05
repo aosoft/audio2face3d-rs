@@ -7,7 +7,7 @@ use crate::animation::{
 use crate::common::{Error, Result};
 use crate::cuda::{CudaStream, DeviceBuffer, DeviceView, GpuDevice, ensure_same_device};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub const DEFAULT_INTERACTIVE_GPU_CACHE_FRAMES: usize = 64;
 
@@ -44,7 +44,7 @@ struct InteractiveGpuComponent {
 
 impl InteractiveGpuComponent {
     fn new(
-        device: &Rc<GpuDevice>,
+        device: &Arc<GpuDevice>,
         stream: &CudaStream,
         solver: GpuBlendshapeSolver,
     ) -> Result<Self> {
@@ -80,12 +80,12 @@ pub struct InteractiveGpuBlendshapeLayer {
     cache_capacity: usize,
     // Drop the stream after solvers and buffers that may have queued work.
     stream: CudaStream,
-    _device: Rc<GpuDevice>,
+    _device: Arc<GpuDevice>,
 }
 
 impl InteractiveGpuBlendshapeLayer {
     pub fn new(
-        device: Rc<GpuDevice>,
+        device: Arc<GpuDevice>,
         stream: CudaStream,
         skin: Option<GpuBlendshapeSolver>,
         tongue: Option<GpuBlendshapeSolver>,
@@ -120,7 +120,7 @@ impl InteractiveGpuBlendshapeLayer {
     }
 
     pub fn with_default_cache(
-        device: Rc<GpuDevice>,
+        device: Arc<GpuDevice>,
         stream: CudaStream,
         skin: Option<GpuBlendshapeSolver>,
         tongue: Option<GpuBlendshapeSolver>,

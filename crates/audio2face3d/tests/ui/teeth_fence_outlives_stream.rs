@@ -5,7 +5,7 @@ use audio2face3d::animation::{
 use audio2face3d::cuda::{DeviceBuffer, GpuDevice};
 
 fn invalid_fence(
-    device: &std::rc::Rc<GpuDevice>,
+    device: &std::sync::Arc<GpuDevice>,
     animator: &'static mut GpuMultiTrackTeethAnimator,
     input: &'static DeviceBuffer<f32>,
     output: &'static mut DeviceBuffer<f32>,

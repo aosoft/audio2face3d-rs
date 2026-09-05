@@ -578,7 +578,7 @@ fn load_blendshape_component(model: &Model, name: &str) -> Result<Option<CpuBlen
 fn load_gpu_blendshape_component(
     model: &Model,
     name: &str,
-    device: &std::rc::Rc<GpuDevice>,
+    device: &std::sync::Arc<GpuDevice>,
     stream: &crate::cuda::CudaStream,
 ) -> Result<Option<GpuBlendshapeSolver>> {
     let Some(paths) = component_paths(model, name)? else {

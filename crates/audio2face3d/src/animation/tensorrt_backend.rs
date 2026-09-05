@@ -6,22 +6,23 @@ use crate::common::{Error, Result};
 use crate::cuda::{CudaStream, GpuDevice};
 use crate::tensorrt::TensorRtSession;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub struct TensorRtRegressionBackend {
     contract: RegressionContract,
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     session: TensorRtSession,
     stream: CudaStream,
 }
 
 impl TensorRtRegressionBackend {
     pub fn load(
-        device: Rc<GpuDevice>,
+        device: Arc<GpuDevice>,
         engine: &Path,
         contract: RegressionContract,
     ) -> Result<Self> {
-        let session = TensorRtSession::load(Rc::clone(&device), engine).map_err(inference_error)?;
+        let session =
+            TensorRtSession::load(Arc::clone(&device), engine).map_err(inference_error)?;
         RegressionBufferContract::new(&contract, 1)?
             .bindings()
             .validate_engine_schema(session.metadata())?;

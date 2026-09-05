@@ -9,7 +9,7 @@ use crate::{
     CallbackMetadata, GeometryExecutorBundle, GeometryFrame, Model, PipelineOptions,
     PipelineStatus, TrackParameters,
 };
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Blendshape weights produced for one geometry frame.
 ///
@@ -129,12 +129,12 @@ pub struct GpuBlendshapeComponents {
     // Drop resources before their stream and retained device context.
     tracks: Vec<GpuBlendshapeTrackComponents>,
     stream: CudaStream,
-    _device: Rc<GpuDevice>,
+    _device: Arc<GpuDevice>,
 }
 
 impl GpuBlendshapeComponents {
     pub fn new(
-        device: Rc<GpuDevice>,
+        device: Arc<GpuDevice>,
         stream: CudaStream,
         tracks: Vec<GpuBlendshapeTrackComponents>,
     ) -> Result<Self> {
@@ -524,7 +524,7 @@ fn load_gpu_component(
     model: &Model,
     index: usize,
     name: &str,
-    device: &Rc<GpuDevice>,
+    device: &Arc<GpuDevice>,
     stream: &CudaStream,
 ) -> Result<Option<GpuBlendshapeComponent>> {
     let Some(paths) = component_paths(model, index, name)? else {

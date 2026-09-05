@@ -168,6 +168,14 @@ impl PostProcessEmotionExecutor {
             .is_some_and(|frame| *frame != 0)
     }
 
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    pub(crate) fn next_frame_index(&self, track: usize) -> Result<usize> {
+        self.frame_indices
+            .get(track)
+            .copied()
+            .ok_or_else(|| invalid("post-process frame track is out of range"))
+    }
+
     pub fn parameters(&self, track: usize) -> Result<&EmotionPostProcessParameters> {
         self.processors
             .get(track)

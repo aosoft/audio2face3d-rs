@@ -6,7 +6,7 @@ use audio2face3d::tensorrt::{BindingBuffer, DeviceBindings, TensorRtSession};
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 fn read_reference_tensors(path: &Path) -> HashMap<String, Vec<f32>> {
     let bytes = std::fs::read(path).unwrap();
@@ -97,7 +97,7 @@ fn cpp_fixture_matches_rust_tensor_rt_engine() {
     let expected = read_reference_tensors(Path::new(&fixture));
     let device = GpuDevice::new(0).unwrap();
     let stream = device.create_stream().unwrap();
-    let mut session = TensorRtSession::load(Rc::clone(&device), Path::new(&engine)).unwrap();
+    let mut session = TensorRtSession::load(Arc::clone(&device), Path::new(&engine)).unwrap();
     let specs = session
         .metadata()
         .bindings()

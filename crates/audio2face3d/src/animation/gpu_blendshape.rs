@@ -8,7 +8,7 @@ use crate::cuda::{
 };
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const BLOCK_SIZE: u32 = 256;
 
@@ -58,7 +58,7 @@ pub struct GpuBlendshapeSolver {
 
 impl GpuBlendshapeSolver {
     pub fn new(
-        device: &Rc<GpuDevice>,
+        device: &Arc<GpuDevice>,
         stream: &CudaStream,
         data: BlendshapeData,
         config: &BlendshapeConfig,

@@ -5,7 +5,37 @@ use std::ffi::CString;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ptr;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
+/// Restores the caller's thread-local CUDA context when the guard is dropped.
+/// CUDA contexts are thread-local, so every native entry point must establish
+/// the context it owns without leaking that change to an embedding process.
+pub(crate) struct CurrentContextGuard {
+    previous: CUcontext,
+}
+
+impl CurrentContextGuard {
+    fn enter(target: CUcontext) -> Result<Self> {
+        let mut previous = ptr::null_mut();
+        // SAFETY: CUDA writes one context handle to a valid output pointer.
+        unsafe { check(cuCtxGetCurrent(&mut previous), "cuCtxGetCurrent")? };
+        if previous != target {
+            // SAFETY: target is retained by the owning GpuDevice.
+            unsafe { check(cuCtxSetCurrent(target), "cuCtxSetCurrent")? };
+        }
+        Ok(Self { previous })
+    }
+}
+
+impl Drop for CurrentContextGuard {
+    fn drop(&mut self) {
+        // SAFETY: restoring the context is best-effort during unwinding/drop;
+        // the previous handle was returned by CUDA on this same thread.
+        unsafe {
+            let _ = cuCtxSetCurrent(self.previous);
+        }
+    }
+}
 
 fn check(code: CUresult, operation: &'static str) -> Result<()> {
     if code == cudaError_enum::CUDA_SUCCESS {
@@ -23,11 +53,18 @@ pub struct GpuDevice {
     id: DeviceId,
     raw_device: CUdevice,
     context: CUcontext,
-    _not_send_sync: PhantomData<*mut ()>,
 }
 
+// SAFETY: the primary context retain is reference-counted by `Arc<GpuDevice>`;
+// all driver calls install the context on the calling thread, and the final
+// release occurs only after all child resources have been dropped.
+unsafe impl Send for GpuDevice {}
+// SAFETY: concurrent immutable access uses per-call context guards; child
+// resource ownership retains the primary context through the final call.
+unsafe impl Sync for GpuDevice {}
+
 impl GpuDevice {
-    pub fn new(ordinal: i32) -> Result<Rc<Self>> {
+    pub fn new(ordinal: i32) -> Result<Arc<Self>> {
         let id = DeviceId::new(ordinal)?;
         let mut raw_device = 0;
         let mut context = ptr::null_mut();
@@ -41,11 +78,10 @@ impl GpuDevice {
             )?;
         }
         tracing::debug!(device = ordinal, "retained CUDA primary context");
-        Ok(Rc::new(Self {
+        Ok(Arc::new(Self {
             id,
             raw_device,
             context,
-            _not_send_sync: PhantomData,
         }))
     }
 
@@ -53,25 +89,23 @@ impl GpuDevice {
         self.id
     }
 
-    fn make_current(&self) -> Result<()> {
-        // SAFETY: this object retains the primary context until Drop.
-        unsafe { check(cuCtxSetCurrent(self.context), "cuCtxSetCurrent") }
+    pub(crate) fn make_current(&self) -> Result<CurrentContextGuard> {
+        CurrentContextGuard::enter(self.context)
     }
 
-    pub fn create_stream(self: &Rc<Self>) -> Result<CudaStream> {
-        self.make_current()?;
+    pub fn create_stream(self: &Arc<Self>) -> Result<CudaStream> {
+        let _context = self.make_current()?;
         let mut raw = ptr::null_mut();
         // SAFETY: current context is retained and the output pointer is valid.
         unsafe { check(cuStreamCreate(&mut raw, 0), "cuStreamCreate")? };
         tracing::debug!(device = self.id().ordinal(), "created CUDA stream");
         Ok(CudaStream {
-            device: Rc::clone(self),
+            device: Arc::clone(self),
             raw,
-            _not_send_sync: PhantomData,
         })
     }
 
-    pub fn allocate<T>(self: &Rc<Self>, len: usize) -> Result<DeviceBuffer<T>> {
+    pub fn allocate<T>(self: &Arc<Self>, len: usize) -> Result<DeviceBuffer<T>> {
         let bytes = len
             .checked_mul(size_of::<T>())
             .ok_or(Error::IntegerOverflow {
@@ -84,7 +118,7 @@ impl GpuDevice {
                 "zero-sized device allocations are unsupported".into(),
             ));
         }
-        self.make_current()?;
+        let _context = self.make_current()?;
         let mut pointer = 0;
         // SAFETY: the current context is retained and pointer is a valid output.
         unsafe { check(cuMemAlloc_v2(&mut pointer, bytes), "cuMemAlloc")? };
@@ -95,16 +129,15 @@ impl GpuDevice {
             "allocated CUDA device memory"
         );
         Ok(DeviceBuffer {
-            device: Rc::clone(self),
+            device: Arc::clone(self),
             pointer,
             len,
             _type: PhantomData,
-            _not_send_sync: PhantomData,
         })
     }
 
-    pub fn load_module(self: &Rc<Self>, ptx: &str) -> Result<CudaModule> {
-        self.make_current()?;
+    pub fn load_module(self: &Arc<Self>, ptx: &str) -> Result<CudaModule> {
+        let _context = self.make_current()?;
         let ptx = CString::new(ptx)
             .map_err(|_| Error::CudaUnavailable("PTX contains a NUL byte".into()))?;
         let mut raw = ptr::null_mut();
@@ -116,16 +149,17 @@ impl GpuDevice {
             )?;
         }
         Ok(CudaModule {
-            device: Rc::clone(self),
+            device: Arc::clone(self),
             raw,
-            _not_send_sync: PhantomData,
         })
     }
 }
 
 impl Drop for GpuDevice {
     fn drop(&mut self) {
-        // SAFETY: this object owns one primary-context retain count.
+        let _context = self.make_current();
+        // SAFETY: this object owns one primary-context retain count. All child
+        // resources hold an Arc and therefore outlive this final release.
         unsafe {
             let _ = cuDevicePrimaryCtxRelease_v2(self.raw_device);
         }
@@ -134,10 +168,17 @@ impl Drop for GpuDevice {
 
 #[derive(Debug)]
 pub struct CudaStream {
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     raw: CUstream,
-    _not_send_sync: PhantomData<*mut ()>,
 }
+
+// SAFETY: CUDA stream handles are designed for concurrent host submission;
+// destruction is serialized by unique ownership and all calls establish the
+// stream's retained context first.
+unsafe impl Send for CudaStream {}
+// SAFETY: CUDA permits concurrent host submission to a stream, while Rust
+// ownership and the retained device context serialize destruction.
+unsafe impl Sync for CudaStream {}
 
 impl CudaStream {
     pub fn device_id(&self) -> DeviceId {
@@ -163,20 +204,20 @@ impl CudaStream {
     }
 
     pub fn synchronize(&self) -> Result<()> {
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: raw is owned by this object and remains valid for the call.
         unsafe { check(cuStreamSynchronize(self.raw), "cuStreamSynchronize") }
     }
 
     pub fn create_event(&self) -> Result<CudaEvent> {
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         let mut raw = ptr::null_mut();
         // SAFETY: output pointer is valid and the current context is retained.
         unsafe { check(cuEventCreate(&mut raw, 0), "cuEventCreate")? };
         Ok(CudaEvent {
-            device: Rc::clone(&self.device),
+            device: Arc::clone(&self.device),
             raw,
-            _not_send_sync: PhantomData,
+            record_lock: Mutex::new(()),
         })
     }
 
@@ -187,7 +228,7 @@ impl CudaStream {
     /// `pointer..pointer + bytes` must be a writable allocation owned by this
     /// stream's CUDA context and must remain alive until the stream completes.
     pub unsafe fn memset_device_zero(&self, pointer: u64, bytes: usize) -> Result<()> {
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: the caller guarantees pointer validity, ownership, and lifetime.
         unsafe {
             check(
@@ -200,7 +241,7 @@ impl CudaStream {
 
 impl Drop for CudaStream {
     fn drop(&mut self) {
-        let _ = self.device.make_current();
+        let _context = self.device.make_current();
         // SAFETY: raw is exclusively owned by this object.
         unsafe {
             let _ = cuStreamSynchronize(self.raw);
@@ -211,16 +252,24 @@ impl Drop for CudaStream {
 
 #[derive(Debug)]
 pub struct CudaModule {
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     raw: CUmodule,
-    _not_send_sync: PhantomData<*mut ()>,
 }
+
+// SAFETY: module loading is immutable after construction; its retained device
+// context and Drop implementation make moving/sharing the handle safe.
+unsafe impl Send for CudaModule {}
+// SAFETY: the loaded module is immutable, and borrowed functions prevent
+// unloading while a safe function descriptor remains live.
+unsafe impl Sync for CudaModule {}
 
 impl Drop for CudaModule {
     fn drop(&mut self) {
-        let _ = self.device.make_current();
-        // SAFETY: raw is exclusively owned by this object.
+        let _context = self.device.make_current();
+        // SAFETY: draining the retained context ensures no queued kernel still
+        // references module code; `raw` is exclusively owned here.
         unsafe {
+            let _ = cuCtxSynchronize();
             let _ = cuModuleUnload(self.raw);
         }
     }
@@ -232,7 +281,7 @@ impl CudaModule {
     /// The returned function borrows the module, so it cannot outlive the
     /// loaded CUDA code that owns the native function handle.
     pub fn function(&self, name: &str) -> Result<CudaFunction<'_>> {
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         let name = CString::new(name)
             .map_err(|_| Error::CudaUnavailable("CUDA function name contains a NUL byte".into()))?;
         let mut raw = ptr::null_mut();
@@ -244,11 +293,7 @@ impl CudaModule {
                 "cuModuleGetFunction",
             )?
         };
-        Ok(CudaFunction {
-            module: self,
-            raw,
-            _not_send_sync: PhantomData,
-        })
+        Ok(CudaFunction { module: self, raw })
     }
 }
 
@@ -257,8 +302,13 @@ impl CudaModule {
 pub struct CudaFunction<'module> {
     module: &'module CudaModule,
     raw: CUfunction,
-    _not_send_sync: PhantomData<*mut ()>,
 }
+
+// SAFETY: a function handle is immutable and borrows its live module.
+unsafe impl Send for CudaFunction<'_> {}
+// SAFETY: the function handle is immutable and its module borrow prevents
+// concurrent module destruction.
+unsafe impl Sync for CudaFunction<'_> {}
 
 impl CudaFunction<'_> {
     pub fn device_id(&self) -> DeviceId {
@@ -288,7 +338,7 @@ impl CudaFunction<'_> {
         kernel_params: &mut [*mut std::ffi::c_void],
     ) -> Result<()> {
         ensure_same_device(self.device_id(), stream.device_id())?;
-        self.module.device.make_current()?;
+        let _context = self.module.device.make_current()?;
         // SAFETY: argument ABI, allocation ownership, and asynchronous
         // lifetimes are delegated to the caller as documented above.
         unsafe {
@@ -313,11 +363,19 @@ impl CudaFunction<'_> {
 }
 
 pub struct CublasHandle {
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     raw: cudarc::cublas::sys::cublasHandle_t,
     _stream: PhantomData<*const CudaStream>,
-    _not_send_sync: PhantomData<*mut ()>,
+    call_lock: Mutex<()>,
 }
+
+// SAFETY: the handle's stream/configuration is fixed at construction and all
+// host calls are serialized by `call_lock`; the retained device context is
+// installed by every operation.
+unsafe impl Send for CublasHandle {}
+// SAFETY: all calls and mutable library state are serialized by `call_lock`;
+// stream selection is fixed for the handle's lifetime.
+unsafe impl Sync for CublasHandle {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CublasTranspose {
@@ -334,7 +392,7 @@ pub struct PcaDimensions {
 
 impl CublasHandle {
     pub fn new(stream: &CudaStream) -> Result<Self> {
-        stream.device.make_current()?;
+        let _context = stream.device.make_current()?;
         let raw = cudarc::cublas::result::create_handle()
             .map_err(|error| Error::CudaUnavailable(format!("cuBLAS create: {error:?}")))?;
         // SAFETY: handle and stream are live and owned by the retained context.
@@ -343,10 +401,10 @@ impl CublasHandle {
                 .map_err(|error| Error::CudaUnavailable(format!("cuBLAS set stream: {error:?}")))?;
         }
         Ok(Self {
-            device: Rc::clone(&stream.device),
+            device: Arc::clone(&stream.device),
             raw,
             _stream: PhantomData,
-            _not_send_sync: PhantomData,
+            call_lock: Mutex::new(()),
         })
     }
 
@@ -401,7 +459,10 @@ impl CublasHandle {
         }
         let m = crate::cuda::checked_i32_for_cuda(rows, "matrix_vector_rows")?;
         let n = crate::cuda::checked_i32_for_cuda(columns, "matrix_vector_columns")?;
-        self.device.make_current()?;
+        let _call = self.call_lock.lock().map_err(|_| Error::Poisoned {
+            resource: "cublas_handle",
+        })?;
+        let _context = self.device.make_current()?;
         // SAFETY: dimensions and device ownership were validated. The caller
         // provides the asynchronous resource lifetime and aliasing invariant.
         unsafe {
@@ -496,7 +557,10 @@ impl CublasHandle {
         let k = crate::cuda::checked_i32_for_cuda(shape_count, "pca_shape_count")?;
         let alpha = 1.0_f32;
         let beta = 0.0_f32;
-        self.device.make_current()?;
+        let _call = self.call_lock.lock().map_err(|_| Error::Poisoned {
+            resource: "cublas_handle",
+        })?;
+        let _context = self.device.make_current()?;
         // SAFETY: validated allocations cover column-major A(m*k), B(k*n), C(m*n),
         // and the returned fence holds every owner until the recorded event completes.
         unsafe {
@@ -545,24 +609,29 @@ impl CublasFence<'_> {
 
 impl Drop for CublasHandle {
     fn drop(&mut self) {
-        let _ = self.device.make_current();
-        // SAFETY: raw is exclusively owned by this object.
+        let _context = self.device.make_current();
+        // SAFETY: the context is retained, queued work is drained first, and
+        // this object exclusively owns the cuBLAS handle.
         unsafe {
+            let _ = cuCtxSynchronize();
             let _ = cudarc::cublas::result::destroy_handle(self.raw);
         }
     }
 }
 
 pub struct CurandHandle {
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     raw: cudarc::curand::sys::curandGenerator_t,
     _stream: PhantomData<*const CudaStream>,
-    _not_send_sync: PhantomData<*mut ()>,
 }
+
+// SAFETY: generator mutation is exposed only through `&mut self`, and the
+// retained device/context is installed before every native operation.
+unsafe impl Send for CurandHandle {}
 
 impl CurandHandle {
     pub fn new(stream: &CudaStream) -> Result<Self> {
-        stream.device.make_current()?;
+        let _context = stream.device.make_current()?;
         let raw = cudarc::curand::result::create_generator_kind(
             cudarc::curand::sys::curandRngType_t::CURAND_RNG_PSEUDO_PHILOX4_32_10,
         )
@@ -573,16 +642,15 @@ impl CurandHandle {
                 .map_err(|error| Error::CudaUnavailable(format!("cuRAND set stream: {error:?}")))?;
         }
         Ok(Self {
-            device: Rc::clone(&stream.device),
+            device: Arc::clone(&stream.device),
             raw,
             _stream: PhantomData,
-            _not_send_sync: PhantomData,
         })
     }
 
     /// Resets the generator to an absolute element offset in its Philox stream.
     pub fn set_offset(&mut self, offset: u64) -> Result<()> {
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: `raw` is exclusively owned and remains allocated for this call.
         unsafe {
             cudarc::curand::result::set_offset(self.raw, offset)
@@ -591,7 +659,7 @@ impl CurandHandle {
     }
 
     pub fn set_seed(&mut self, seed: u64) -> Result<()> {
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: `raw` is exclusively owned and is a pseudo-random generator.
         unsafe {
             cudarc::curand::result::set_seed(self.raw, seed)
@@ -615,7 +683,7 @@ impl CurandHandle {
                 "cuRAND normal output length must be non-zero and even".into(),
             ));
         }
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: output owns `len` writable f32 elements and the returned
         // fence prevents generator, stream, or allocation destruction.
         unsafe {
@@ -656,9 +724,11 @@ impl CurandFence<'_> {
 
 impl Drop for CurandHandle {
     fn drop(&mut self) {
-        let _ = self.device.make_current();
-        // SAFETY: raw is exclusively owned by this object.
+        let _context = self.device.make_current();
+        // SAFETY: the context is retained, queued work is drained first, and
+        // this object exclusively owns the cuRAND generator.
         unsafe {
+            let _ = cuCtxSynchronize();
             let _ = cudarc::curand::result::destroy_generator(self.raw);
         }
     }
@@ -666,10 +736,17 @@ impl Drop for CurandHandle {
 
 #[derive(Debug)]
 pub struct CudaEvent {
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     raw: CUevent,
-    _not_send_sync: PhantomData<*mut ()>,
+    record_lock: Mutex<()>,
 }
+
+// SAFETY: event record/wait/synchronize operations are serialized by
+// `record_lock`; destruction is unique and all calls establish the context.
+unsafe impl Send for CudaEvent {}
+// SAFETY: record/wait/synchronize calls are protected by `record_lock`, and
+// the Arc-held device context outlives the event.
+unsafe impl Sync for CudaEvent {}
 
 impl CudaEvent {
     /// Records this event after all work already queued on `stream`.
@@ -678,8 +755,11 @@ impl CudaEvent {
     /// [`Self::synchronize`] completes or a waiting stream has completed its
     /// dependent work.
     pub fn record(&self, stream: &CudaStream) -> Result<()> {
+        let _lock = self.record_lock.lock().map_err(|_| Error::Poisoned {
+            resource: "cuda_event",
+        })?;
         ensure_same_device(self.device.id(), stream.device_id())?;
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: event and stream are live and belong to the same context.
         unsafe { check(cuEventRecord(self.raw, stream.raw), "cuEventRecord") }
     }
@@ -688,8 +768,11 @@ impl CudaEvent {
     ///
     /// Both resources must remain alive until the waiting stream completes.
     pub fn wait_on(&self, stream: &CudaStream) -> Result<()> {
+        let _lock = self.record_lock.lock().map_err(|_| Error::Poisoned {
+            resource: "cuda_event",
+        })?;
         ensure_same_device(self.device.id(), stream.device_id())?;
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: event and stream are live and belong to the same context.
         unsafe {
             check(
@@ -700,7 +783,10 @@ impl CudaEvent {
     }
 
     pub fn synchronize(&self) -> Result<()> {
-        self.device.make_current()?;
+        let _lock = self.record_lock.lock().map_err(|_| Error::Poisoned {
+            resource: "cuda_event",
+        })?;
+        let _context = self.device.make_current()?;
         // SAFETY: raw is owned by this object and remains valid for the call.
         unsafe { check(cuEventSynchronize(self.raw), "cuEventSynchronize") }
     }
@@ -708,9 +794,11 @@ impl CudaEvent {
 
 impl Drop for CudaEvent {
     fn drop(&mut self) {
-        let _ = self.device.make_current();
-        // SAFETY: raw is exclusively owned by this object.
+        let _context = self.device.make_current();
+        // SAFETY: this event is uniquely owned; synchronizing before destroy
+        // prevents pending stream dependencies from retaining it.
         unsafe {
+            let _ = cuEventSynchronize(self.raw);
             let _ = cuEventDestroy_v2(self.raw);
         }
     }
@@ -718,12 +806,19 @@ impl Drop for CudaEvent {
 
 #[derive(Debug)]
 pub struct DeviceBuffer<T> {
-    device: Rc<GpuDevice>,
+    device: Arc<GpuDevice>,
     pointer: CUdeviceptr,
     len: usize,
     _type: PhantomData<T>,
-    _not_send_sync: PhantomData<*mut ()>,
 }
+
+// SAFETY: the allocation is uniquely owned; safe writes require `&mut self`,
+// and async APIs document the fence/lifetime requirement. The device owner is
+// shareable and every native call establishes its context.
+unsafe impl<T: Send> Send for DeviceBuffer<T> {}
+// SAFETY: shared access exposes only a read-only device descriptor when `T`
+// is Sync; mutation still requires `&mut self` or an explicitly fenced API.
+unsafe impl<T: Sync> Sync for DeviceBuffer<T> {}
 
 impl<T> DeviceBuffer<T> {
     pub const fn len(&self) -> usize {
@@ -770,7 +865,7 @@ impl<T> DeviceBuffer<T> {
                 self.len
             )));
         }
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: source and destination cover the validated byte count; their
         // asynchronous lifetime is delegated to the caller.
         unsafe {
@@ -797,7 +892,7 @@ impl<T> DeviceBuffer<T> {
                 self.len
             )));
         }
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         // SAFETY: source and destination cover the validated byte count; synchronization
         // before return prevents the host slice from being accessed while CUDA writes it.
         unsafe {
@@ -817,7 +912,7 @@ impl<T> DeviceBuffer<T> {
     /// Enqueues a byte-wise zero fill and synchronizes before returning.
     pub fn memset_zero(&mut self, stream: &CudaStream) -> Result<()> {
         ensure_same_device(self.device.id(), stream.device_id())?;
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         let bytes = self
             .len
             .checked_mul(size_of::<T>())
@@ -849,7 +944,7 @@ impl<T> DeviceBuffer<T> {
         ensure_same_device(self.device.id(), stream.device_id())?;
         let target = self.view().slice(target_offset, len)?;
         let source = source.view().slice(source_offset, len)?;
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         let bytes = len
             .checked_mul(size_of::<T>())
             .ok_or(Error::IntegerOverflow {
@@ -877,7 +972,7 @@ impl<T> DeviceBuffer<T> {
     ) -> Result<()> {
         ensure_same_device(self.device.id(), stream.device_id())?;
         let target = self.view().slice(offset, len)?;
-        self.device.make_current()?;
+        let _context = self.device.make_current()?;
         let bytes = len
             .checked_mul(size_of::<T>())
             .ok_or(Error::IntegerOverflow {
@@ -899,9 +994,11 @@ impl<T> DeviceBuffer<T> {
 
 impl<T> Drop for DeviceBuffer<T> {
     fn drop(&mut self) {
-        let _ = self.device.make_current();
-        // SAFETY: pointer is exclusively owned by this object.
+        let _context = self.device.make_current();
+        // SAFETY: this allocation is uniquely owned and the retained context
+        // is synchronized before its pointer is freed.
         unsafe {
+            let _ = cuCtxSynchronize();
             let _ = cuMemFree_v2(self.pointer);
         }
     }
@@ -922,7 +1019,7 @@ impl<'a, T> DeviceView<'a, T> {
                 self.len()
             )));
         }
-        stream.device.make_current()?;
+        let _context = stream.device.make_current()?;
         // SAFETY: the borrowed view covers the validated byte count and its
         // owner remains live for this call. Synchronization keeps destination
         // unavailable until the transfer completes.

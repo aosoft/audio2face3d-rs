@@ -64,6 +64,19 @@ struct DiffusionExecutionState {
     idle: Condvar,
 }
 
+struct DiffusionRunningGuard<'a> {
+    execution: &'a DiffusionExecutionState,
+}
+
+impl Drop for DiffusionRunningGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.execution.state.lock() {
+            state.running = false;
+            self.execution.idle.notify_all();
+        }
+    }
+}
+
 impl DiffusionExecutionState {
     fn new(contract: DiffusionContract, track_count: usize, seed: u64) -> Result<Self> {
         if !(1..=MAX_DIFFUSION_TRACKS).contains(&track_count) {
@@ -110,11 +123,8 @@ impl DiffusionExecutionState {
             }
             state.running = true;
         }
-        let result = self.execute_inner(tracks, backend, &mut callback);
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
-        state.running = false;
-        self.idle.notify_all();
-        result
+        let _running = DiffusionRunningGuard { execution: self };
+        self.execute_inner(tracks, backend, &mut callback)
     }
 
     fn execute_inner<B, C>(
@@ -157,16 +167,43 @@ impl DiffusionExecutionState {
                 },
             );
         }
-        let outputs = backend.infer_batch(&pending)?;
-        if outputs.len() != pending.len() {
-            return Err(invalid("diffusion backend returned the wrong batch size"));
+        let noise_size = self.contract.noise_size()?;
+        let expected_state = self.contract.state_size()?;
+        let full_batch = (0..tracks.len())
+            .map(|track| {
+                pending
+                    .iter()
+                    .find(|(pending_track, _)| *pending_track == track)
+                    .map_or_else(
+                        || {
+                            (
+                                track,
+                                DiffusionFrameInput {
+                                    audio: vec![0.0; self.contract.audio_size],
+                                    emotions: vec![
+                                        0.0;
+                                        self.contract.center_frames
+                                            * self.contract.emotion_size
+                                    ],
+                                    identity: vec![0.0; self.contract.identity_size],
+                                    noise: vec![0.0; noise_size],
+                                    input_latents: vec![0.0; expected_state],
+                                },
+                            )
+                        },
+                        |(_, input)| (track, input.clone()),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let outputs = backend.infer_batch(&full_batch)?;
+        if outputs.len() != tracks.len() {
+            return Err(invalid("diffusion backend returned a non-fixed batch size"));
         }
         let expected_prediction = self
             .contract
             .total_frames()
             .checked_mul(self.contract.result_layout.total()?)
             .ok_or_else(|| invalid("diffusion prediction size overflow"))?;
-        let expected_state = self.contract.state_size()?;
         for output in &outputs {
             if output.prediction.len() != expected_prediction
                 || output.output_latents.len() != expected_state
@@ -177,8 +214,7 @@ impl DiffusionExecutionState {
         {
             let updates: Vec<_> = pending
                 .iter()
-                .zip(&outputs)
-                .map(|((track, _), output)| (*track, output.output_latents.as_slice()))
+                .map(|(track, _)| (*track, outputs[*track].output_latents.as_slice()))
                 .collect();
             self.recurrent
                 .lock()
@@ -192,10 +228,11 @@ impl DiffusionExecutionState {
             callback_active[*track] = true;
         }
         for frame in 0..self.contract.center_frames {
-            for ((track, _), output) in pending.iter().zip(&outputs) {
+            for (track, _) in &pending {
                 if !callback_active[*track] {
                     continue;
                 }
+                let output = &outputs[*track];
                 let inference = inference_indices[*track];
                 let window = self
                     .contract
@@ -217,7 +254,7 @@ impl DiffusionExecutionState {
                     DiffusionCallbackMetadata {
                         track: *track,
                         inference,
-                        frame,
+                        frame: inference * self.contract.center_frames + frame,
                         timestamp: window.target,
                         next_timestamp: self
                             .contract
@@ -335,6 +372,12 @@ impl DiffusionExecutionState {
 
     fn reset(&self, track: usize) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| poisoned())?;
+        if state.running {
+            return Err(Error::InvalidState {
+                operation: "reset diffusion track",
+                state: "execution is running",
+            });
+        }
         let inference = state
             .inferences
             .get_mut(track)
@@ -345,6 +388,16 @@ impl DiffusionExecutionState {
             .map_err(|_| poisoned())?
             .reset(track)?;
         self.noise.lock().map_err(|_| poisoned())?.reset(track, 0)
+    }
+
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    fn next_inference_index(&self, track: usize) -> Result<usize> {
+        let state = self.state.lock().map_err(|_| poisoned())?;
+        state
+            .inferences
+            .get(track)
+            .copied()
+            .ok_or_else(|| invalid("diffusion track is out of range"))
     }
 
     fn wait(&self) -> Result<()> {
@@ -406,6 +459,11 @@ impl DiffusionExecutor {
 
     pub fn wait(&self) -> Result<()> {
         self.inner.wait()
+    }
+
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    pub(crate) fn next_inference_index(&self, track: usize) -> Result<usize> {
+        self.inner.state.next_inference_index(track)
     }
 }
 
@@ -522,6 +580,41 @@ mod tests {
         (audio, emotions)
     }
 
+    struct FixedBatchTrace {
+        total_frames: usize,
+        result_size: usize,
+        calls: usize,
+        batches: Vec<Vec<(usize, DiffusionFrameInput)>>,
+    }
+
+    impl FixedBatchTrace {
+        fn new(contract: &DiffusionContract) -> Self {
+            Self {
+                total_frames: contract.total_frames(),
+                result_size: contract.result_layout.total().unwrap(),
+                calls: 0,
+                batches: Vec::new(),
+            }
+        }
+    }
+
+    impl DiffusionBackend for FixedBatchTrace {
+        fn infer_batch(
+            &mut self,
+            inputs: &[(usize, DiffusionFrameInput)],
+        ) -> Result<Vec<DiffusionInferenceOutput>> {
+            self.calls += 1;
+            self.batches.push(inputs.to_vec());
+            Ok(inputs
+                .iter()
+                .map(|(_, input)| DiffusionInferenceOutput {
+                    output_latents: vec![self.calls as f32; input.input_latents.len()],
+                    prediction: vec![0.0; self.total_frames * self.result_size],
+                })
+                .collect())
+        }
+    }
+
     #[test]
     fn callback_stops_only_one_track_and_state_advances() {
         let contract = contract();
@@ -621,5 +714,154 @@ mod tests {
                 .unwrap(),
             DiffusionExecutionStatus::AwaitingInput
         );
+    }
+
+    #[test]
+    fn fixed_batch_preserves_inactive_recurrent_noise_and_cursor() {
+        let contract = contract();
+        let (audio0, emotion0) = accumulators();
+        let audio1 = AudioAccumulator::new(4, 0).unwrap();
+        let emotion1 = EmotionAccumulator::new(1, 2).unwrap();
+        emotion1.accumulate(-8, &[0.0]).unwrap();
+        emotion1.accumulate(12, &[1.0]).unwrap();
+        let (audio2, emotion2) = accumulators();
+        let audio3 = AudioAccumulator::new(4, 0).unwrap();
+        let emotion3 = EmotionAccumulator::new(1, 2).unwrap();
+        emotion3.accumulate(-8, &[0.0]).unwrap();
+        emotion3.accumulate(12, &[1.0]).unwrap();
+        let tracks = [
+            DiffusionTrack {
+                audio: &audio0,
+                emotions: &emotion0,
+                identity_index: 0,
+                input_strength: 1.0,
+            },
+            DiffusionTrack {
+                audio: &audio1,
+                emotions: &emotion1,
+                identity_index: 0,
+                input_strength: 1.0,
+            },
+            DiffusionTrack {
+                audio: &audio2,
+                emotions: &emotion2,
+                identity_index: 0,
+                input_strength: 1.0,
+            },
+            DiffusionTrack {
+                audio: &audio3,
+                emotions: &emotion3,
+                identity_index: 0,
+                input_strength: 1.0,
+            },
+        ];
+        let mut backend = FixedBatchTrace::new(&contract);
+        let executor = DiffusionExecutor::new(contract.clone(), 4, 17).unwrap();
+
+        for _ in 0..16 {
+            let status = executor
+                .execute(&tracks, &mut backend, |_, _| true)
+                .unwrap();
+            if status == DiffusionExecutionStatus::AwaitingInput {
+                break;
+            }
+        }
+        assert!(backend.batches.len() > 1);
+        assert!(backend.batches.iter().all(|batch| batch.len() == 4));
+        assert!(
+            backend.batches[1][1]
+                .1
+                .input_latents
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+        assert!(
+            backend.batches[1][3]
+                .1
+                .input_latents
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+
+        let control_inputs: Vec<_> = (0..4).map(|_| accumulators()).collect();
+        let control_tracks: Vec<_> = control_inputs
+            .iter()
+            .map(|(audio, emotions)| DiffusionTrack {
+                audio,
+                emotions,
+                identity_index: 0,
+                input_strength: 1.0,
+            })
+            .collect();
+        let mut control_backend = FixedBatchTrace::new(&contract);
+        let control = DiffusionExecutor::new(contract, 4, 17).unwrap();
+        control
+            .execute(&control_tracks, &mut control_backend, |_, _| true)
+            .unwrap();
+        control
+            .execute(&control_tracks, &mut control_backend, |_, _| true)
+            .unwrap();
+        let expected_second_noise = control_backend.batches[1][1].1.noise.clone();
+
+        audio1.accumulate(&[1.0; 12]).unwrap();
+        audio1.close().unwrap();
+        emotion1.close().unwrap();
+        let mut resumed = Vec::new();
+        assert_eq!(
+            executor
+                .execute(&tracks, &mut backend, |metadata, _| {
+                    resumed.push(metadata);
+                    true
+                })
+                .unwrap(),
+            DiffusionExecutionStatus::Executed { tracks: 1 }
+        );
+        let resumed_input = &backend.batches.last().unwrap()[1].1;
+        assert!(
+            resumed_input
+                .input_latents
+                .iter()
+                .all(|value| *value == 1.0)
+        );
+        assert_eq!(resumed_input.noise, expected_second_noise);
+        assert!(
+            resumed
+                .iter()
+                .all(|metadata| { metadata.track == 1 && metadata.inference == 1 })
+        );
+    }
+
+    #[test]
+    fn callback_panic_releases_running_guard() {
+        let contract = contract();
+        let (audio, emotions) = accumulators();
+        let track = DiffusionTrack {
+            audio: &audio,
+            emotions: &emotions,
+            identity_index: 0,
+            input_strength: 1.0,
+        };
+        let result_size = contract.result_layout.total().unwrap();
+        let total_frames = contract.total_frames();
+        let mut backend = move |inputs: &[(usize, DiffusionFrameInput)]| {
+            Ok(inputs
+                .iter()
+                .map(|(_, input)| DiffusionInferenceOutput {
+                    output_latents: vec![0.0; input.input_latents.len()],
+                    prediction: vec![0.0; total_frames * result_size],
+                })
+                .collect())
+        };
+        let executor = DiffusionExecutor::new(contract, 1, 7).unwrap();
+        let tracks = [track];
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for _ in 0..8 {
+                let _ = executor.execute(&tracks, &mut backend, |_, _| -> bool {
+                    panic!("callback panic")
+                });
+            }
+        }));
+        assert!(panic.is_err());
+        executor.reset(0).unwrap();
     }
 }

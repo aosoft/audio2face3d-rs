@@ -203,10 +203,10 @@ impl EngineBuilder {
     pub fn build_tensorrt_validated(
         &self,
         request: &EngineBuildRequest,
-        device: std::rc::Rc<crate::cuda::GpuDevice>,
+        device: std::sync::Arc<crate::cuda::GpuDevice>,
     ) -> Result<(), EngineError> {
         self.build_validated(request, |temporary| {
-            crate::tensorrt::TensorRtSession::load(std::rc::Rc::clone(&device), temporary)
+            crate::tensorrt::TensorRtSession::load(std::sync::Arc::clone(&device), temporary)
                 .map(|_| ())
                 .map_err(|error| EngineError::Validation(error.to_string()))
         })
