@@ -526,15 +526,37 @@ impl Future for TrackCompletionFuture {
 /// Each request advances a generation: calls ignore requests preceding their
 /// start and observe generation changes at safe inference/layer boundaries.
 /// The completed executor creates the handle; consumers only clone and interrupt it.
-/// This declaration does not yet connect the handle to the old interactive API.
+/// A future captures the internal generation when it starts; requests issued
+/// before that capture are intentionally ignored by that call.
 #[derive(Debug, Clone)]
 pub struct InteractiveInterruptHandle {
     generation: Arc<AtomicU64>,
 }
 
+#[allow(dead_code)]
 impl InteractiveInterruptHandle {
+    pub(crate) fn new() -> Self {
+        Self {
+            generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
     pub fn interrupt(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Returns the generation observed when a call begins.
+    ///
+    /// Requests made before this value is captured do not carry over into the
+    /// new call. A computation should retain this snapshot for its lifetime
+    /// and use [`Self::is_interrupted_since`] at safe boundaries.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Returns whether an interrupt was requested after `generation`.
+    pub(crate) fn is_interrupted_since(&self, generation: u64) -> bool {
+        self.generation.load(Ordering::Acquire) != generation
     }
 }
 
@@ -706,5 +728,17 @@ mod tests {
             Pin::new(&mut execution).poll(&mut cx),
             Poll::Ready(Err(Error::Worker { track: 0, .. }))
         ));
+    }
+
+    #[test]
+    fn interactive_interrupt_is_generation_scoped() {
+        let handle = InteractiveInterruptHandle::new();
+        let before_call = handle.generation();
+        handle.interrupt();
+        let call_generation = handle.generation();
+        assert!(handle.is_interrupted_since(before_call));
+        assert!(!handle.is_interrupted_since(call_generation));
+        handle.interrupt();
+        assert!(handle.is_interrupted_since(call_generation));
     }
 }

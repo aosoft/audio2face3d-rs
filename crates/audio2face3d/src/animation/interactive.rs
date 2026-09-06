@@ -113,8 +113,8 @@ pub(crate) struct RegressionGeometryInteractiveExecution<B, P> {
     backend: B,
     contract: RegressionContract,
     postprocessor: P,
-    audio: AudioAccumulator,
-    emotions: EmotionAccumulator,
+    audio: Arc<AudioAccumulator>,
+    emotions: Arc<EmotionAccumulator>,
     implicit_emotion: Vec<f32>,
     input_strength: f32,
     frames: Vec<GeometryFrameExecutionState>,
@@ -139,6 +139,30 @@ where
         postprocessor: P,
         audio: AudioAccumulator,
         emotions: EmotionAccumulator,
+        implicit_emotion: Vec<f32>,
+        input_strength: f32,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: RegressionGeometryInteractiveExecution::new(
+                backend,
+                contract,
+                postprocessor,
+                Arc::new(audio),
+                Arc::new(emotions),
+                implicit_emotion,
+                input_strength,
+            )?,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn new_shared(
+        backend: B,
+        contract: RegressionContract,
+        postprocessor: P,
+        audio: Arc<AudioAccumulator>,
+        emotions: Arc<EmotionAccumulator>,
         implicit_emotion: Vec<f32>,
         input_strength: f32,
     ) -> Result<Self> {
@@ -254,6 +278,23 @@ where
         self.inner.compute_frame(frame, callback)
     }
 
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn prepare_all(&mut self) -> Result<()> {
+        self.inner.prepare_all()
+    }
+
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn compute_frame_stateful<C>(
+        &mut self,
+        frame: usize,
+        callback: C,
+    ) -> Result<InteractiveGeometryStatus>
+    where
+        C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
+    {
+        self.inner.compute_frame_stateful(frame, callback)
+    }
+
     pub fn compute_all_frames<C>(&mut self, callback: C) -> Result<InteractiveGeometryStatus>
     where
         C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
@@ -272,8 +313,8 @@ where
         backend: B,
         contract: RegressionContract,
         postprocessor: P,
-        audio: AudioAccumulator,
-        emotions: EmotionAccumulator,
+        audio: Arc<AudioAccumulator>,
+        emotions: Arc<EmotionAccumulator>,
         implicit_emotion: Vec<f32>,
         input_strength: f32,
     ) -> Result<Self> {
@@ -318,6 +359,46 @@ where
     pub fn interrupt_handle(&self) -> InteractiveGeometryInterrupt {
         InteractiveGeometryInterrupt {
             requested: Arc::clone(&self.interrupted),
+        }
+    }
+
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn prepare_all(&mut self) -> Result<()> {
+        self.begin_compute()?;
+        self.postprocessor.reset_layers()?;
+        for frame in &mut self.frames {
+            frame.clear_geometry();
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn compute_frame_stateful<C>(
+        &mut self,
+        frame: usize,
+        mut callback: C,
+    ) -> Result<InteractiveGeometryStatus>
+    where
+        C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
+    {
+        self.begin_compute()?;
+        if frame >= self.frames.len() {
+            return Err(invalid("interactive regression frame is out of range"));
+        }
+        let inferences = usize::from(self.ensure_inference(frame)?);
+        self.materialize(frame, false)?;
+        let output = self.frames[frame].frame()?;
+        let metadata = self.metadata(frame)?;
+        if callback(metadata, &output) {
+            Ok(InteractiveGeometryStatus::Complete {
+                frames: 1,
+                inferences,
+            })
+        } else {
+            Ok(InteractiveGeometryStatus::Interrupted {
+                frames: 1,
+                inferences,
+            })
         }
     }
 
@@ -576,8 +657,8 @@ pub(crate) struct DiffusionGeometryInteractiveExecution<B, P> {
     backend: B,
     contract: DiffusionContract,
     postprocessor: P,
-    audio: AudioAccumulator,
-    emotions: EmotionAccumulator,
+    audio: Arc<AudioAccumulator>,
+    emotions: Arc<EmotionAccumulator>,
     identity_index: usize,
     input_strength: f32,
     preview_inferences: usize,
@@ -607,6 +688,34 @@ where
         postprocessor: P,
         audio: AudioAccumulator,
         emotions: EmotionAccumulator,
+        identity_index: usize,
+        input_strength: f32,
+        preview_inferences: usize,
+        seed: u64,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: DiffusionGeometryInteractiveExecution::new(
+                backend,
+                contract,
+                postprocessor,
+                Arc::new(audio),
+                Arc::new(emotions),
+                identity_index,
+                input_strength,
+                preview_inferences,
+                seed,
+            )?,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn new_shared(
+        backend: B,
+        contract: DiffusionContract,
+        postprocessor: P,
+        audio: Arc<AudioAccumulator>,
+        emotions: Arc<EmotionAccumulator>,
         identity_index: usize,
         input_strength: f32,
         preview_inferences: usize,
@@ -730,6 +839,23 @@ where
         self.inner.compute_frame(frame, callback)
     }
 
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn prepare_all(&mut self) -> Result<()> {
+        self.inner.prepare_all()
+    }
+
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn compute_frame_stateful<C>(
+        &mut self,
+        frame: usize,
+        callback: C,
+    ) -> Result<InteractiveGeometryStatus>
+    where
+        C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
+    {
+        self.inner.compute_frame_stateful(frame, callback)
+    }
+
     pub fn compute_all_frames<C>(&mut self, callback: C) -> Result<InteractiveGeometryStatus>
     where
         C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
@@ -748,8 +874,8 @@ where
         backend: B,
         contract: DiffusionContract,
         postprocessor: P,
-        audio: AudioAccumulator,
-        emotions: EmotionAccumulator,
+        audio: Arc<AudioAccumulator>,
+        emotions: Arc<EmotionAccumulator>,
         identity_index: usize,
         input_strength: f32,
         preview_inferences: usize,
@@ -950,6 +1076,55 @@ where
             });
         }
         self.materialize(frame, true)?;
+        let output = self.frames[frame].frame()?;
+        if callback(self.metadata(frame)?, &output) {
+            Ok(InteractiveGeometryStatus::Complete {
+                frames: 1,
+                inferences,
+            })
+        } else {
+            Ok(InteractiveGeometryStatus::Interrupted {
+                frames: 1,
+                inferences,
+            })
+        }
+    }
+
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn prepare_all(&mut self) -> Result<()> {
+        self.begin_compute()?;
+        if !self.exact_checkpoints {
+            self.invalidate(GeometryInvalidationLayer::Inference);
+            self.begin_compute()?;
+        }
+        self.postprocessor.reset_layers()?;
+        for frame in &mut self.frames {
+            frame.clear_geometry();
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn compute_frame_stateful<C>(
+        &mut self,
+        frame: usize,
+        mut callback: C,
+    ) -> Result<InteractiveGeometryStatus>
+    where
+        C: FnMut(InteractiveGeometryMetadata, &RegressionGeometry) -> bool,
+    {
+        self.begin_compute()?;
+        if frame >= self.frames.len() {
+            return Err(invalid("interactive diffusion frame is out of range"));
+        }
+        let inferences = self.ensure_inference_for_frame(frame, true)?;
+        if self.interrupted.load(Ordering::Acquire) && self.frames[frame].inference.is_none() {
+            return Ok(InteractiveGeometryStatus::Interrupted {
+                frames: 0,
+                inferences,
+            });
+        }
+        self.materialize(frame, false)?;
         let output = self.frames[frame].frame()?;
         if callback(self.metadata(frame)?, &output) {
             Ok(InteractiveGeometryStatus::Complete {
@@ -1420,8 +1595,8 @@ mod tests {
             backend,
             regression_contract(),
             layers,
-            audio,
-            emotions,
+            Arc::new(audio),
+            Arc::new(emotions),
             vec![0.0],
             1.0,
         )
@@ -1477,8 +1652,8 @@ mod tests {
             backend,
             regression_contract(),
             MockLayers::new(),
-            audio,
-            emotions,
+            Arc::new(audio),
+            Arc::new(emotions),
             vec![0.0],
             1.0,
         )
@@ -1564,8 +1739,8 @@ mod tests {
             backend,
             contract,
             MockLayers::new(),
-            audio,
-            emotions,
+            Arc::new(audio),
+            Arc::new(emotions),
             0,
             1.0,
             0,

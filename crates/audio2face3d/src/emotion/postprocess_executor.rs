@@ -360,6 +360,11 @@ impl InteractivePostProcessEmotionExecutor {
         &self.parameters
     }
 
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
+    pub(crate) fn output_emotion_length(&self) -> usize {
+        self.data.output_emotion_length
+    }
+
     pub fn set_parameters(&mut self, parameters: EmotionPostProcessParameters) -> Result<()> {
         EmotionPostProcessor::new(self.data.clone(), parameters.clone())?;
         if self.parameters != parameters {

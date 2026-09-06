@@ -97,6 +97,7 @@ impl GeometryModelData {
     }
 
     #[cfg(feature = "cuda")]
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
     pub(crate) fn gpu_postprocessor(
         &self,
         device: &std::sync::Arc<crate::cuda::GpuDevice>,
@@ -131,6 +132,7 @@ impl GeometryModelData {
     }
 
     #[cfg(feature = "cuda")]
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
     pub(crate) fn gpu_regression_postprocessor(
         &self,
         device: &std::sync::Arc<crate::cuda::GpuDevice>,

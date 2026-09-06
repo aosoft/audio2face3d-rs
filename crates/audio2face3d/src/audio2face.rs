@@ -26,12 +26,21 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 #[cfg(feature = "cuda")]
-use std::cell::Cell;
+use std::sync::{Mutex, MutexGuard};
+
 #[cfg(feature = "cuda")]
+use std::cell::Cell;
+#[cfg(all(feature = "cuda", not(feature = "tensorrt")))]
 use std::convert::Infallible;
 
 #[cfg(feature = "tensorrt")]
 use crate::Error;
+#[cfg(feature = "cuda")]
+use crate::animation::{
+    InteractiveBlendshapeLayer, InteractiveBlendshapeWeights, RegressionGeometry,
+};
+#[cfg(feature = "cuda")]
+use crate::audio2x::InteractiveInterruptHandle;
 use crate::audio2x::{
     AudioAccumulator, CallbackMetadata, DeviceComponentResults, EmotionAccumulator, Execution,
     Executor, ExecutorFuture, InteractiveExecutionReport, InteractiveExecutor, Result,
@@ -462,27 +471,762 @@ pub struct DeviceBlendshapeSolveExecutorCreationParameters<'a> {
 }
 
 #[cfg(feature = "cuda")]
-macro_rules! opaque_executor {
-    ($name:ident, $original:literal) => {
-        #[doc = concat!("Opaque owning facade corresponding to `", $original, "`.")]
-        #[doc = " Construction and execution are connected in later implementation steps."]
-        pub struct $name {
-            _opaque: Infallible,
-            _not_sync: Cell<()>,
-        }
-    };
+/// Owning CPU interactive BlendShape facade corresponding to
+/// `nva2f::IBlendshapeInteractiveExecutor` host results.
+#[cfg(feature = "cuda")]
+pub struct HostBlendshapeSolveInteractiveExecutor {
+    layer: Arc<Mutex<InteractiveBlendshapeLayer>>,
+    runner: Arc<dyn JobRunner>,
+    total_frames: Option<usize>,
+    sample_rate: usize,
+    frame_rate: crate::audio2x::FrameRate,
+    interrupt: InteractiveInterruptHandle,
+    _not_sync: Cell<()>,
+}
+
+/// Owning GPU interactive BlendShape facade corresponding to
+/// `nva2f::IBlendshapeInteractiveExecutor` device results.
+#[cfg(feature = "cuda")]
+pub struct DeviceBlendshapeSolveInteractiveExecutor {
+    layer: crate::animation::InteractiveGpuBlendshapeLayer,
+    total_frames: Option<usize>,
+    sample_rate: usize,
+    frame_rate: crate::audio2x::FrameRate,
+    interrupt: InteractiveInterruptHandle,
+    _not_sync: Cell<()>,
 }
 
 #[cfg(feature = "cuda")]
-opaque_executor!(
-    HostBlendshapeSolveInteractiveExecutor,
-    "nva2f::IBlendshapeInteractiveExecutor (host)"
-);
+impl HostBlendshapeSolveInteractiveExecutor {
+    /// Wraps an already prepared CPU interactive layer.
+    pub fn from_layer(
+        layer: InteractiveBlendshapeLayer,
+        sample_rate: usize,
+        frame_rate: crate::audio2x::FrameRate,
+    ) -> Result<Self> {
+        Self::from_layer_with_runner(layer, sample_rate, frame_rate, None)
+    }
+
+    /// Wraps a CPU layer and optionally shares a caller-provided job runner.
+    pub fn from_layer_with_runner(
+        layer: InteractiveBlendshapeLayer,
+        sample_rate: usize,
+        frame_rate: crate::audio2x::FrameRate,
+        runner: Option<Arc<dyn JobRunner>>,
+    ) -> Result<Self> {
+        let component_count = usize::from(layer.skin_solver().is_some())
+            + usize::from(layer.tongue_solver().is_some());
+        let runner = match runner {
+            Some(runner) => runner,
+            None => Arc::new(ThreadPoolJobRunner::new_for_components(component_count)?),
+        };
+        Ok(Self {
+            layer: Arc::new(Mutex::new(layer)),
+            runner,
+            total_frames: None,
+            sample_rate,
+            frame_rate,
+            interrupt: InteractiveInterruptHandle::new(),
+            _not_sync: Cell::new(()),
+        })
+    }
+
+    pub fn layer(&self) -> Result<MutexGuard<'_, InteractiveBlendshapeLayer>> {
+        self.layer.lock().map_err(|_| crate::Error::Poisoned {
+            resource: "interactive BlendShape layer",
+        })
+    }
+
+    pub fn layer_mut(&mut self) -> Result<MutexGuard<'_, InteractiveBlendshapeLayer>> {
+        self.layer()
+    }
+
+    /// Computes one random-access frame. The callback runs during one future
+    /// poll and receives an owned snapshot, so it may retain the values.
+    pub fn compute_frame<'a, C>(
+        &'a mut self,
+        frame: usize,
+        total_frames: usize,
+        geometry: &'a RegressionGeometry,
+        callback: C,
+    ) -> ExecutorFuture<'a, InteractiveExecutionReport>
+    where
+        C: FnMut(&InteractiveBlendshapeWeights) -> bool + Send + Unpin + 'a,
+    {
+        self.total_frames = Some(total_frames);
+        Box::pin(HostBlendshapeInteractiveFuture {
+            executor: self,
+            geometry: Some(geometry),
+            all_geometry: None,
+            frame,
+            total_frames,
+            callback,
+            next_frame: 0,
+            pending: None,
+            pending_result: None,
+            finished: false,
+            generation_started: false,
+            generation: 0,
+            emitted_frames: 0,
+        })
+    }
+
+    /// Computes one frame per poll for an ordered pass.
+    pub fn compute_all_frames<'a, C>(
+        &'a mut self,
+        geometry: &'a [RegressionGeometry],
+        callback: C,
+    ) -> ExecutorFuture<'a, InteractiveExecutionReport>
+    where
+        C: FnMut(&InteractiveBlendshapeWeights) -> bool + Send + Unpin + 'a,
+    {
+        self.total_frames = Some(geometry.len());
+        Box::pin(HostBlendshapeInteractiveFuture {
+            executor: self,
+            geometry: None,
+            all_geometry: Some(geometry),
+            frame: 0,
+            total_frames: geometry.len(),
+            callback,
+            next_frame: 0,
+            pending: None,
+            pending_result: None,
+            finished: false,
+            generation_started: false,
+            generation: 0,
+            emitted_frames: 0,
+        })
+    }
+
+    fn timestamp(&self, frame: usize) -> Result<i64> {
+        let numerator = self.frame_rate.numerator() as u128;
+        let denominator = self.frame_rate.denominator() as u128;
+        let samples = (frame as u128)
+            .checked_mul(self.sample_rate as u128)
+            .and_then(|value| value.checked_mul(denominator))
+            .and_then(|value| value.checked_div(numerator))
+            .ok_or(crate::Error::InvalidArgument {
+                field: "frame",
+                reason: "frame timestamp overflow".into(),
+            })?;
+        i64::try_from(samples).map_err(|_| crate::Error::InvalidArgument {
+            field: "frame",
+            reason: "frame timestamp exceeds sample range".into(),
+        })
+    }
+}
+
 #[cfg(feature = "cuda")]
-opaque_executor!(
-    DeviceBlendshapeSolveInteractiveExecutor,
-    "nva2f::IBlendshapeInteractiveExecutor (device)"
-);
+struct HostBlendshapeInteractiveFuture<'a, C> {
+    executor: &'a mut HostBlendshapeSolveInteractiveExecutor,
+    geometry: Option<&'a RegressionGeometry>,
+    all_geometry: Option<&'a [RegressionGeometry]>,
+    frame: usize,
+    total_frames: usize,
+    callback: C,
+    next_frame: usize,
+    pending: Option<Execution>,
+    pending_result: Option<Arc<Mutex<Option<Result<InteractiveBlendshapeWeights>>>>>,
+    finished: bool,
+    generation_started: bool,
+    generation: u64,
+    emitted_frames: usize,
+}
+
+#[cfg(feature = "cuda")]
+impl<C> std::future::Future for HostBlendshapeInteractiveFuture<'_, C>
+where
+    C: FnMut(&InteractiveBlendshapeWeights) -> bool + Unpin,
+{
+    type Output = Result<InteractiveExecutionReport>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        if this.finished {
+            panic!("interactive BlendShape future polled after completion");
+        }
+        if !this.generation_started {
+            this.generation = this.executor.interrupt.generation();
+            this.generation_started = true;
+        }
+        if this
+            .executor
+            .interrupt
+            .is_interrupted_since(this.generation)
+        {
+            this.finished = true;
+            return std::task::Poll::Ready(Ok(InteractiveExecutionReport {
+                status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                emitted_frames: this.emitted_frames,
+            }));
+        }
+
+        if let Some(execution) = &mut this.pending {
+            match std::future::Future::poll(std::pin::Pin::new(execution), cx) {
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+                std::task::Poll::Ready(Err(error)) => {
+                    this.finished = true;
+                    return std::task::Poll::Ready(Err(error));
+                }
+                std::task::Poll::Ready(Ok(_)) => {}
+            }
+            this.pending = None;
+            let Some(result) = this.pending_result.take() else {
+                this.finished = true;
+                return std::task::Poll::Ready(Err(crate::Error::InvalidState {
+                    operation: "complete interactive BlendShape job",
+                    state: "worker result storage is missing",
+                }));
+            };
+            let weights = match result.lock() {
+                Ok(mut result) => match result.take() {
+                    Some(Ok(weights)) => weights,
+                    Some(Err(error)) => {
+                        this.finished = true;
+                        return std::task::Poll::Ready(Err(error));
+                    }
+                    None => {
+                        this.finished = true;
+                        return std::task::Poll::Ready(Err(crate::Error::InvalidState {
+                            operation: "complete interactive BlendShape job",
+                            state: "worker completed without a result",
+                        }));
+                    }
+                },
+                Err(_) => {
+                    this.finished = true;
+                    return std::task::Poll::Ready(Err(crate::Error::Poisoned {
+                        resource: "interactive BlendShape result",
+                    }));
+                }
+            };
+
+            let keep_going = (this.callback)(&weights);
+            this.emitted_frames += 1;
+            if this.all_geometry.is_some() {
+                this.next_frame += 1;
+            }
+            if !keep_going
+                || this
+                    .executor
+                    .interrupt
+                    .is_interrupted_since(this.generation)
+                || this.geometry.is_some()
+                || this.next_frame >= this.total_frames
+            {
+                this.finished = true;
+                let status = if !keep_going
+                    || this
+                        .executor
+                        .interrupt
+                        .is_interrupted_since(this.generation)
+                {
+                    crate::audio2x::InteractiveExecutionStatus::Interrupted
+                } else {
+                    crate::audio2x::InteractiveExecutionStatus::Complete
+                };
+                return std::task::Poll::Ready(Ok(InteractiveExecutionReport {
+                    status,
+                    emitted_frames: this.emitted_frames,
+                }));
+            }
+        }
+
+        let (frame, geometry, ordered) = if let Some(geometry) = this.geometry {
+            (this.frame, geometry.clone(), false)
+        } else if let Some(geometry) = this.all_geometry {
+            if this.next_frame >= geometry.len() {
+                this.finished = true;
+                return std::task::Poll::Ready(Ok(InteractiveExecutionReport {
+                    status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                    emitted_frames: this.emitted_frames,
+                }));
+            }
+            (this.next_frame, geometry[this.next_frame].clone(), true)
+        } else {
+            this.finished = true;
+            return std::task::Poll::Ready(Err(crate::Error::InvalidState {
+                operation: "interactive BlendShape compute",
+                state: "no geometry was supplied",
+            }));
+        };
+        let result = Arc::new(Mutex::new(None));
+        let result_for_job = Arc::clone(&result);
+        let layer = Arc::clone(&this.executor.layer);
+        let total_frames = this.total_frames;
+        let (execution, completion) = Execution::pending(1);
+        if let Err(error) = completion.add_task(0) {
+            this.finished = true;
+            return std::task::Poll::Ready(Err(error));
+        }
+        let task = JobRunnerTask::new(Arc::clone(&completion), 0, move || {
+            let computation = (|| {
+                let mut layer = layer.lock().map_err(|_| crate::Error::Poisoned {
+                    resource: "interactive BlendShape layer",
+                })?;
+                if ordered {
+                    if frame == 0 {
+                        layer.begin_all_frames(total_frames)?;
+                    }
+                    layer.compute_next_frame(frame, &geometry)
+                } else {
+                    layer.compute_frame(frame, total_frames, &geometry)
+                }
+            })();
+            let mut output = result_for_job.lock().map_err(|_| crate::Error::Poisoned {
+                resource: "interactive BlendShape result",
+            })?;
+            *output = Some(computation);
+            Ok(())
+        });
+        if let Err(error) = this.executor.runner.enqueue(task) {
+            completion.finish_schedule(crate::audio2x::ExecutionReport {
+                state: crate::audio2x::ExecutionState::Progress,
+                executed_tracks: 1,
+                emitted_frames: 0,
+            });
+            this.finished = true;
+            return std::task::Poll::Ready(Err(error));
+        }
+        completion.finish_schedule(crate::audio2x::ExecutionReport {
+            state: crate::audio2x::ExecutionState::Progress,
+            executed_tracks: 1,
+            emitted_frames: 1,
+        });
+        this.pending = Some(execution);
+        this.pending_result = Some(result);
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl<C> Drop for HostBlendshapeInteractiveFuture<'_, C> {
+    fn drop(&mut self) {
+        // An ordered pass keeps completed frame cache entries while its
+        // remaining entries stay empty, making validity false after drop.
+        // Clearing all entries here would discard useful completed work.
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl InteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
+    fn invalidate_all(&mut self) -> Result<()> {
+        self.layer()?
+            .invalidate(crate::animation::BlendshapeInvalidationLayer::All);
+        Ok(())
+    }
+
+    fn is_fully_valid(&self) -> bool {
+        self.layer()
+            .is_ok_and(|layer| layer.is_valid(crate::animation::BlendshapeInvalidationLayer::All))
+    }
+
+    fn total_frame_count(&self) -> Result<usize> {
+        self.total_frames.ok_or(crate::Error::InvalidState {
+            operation: "query interactive BlendShape frame count",
+            state: "no computation has established the input timeline",
+        })
+    }
+
+    fn sample_rate(&self) -> usize {
+        self.sample_rate
+    }
+
+    fn frame_rate(&self) -> crate::audio2x::FrameRate {
+        self.frame_rate
+    }
+
+    fn frame_timestamp(&self, frame: usize) -> Result<i64> {
+        let total = self.total_frame_count()?;
+        if frame >= total {
+            return Err(crate::Error::OutOfBounds {
+                field: "frame",
+                index: frame,
+                len: total,
+            });
+        }
+        self.timestamp(frame)
+    }
+
+    fn interrupt_handle(&self) -> InteractiveInterruptHandle {
+        self.interrupt.clone()
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl BlendshapeInteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
+    fn invalidate_blendshape(&mut self, layer: BlendshapeInvalidationLayer) -> Result<()> {
+        match layer {
+            BlendshapeInvalidationLayer::None => {}
+            BlendshapeInvalidationLayer::SkinSolverPrepare => self
+                .layer()?
+                .invalidate(crate::animation::BlendshapeInvalidationLayer::SkinSolverPrepare),
+            BlendshapeInvalidationLayer::TongueSolverPrepare => self
+                .layer()?
+                .invalidate(crate::animation::BlendshapeInvalidationLayer::TongueSolverPrepare),
+            _ => self
+                .layer()?
+                .invalidate(crate::animation::BlendshapeInvalidationLayer::Weights),
+        }
+        Ok(())
+    }
+
+    fn is_blendshape_valid(&self, layer: BlendshapeInvalidationLayer) -> bool {
+        let Ok(layer_guard) = self.layer() else {
+            return false;
+        };
+        match layer {
+            BlendshapeInvalidationLayer::SkinSolverPrepare => layer_guard
+                .is_valid(crate::animation::BlendshapeInvalidationLayer::SkinSolverPrepare),
+            BlendshapeInvalidationLayer::TongueSolverPrepare => layer_guard
+                .is_valid(crate::animation::BlendshapeInvalidationLayer::TongueSolverPrepare),
+            BlendshapeInvalidationLayer::None => true,
+            _ => layer_guard.is_valid(crate::animation::BlendshapeInvalidationLayer::Weights),
+        }
+    }
+
+    fn weight_count(&self) -> usize {
+        let Ok(layer) = self.layer() else {
+            return 0;
+        };
+        layer
+            .skin_solver()
+            .map_or(0, |solver| solver.data().pose_count())
+            + layer
+                .tongue_solver()
+                .map_or(0, |solver| solver.data().pose_count())
+    }
+
+    fn result_kind(&self) -> BlendshapeResultKind {
+        BlendshapeResultKind::Host
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl DeviceBlendshapeSolveInteractiveExecutor {
+    /// Wraps an already prepared GPU interactive layer. Device views yielded
+    /// to the callback are valid until the callback returns; dependent work
+    /// must remain ordered on the supplied layer stream.
+    pub fn from_layer(
+        layer: crate::animation::InteractiveGpuBlendshapeLayer,
+        sample_rate: usize,
+        frame_rate: crate::audio2x::FrameRate,
+    ) -> Self {
+        Self {
+            layer,
+            total_frames: None,
+            sample_rate,
+            frame_rate,
+            interrupt: InteractiveInterruptHandle::new(),
+            _not_sync: Cell::new(()),
+        }
+    }
+
+    pub fn layer(&self) -> &crate::animation::InteractiveGpuBlendshapeLayer {
+        &self.layer
+    }
+
+    pub fn layer_mut(&mut self) -> &mut crate::animation::InteractiveGpuBlendshapeLayer {
+        &mut self.layer
+    }
+
+    pub fn compute_frame<'a, C>(
+        &'a mut self,
+        frame: usize,
+        total_frames: usize,
+        geometry: &'a RegressionGeometry,
+        callback: C,
+    ) -> ExecutorFuture<'a, InteractiveExecutionReport>
+    where
+        C: for<'r> FnMut(crate::animation::InteractiveGpuBlendshapeOutput<'r>) -> bool
+            + Send
+            + Unpin
+            + 'a,
+    {
+        self.total_frames = Some(total_frames);
+        Box::pin(DeviceBlendshapeInteractiveFuture {
+            executor: self,
+            geometry: Some(geometry),
+            all_geometry: None,
+            frame,
+            total_frames,
+            callback,
+            next_frame: 0,
+            started: false,
+            finished: false,
+            generation_started: false,
+            generation: 0,
+            emitted_frames: 0,
+        })
+    }
+
+    pub fn compute_all_frames<'a, C>(
+        &'a mut self,
+        geometry: &'a [RegressionGeometry],
+        callback: C,
+    ) -> ExecutorFuture<'a, InteractiveExecutionReport>
+    where
+        C: for<'r> FnMut(crate::animation::InteractiveGpuBlendshapeOutput<'r>) -> bool
+            + Send
+            + Unpin
+            + 'a,
+    {
+        self.total_frames = Some(geometry.len());
+        Box::pin(DeviceBlendshapeInteractiveFuture {
+            executor: self,
+            geometry: None,
+            all_geometry: Some(geometry),
+            frame: 0,
+            total_frames: geometry.len(),
+            callback,
+            next_frame: 0,
+            started: false,
+            finished: false,
+            generation_started: false,
+            generation: 0,
+            emitted_frames: 0,
+        })
+    }
+
+    fn timestamp(&self, frame: usize) -> Result<i64> {
+        let numerator = self.frame_rate.numerator() as u128;
+        let denominator = self.frame_rate.denominator() as u128;
+        let samples = (frame as u128)
+            .checked_mul(self.sample_rate as u128)
+            .and_then(|value| value.checked_mul(denominator))
+            .and_then(|value| value.checked_div(numerator))
+            .ok_or(crate::Error::InvalidArgument {
+                field: "frame",
+                reason: "frame timestamp overflow".into(),
+            })?;
+        i64::try_from(samples).map_err(|_| crate::Error::InvalidArgument {
+            field: "frame",
+            reason: "frame timestamp exceeds sample range".into(),
+        })
+    }
+}
+
+#[cfg(feature = "cuda")]
+struct DeviceBlendshapeInteractiveFuture<'a, C> {
+    executor: &'a mut DeviceBlendshapeSolveInteractiveExecutor,
+    geometry: Option<&'a RegressionGeometry>,
+    all_geometry: Option<&'a [RegressionGeometry]>,
+    frame: usize,
+    total_frames: usize,
+    callback: C,
+    next_frame: usize,
+    started: bool,
+    finished: bool,
+    generation_started: bool,
+    generation: u64,
+    emitted_frames: usize,
+}
+
+#[cfg(feature = "cuda")]
+impl<C> std::future::Future for DeviceBlendshapeInteractiveFuture<'_, C>
+where
+    C: for<'r> FnMut(crate::animation::InteractiveGpuBlendshapeOutput<'r>) -> bool + Unpin,
+{
+    type Output = Result<InteractiveExecutionReport>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        if this.finished {
+            panic!("interactive GPU BlendShape future polled after completion");
+        }
+        if !this.generation_started {
+            this.generation = this.executor.interrupt.generation();
+            this.generation_started = true;
+        }
+        if this
+            .executor
+            .interrupt
+            .is_interrupted_since(this.generation)
+        {
+            this.finished = true;
+            return std::task::Poll::Ready(Ok(InteractiveExecutionReport {
+                status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                emitted_frames: this.emitted_frames,
+            }));
+        }
+        if this.all_geometry.is_some() && !this.started {
+            if let Err(error) = this.executor.layer.begin_all_frames(this.total_frames) {
+                this.finished = true;
+                return std::task::Poll::Ready(Err(error));
+            }
+            this.started = true;
+        }
+        let result = if let Some(geometry) = this.geometry {
+            this.executor
+                .layer
+                .compute_frame(this.frame, this.total_frames, geometry, |output| {
+                    (this.callback)(output)
+                })
+        } else if let Some(geometry) = this.all_geometry {
+            if this.next_frame >= geometry.len() {
+                this.finished = true;
+                return std::task::Poll::Ready(Ok(InteractiveExecutionReport {
+                    status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                    emitted_frames: this.emitted_frames,
+                }));
+            }
+            let frame = this.next_frame;
+            let result =
+                this.executor
+                    .layer
+                    .compute_next_frame(frame, &geometry[frame], |output| (this.callback)(output));
+            this.next_frame += 1;
+            result
+        } else {
+            Err(crate::Error::InvalidState {
+                operation: "interactive GPU BlendShape compute",
+                state: "no geometry was supplied",
+            })
+        };
+        let keep_going = match result {
+            Ok(keep_going) => keep_going,
+            Err(error) => {
+                this.finished = true;
+                return std::task::Poll::Ready(Err(error));
+            }
+        };
+        this.emitted_frames += 1;
+        if !keep_going
+            || this
+                .executor
+                .interrupt
+                .is_interrupted_since(this.generation)
+            || this.geometry.is_some()
+            || this.next_frame >= this.total_frames
+        {
+            this.finished = true;
+            let status = if !keep_going
+                || this
+                    .executor
+                    .interrupt
+                    .is_interrupted_since(this.generation)
+            {
+                crate::audio2x::InteractiveExecutionStatus::Interrupted
+            } else {
+                crate::audio2x::InteractiveExecutionStatus::Complete
+            };
+            return std::task::Poll::Ready(Ok(InteractiveExecutionReport {
+                status,
+                emitted_frames: this.emitted_frames,
+            }));
+        }
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl<C> Drop for DeviceBlendshapeInteractiveFuture<'_, C> {
+    fn drop(&mut self) {
+        // The GPU layer keeps cached device buffers alive; unfinished ordered
+        // frames remain absent and therefore report invalidity.
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl InteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor {
+    fn invalidate_all(&mut self) -> Result<()> {
+        self.layer
+            .invalidate(crate::animation::BlendshapeInvalidationLayer::All);
+        Ok(())
+    }
+
+    fn is_fully_valid(&self) -> bool {
+        self.layer
+            .is_valid(crate::animation::BlendshapeInvalidationLayer::All)
+    }
+
+    fn total_frame_count(&self) -> Result<usize> {
+        self.total_frames.ok_or(crate::Error::InvalidState {
+            operation: "query interactive GPU BlendShape frame count",
+            state: "no computation has established the input timeline",
+        })
+    }
+
+    fn sample_rate(&self) -> usize {
+        self.sample_rate
+    }
+
+    fn frame_rate(&self) -> crate::audio2x::FrameRate {
+        self.frame_rate
+    }
+
+    fn frame_timestamp(&self, frame: usize) -> Result<i64> {
+        let total = self.total_frame_count()?;
+        if frame >= total {
+            return Err(crate::Error::OutOfBounds {
+                field: "frame",
+                index: frame,
+                len: total,
+            });
+        }
+        self.timestamp(frame)
+    }
+
+    fn interrupt_handle(&self) -> InteractiveInterruptHandle {
+        self.interrupt.clone()
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl BlendshapeInteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor {
+    fn invalidate_blendshape(&mut self, layer: BlendshapeInvalidationLayer) -> Result<()> {
+        match layer {
+            BlendshapeInvalidationLayer::None => {}
+            BlendshapeInvalidationLayer::SkinSolverPrepare => self
+                .layer
+                .invalidate(crate::animation::BlendshapeInvalidationLayer::SkinSolverPrepare),
+            BlendshapeInvalidationLayer::TongueSolverPrepare => self
+                .layer
+                .invalidate(crate::animation::BlendshapeInvalidationLayer::TongueSolverPrepare),
+            _ => self
+                .layer
+                .invalidate(crate::animation::BlendshapeInvalidationLayer::Weights),
+        }
+        Ok(())
+    }
+
+    fn is_blendshape_valid(&self, layer: BlendshapeInvalidationLayer) -> bool {
+        match layer {
+            BlendshapeInvalidationLayer::SkinSolverPrepare => self
+                .layer
+                .is_valid(crate::animation::BlendshapeInvalidationLayer::SkinSolverPrepare),
+            BlendshapeInvalidationLayer::TongueSolverPrepare => self
+                .layer
+                .is_valid(crate::animation::BlendshapeInvalidationLayer::TongueSolverPrepare),
+            BlendshapeInvalidationLayer::None => true,
+            _ => self
+                .layer
+                .is_valid(crate::animation::BlendshapeInvalidationLayer::Weights),
+        }
+    }
+
+    fn weight_count(&self) -> usize {
+        self.layer
+            .skin_solver()
+            .map_or(0, crate::animation::GpuBlendshapeSolver::pose_count)
+            + self
+                .layer
+                .tongue_solver()
+                .map_or(0, crate::animation::GpuBlendshapeSolver::pose_count)
+    }
+
+    fn result_kind(&self) -> BlendshapeResultKind {
+        BlendshapeResultKind::Device
+    }
+}
 
 /// Owning asynchronous host BlendShape executor.
 #[cfg(feature = "cuda")]
@@ -1319,5 +2063,126 @@ impl BlendshapeExecutor for DeviceBlendshapeSolveExecutor {
 
     fn result_kind(&self) -> BlendshapeResultKind {
         BlendshapeResultKind::Device
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod interactive_blendshape_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Waker};
+
+    #[derive(Default)]
+    struct HoldingRunner {
+        tasks: Mutex<Vec<JobRunnerTask>>,
+    }
+
+    impl HoldingRunner {
+        fn run_one(&self) {
+            self.tasks.lock().unwrap().remove(0).run();
+        }
+    }
+
+    impl JobRunner for HoldingRunner {
+        fn enqueue(&self, task: JobRunnerTask) -> Result<()> {
+            self.tasks.lock().unwrap().push(task);
+            Ok(())
+        }
+    }
+
+    fn geometry() -> RegressionGeometry {
+        RegressionGeometry {
+            skin: Vec::new(),
+            tongue: Vec::new(),
+            jaw_transform: [0.0; 16],
+            eyes_rotation: crate::animation::EyesRotation {
+                right: [0.0; 3],
+                left: [0.0; 3],
+            },
+        }
+    }
+
+    fn executor(runner: Arc<HoldingRunner>) -> HostBlendshapeSolveInteractiveExecutor {
+        let shared: Arc<dyn JobRunner> = runner;
+        HostBlendshapeSolveInteractiveExecutor::from_layer_with_runner(
+            InteractiveBlendshapeLayer::new(None, None),
+            48_000,
+            crate::audio2x::FrameRate::new(30, 1).unwrap(),
+            Some(shared),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn host_future_waits_for_its_job_and_callback() {
+        let runner = Arc::new(HoldingRunner::default());
+        let mut executor = executor(Arc::clone(&runner));
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callbacks_for_call = Arc::clone(&callbacks);
+        let frame = geometry();
+        let mut future = executor.compute_frame(0, 1, &frame, move |_| {
+            callbacks_for_call.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+        runner.run_one();
+        assert!(matches!(
+            future.as_mut().poll(&mut context),
+            Poll::Ready(Ok(InteractiveExecutionReport {
+                status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                emitted_frames: 1,
+            }))
+        ));
+        assert_eq!(callbacks.load(Ordering::SeqCst), 1);
+        drop(future);
+        assert!(executor.is_fully_valid());
+    }
+
+    #[test]
+    fn dropping_host_future_leaves_unfinished_frames_invalid_and_no_callback() {
+        let runner = Arc::new(HoldingRunner::default());
+        let mut executor = executor(Arc::clone(&runner));
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callbacks_for_call = Arc::clone(&callbacks);
+        let frames = [geometry(), geometry()];
+        let mut future = executor.compute_all_frames(&frames, move |_| {
+            callbacks_for_call.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        drop(future);
+        runner.run_one();
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+        assert!(!executor.is_fully_valid());
+    }
+
+    #[test]
+    fn host_interrupt_is_generation_scoped_and_checked_after_final_callback() {
+        let runner = Arc::new(HoldingRunner::default());
+        let mut executor = executor(Arc::clone(&runner));
+        let interrupt = executor.interrupt_handle();
+        interrupt.interrupt();
+        let interrupt_from_callback = interrupt.clone();
+        let frame = geometry();
+        let mut future = executor.compute_frame(0, 1, &frame, move |_| {
+            interrupt_from_callback.interrupt();
+            true
+        });
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        runner.run_one();
+        assert!(matches!(
+            future.as_mut().poll(&mut context),
+            Poll::Ready(Ok(InteractiveExecutionReport {
+                status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                emitted_frames: 1,
+            }))
+        ));
     }
 }

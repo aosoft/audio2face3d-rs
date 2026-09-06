@@ -5,9 +5,11 @@ use std::path::PathBuf;
 #[cfg(feature = "tensorrt")]
 use std::cell::Cell;
 #[cfg(feature = "tensorrt")]
-use std::convert::Infallible;
+use std::future::Future;
 #[cfg(feature = "tensorrt")]
 use std::ops::ControlFlow;
+#[cfg(feature = "tensorrt")]
+use std::pin::Pin;
 #[cfg(feature = "tensorrt")]
 use std::sync::Arc;
 
@@ -19,7 +21,8 @@ use crate::audio2x::FrameRate;
 #[cfg(feature = "tensorrt")]
 use crate::animation::{
     DiffusionCallbackMetadata, DiffusionContract, DiffusionExecutor, DiffusionPostprocessor,
-    DiffusionTrack, GeometryModelData, RegressionGeometry, TensorRtDiffusionBackend,
+    DiffusionTrack, GeometryModelData, InteractiveDiffusionExecutor, RegressionGeometry,
+    TensorRtDiffusionBackend,
 };
 #[cfg(feature = "tensorrt")]
 use crate::common::{GeometryAudioParameters, GeometryParameters, NetworkDocument};
@@ -122,8 +125,498 @@ pub struct DiffusionGeometryExecutor {
 /// current generic `crate::animation::InteractiveDiffusionExecutor<B, P>`.
 #[cfg(feature = "tensorrt")]
 pub struct DiffusionGeometryInteractiveExecutor {
-    _opaque: Infallible,
+    execution: InteractiveDiffusionExecutor<TensorRtDiffusionBackend, DiffusionPostprocessor>,
+    contract: DiffusionContract,
+    stream: crate::cuda::CudaStream,
+    skin: crate::cuda::DeviceBuffer<f32>,
+    tongue: crate::cuda::DeviceBuffer<f32>,
+    jaw: crate::cuda::DeviceBuffer<f32>,
+    eyes: crate::cuda::DeviceBuffer<f32>,
+    batch_size: usize,
+    core_interrupt: crate::animation::InteractiveGeometryInterrupt,
+    interrupt_handle: crate::audio2x::InteractiveInterruptHandle,
     _not_sync: Cell<()>,
+}
+
+#[cfg(feature = "tensorrt")]
+struct YieldOnce(bool);
+
+#[cfg(feature = "tensorrt")]
+impl Future for YieldOnce {
+    type Output = ();
+
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        if self.0 {
+            std::task::Poll::Ready(())
+        } else {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+fn validate_diffusion_inputs(
+    audio: &crate::audio2x::AudioAccumulator,
+    emotions: &crate::audio2x::EmotionAccumulator,
+    contract: &DiffusionContract,
+) -> crate::Result<()> {
+    let state = emotions.state();
+    if !audio.is_closed()
+        || audio.nb_dropped_samples() != 0
+        || !state.closed
+        || state.dropped_emotions != 0
+    {
+        return Err(crate::Error::InputHistoryUnavailable { track: 0 });
+    }
+    if state.emotion_size != contract.emotion_size {
+        return Err(crate::Error::InvalidSchema(
+            "interactive diffusion emotion dimensions differ".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "tensorrt")]
+impl DiffusionGeometryInteractiveExecutor {
+    pub fn load(
+        parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
+    ) -> crate::Result<Self> {
+        if !parameters.input_strength.is_finite() {
+            return Err(crate::Error::InvalidArgument {
+                field: "input_strength",
+                reason: "input strength must be finite".into(),
+            });
+        }
+        let model = Model::load(&parameters.model_path)?;
+        if model.kind() != ModelKind::Diffusion {
+            return Err(crate::Error::InvalidSchema(
+                "diffusion interactive executor requires a diffusion model".into(),
+            ));
+        }
+        let NetworkDocument::Geometry(network) = model.network() else {
+            return Err(crate::Error::InvalidSchema(
+                "diffusion network is missing".into(),
+            ));
+        };
+        let (model_parameters, audio_parameters) = match (&network.params, &network.audio_params) {
+            (GeometryParameters::Diffusion(value), GeometryAudioParameters::Diffusion(audio)) => {
+                (value, audio)
+            }
+            _ => {
+                return Err(crate::Error::InvalidSchema(
+                    "diffusion network schema mismatch".into(),
+                ));
+            }
+        };
+        let contract = DiffusionContract::new(model_parameters, audio_parameters)?;
+        if parameters.identity_index >= contract.identity_size {
+            return Err(crate::Error::OutOfBounds {
+                field: "identity_index",
+                index: parameters.identity_index,
+                len: contract.identity_size,
+            });
+        }
+        validate_diffusion_inputs(
+            &parameters.common.audio,
+            &parameters.common.emotions,
+            &contract,
+        )?;
+        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let backend = TensorRtDiffusionBackend::load(
+            Arc::clone(&device),
+            model.engine_path(),
+            contract.clone(),
+        )?;
+        let config = match model.parameters(0)? {
+            ModelParameters::Geometry(value) => value,
+            _ => {
+                return Err(crate::Error::InvalidSchema(
+                    "diffusion geometry config is missing".into(),
+                ));
+            }
+        };
+        let model_data = GeometryModelData::load_diffusion(model.model_data_path(0)?)?;
+        let processor = model_data.diffusion_postprocessor(config, contract.result_layout)?;
+        let execution = InteractiveDiffusionExecutor::new_shared(
+            backend,
+            contract.clone(),
+            processor,
+            Arc::clone(&parameters.common.audio),
+            Arc::clone(&parameters.common.emotions),
+            parameters.identity_index,
+            parameters.input_strength,
+            parameters.preview_inference_count,
+            u64::from(parameters.constant_noise),
+        )?;
+        let stream = device.create_stream()?;
+        let skin = device.allocate(contract.result_layout.skin)?;
+        let tongue = device.allocate(contract.result_layout.tongue)?;
+        let jaw = device.allocate(16)?;
+        let eyes = device.allocate(6)?;
+        let core_interrupt = execution.interrupt_handle();
+        Ok(Self {
+            execution,
+            contract,
+            stream,
+            skin,
+            tongue,
+            jaw,
+            eyes,
+            batch_size: 1,
+            core_interrupt,
+            interrupt_handle: crate::audio2x::InteractiveInterruptHandle::new(),
+            _not_sync: Cell::new(()),
+        })
+    }
+
+    pub fn total_frames(&self) -> crate::Result<usize> {
+        self.execution.total_frames()
+    }
+    pub fn sample_rate(&self) -> usize {
+        self.execution.sampling_rate()
+    }
+    pub fn frame_rate(&self) -> FrameRate {
+        FrameRate::new(
+            self.contract.frame_rate_numerator,
+            self.contract.frame_rate_denominator,
+        )
+        .expect("validated model frame rate")
+    }
+    pub fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        self.execution.frame_timestamp(frame)
+    }
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+    pub fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        self.interrupt_handle.clone()
+    }
+    pub fn invalidate(
+        &mut self,
+        layer: crate::audio2face::GeometryInvalidationLayer,
+    ) -> crate::Result<()> {
+        self.execution.invalidate(map_invalidation_layer(layer));
+        Ok(())
+    }
+    pub fn is_valid(&self, layer: crate::audio2face::GeometryInvalidationLayer) -> bool {
+        self.execution.is_valid(map_invalidation_layer(layer))
+    }
+    pub fn set_input_strength(&mut self, value: f32) -> crate::Result<()> {
+        self.execution.set_input_strength(value)
+    }
+    pub fn skin_geometry_size(&self) -> usize {
+        self.contract.result_layout.skin
+    }
+    pub fn tongue_geometry_size(&self) -> usize {
+        self.contract.result_layout.tongue
+    }
+    pub fn jaw_transform_size(&self) -> usize {
+        16
+    }
+    pub fn eyes_rotation_size(&self) -> usize {
+        6
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_geometry(
+        skin: &mut crate::cuda::DeviceBuffer<f32>,
+        tongue: &mut crate::cuda::DeviceBuffer<f32>,
+        jaw: &mut crate::cuda::DeviceBuffer<f32>,
+        eyes: &mut crate::cuda::DeviceBuffer<f32>,
+        stream: &crate::cuda::CudaStream,
+        metadata: crate::animation::InteractiveGeometryMetadata,
+        geometry: &RegressionGeometry,
+        callback: &mut (
+                 dyn for<'r> FnMut(crate::audio2face::GeometryResults<'r>) -> ControlFlow<()> + Send
+             ),
+    ) -> crate::Result<bool> {
+        skin.copy_from(&geometry.skin, stream)?;
+        tongue.copy_from(&geometry.tongue, stream)?;
+        jaw.copy_from(&geometry.jaw_transform, stream)?;
+        let eyes_host = [
+            geometry.eyes_rotation.right[0],
+            geometry.eyes_rotation.right[1],
+            geometry.eyes_rotation.right[2],
+            geometry.eyes_rotation.left[0],
+            geometry.eyes_rotation.left[1],
+            geometry.eyes_rotation.left[2],
+        ];
+        eyes.copy_from(&eyes_host, stream)?;
+        Ok(matches!(
+            callback(crate::audio2face::GeometryResults {
+                metadata: crate::audio2x::CallbackMetadata {
+                    track_index: 0,
+                    frame_index: metadata.frame,
+                    timestamp: metadata.timestamp,
+                    next_timestamp: metadata.next_timestamp,
+                },
+                skin: Some(crate::audio2x::DeviceComponentResults {
+                    values: skin.view(),
+                    stream: stream.as_ref(),
+                }),
+                tongue: Some(crate::audio2x::DeviceComponentResults {
+                    values: tongue.view(),
+                    stream: stream.as_ref(),
+                }),
+                jaw: Some(crate::audio2x::DeviceComponentResults {
+                    values: jaw.view(),
+                    stream: stream.as_ref(),
+                }),
+                eyes: Some(crate::audio2x::DeviceComponentResults {
+                    values: eyes.view(),
+                    stream: stream.as_ref(),
+                }),
+            }),
+            ControlFlow::Continue(())
+        ))
+    }
+
+    fn compute_frame_sync_with_generation(
+        &mut self,
+        frame: usize,
+        callback: &mut (
+                 dyn for<'r> FnMut(crate::audio2face::GeometryResults<'r>) -> ControlFlow<()> + Send
+             ),
+        generation: u64,
+        stateful: bool,
+    ) -> crate::Result<crate::audio2x::InteractiveExecutionReport> {
+        let mut callback_error = None;
+        let mut emitted_frames = 0;
+        let stream = &self.stream;
+        let skin = &mut self.skin;
+        let tongue = &mut self.tongue;
+        let jaw = &mut self.jaw;
+        let eyes = &mut self.eyes;
+        let core_interrupt = self.core_interrupt.clone();
+        let interrupt_handle = self.interrupt_handle.clone();
+        let mut emit = |metadata, geometry: &RegressionGeometry| {
+            if interrupt_handle.is_interrupted_since(generation) {
+                core_interrupt.interrupt();
+                return false;
+            }
+            if callback_error.is_some() {
+                return false;
+            }
+            match Self::emit_geometry(
+                skin, tongue, jaw, eyes, stream, metadata, geometry, callback,
+            ) {
+                Ok(continue_compute) => {
+                    emitted_frames += 1;
+                    if interrupt_handle.is_interrupted_since(generation) {
+                        core_interrupt.interrupt();
+                        false
+                    } else {
+                        continue_compute
+                    }
+                }
+                Err(error) => {
+                    callback_error = Some(error);
+                    false
+                }
+            }
+        };
+        let status = if stateful {
+            self.execution.compute_frame_stateful(frame, &mut emit)?
+        } else {
+            self.execution.compute_frame(frame, &mut emit)?
+        };
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        let status = match status {
+            crate::animation::InteractiveGeometryStatus::Complete { .. } => {
+                crate::audio2x::InteractiveExecutionStatus::Complete
+            }
+            crate::animation::InteractiveGeometryStatus::Interrupted { .. } => {
+                crate::audio2x::InteractiveExecutionStatus::Interrupted
+            }
+        };
+        Ok(crate::audio2x::InteractiveExecutionReport {
+            status,
+            emitted_frames,
+        })
+    }
+
+    pub fn compute_frame<'a>(
+        &'a mut self,
+        frame: usize,
+        callback: &'a mut (
+                    dyn for<'r> FnMut(crate::audio2face::GeometryResults<'r>) -> ControlFlow<()>
+                        + Send
+                ),
+    ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
+        Box::pin(async move {
+            let generation = self.interrupt_handle.generation();
+            YieldOnce(false).await;
+            if self.interrupt_handle.is_interrupted_since(generation) {
+                return Ok(crate::audio2x::InteractiveExecutionReport {
+                    status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                    emitted_frames: 0,
+                });
+            }
+            self.compute_frame_sync_with_generation(frame, callback, generation, false)
+        })
+    }
+
+    pub fn compute_all_frames<'a>(
+        &'a mut self,
+        callback: &'a mut (
+                    dyn for<'r> FnMut(crate::audio2face::GeometryResults<'r>) -> ControlFlow<()>
+                        + Send
+                ),
+    ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
+        Box::pin(async move {
+            let generation = self.interrupt_handle.generation();
+            YieldOnce(false).await;
+            let total = self.total_frames()?;
+            if self.interrupt_handle.is_interrupted_since(generation) {
+                return Ok(crate::audio2x::InteractiveExecutionReport {
+                    status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                    emitted_frames: 0,
+                });
+            }
+            self.execution.prepare_all()?;
+            let mut emitted_frames = 0;
+            for frame in 0..total {
+                if self.interrupt_handle.is_interrupted_since(generation) {
+                    return Ok(crate::audio2x::InteractiveExecutionReport {
+                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                        emitted_frames,
+                    });
+                }
+                let report =
+                    self.compute_frame_sync_with_generation(frame, callback, generation, true)?;
+                emitted_frames += report.emitted_frames;
+                if report.status == crate::audio2x::InteractiveExecutionStatus::Interrupted {
+                    return Ok(crate::audio2x::InteractiveExecutionReport {
+                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                        emitted_frames,
+                    });
+                }
+                YieldOnce(false).await;
+            }
+            Ok(crate::audio2x::InteractiveExecutionReport {
+                status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                emitted_frames,
+            })
+        })
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl crate::audio2x::InteractiveExecutor for DiffusionGeometryInteractiveExecutor {
+    fn invalidate_all(&mut self) -> crate::Result<()> {
+        self.invalidate(crate::audio2face::GeometryInvalidationLayer::All)
+    }
+
+    fn is_fully_valid(&self) -> bool {
+        self.is_valid(crate::audio2face::GeometryInvalidationLayer::All)
+    }
+
+    fn total_frame_count(&self) -> crate::Result<usize> {
+        self.total_frames()
+    }
+
+    fn sample_rate(&self) -> usize {
+        self.sample_rate()
+    }
+
+    fn frame_rate(&self) -> FrameRate {
+        self.frame_rate()
+    }
+
+    fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        self.frame_timestamp(frame)
+    }
+
+    fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        self.interrupt_handle()
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl crate::audio2face::GeometryInteractiveExecutor for DiffusionGeometryInteractiveExecutor {
+    fn invalidate_geometry(
+        &mut self,
+        layer: crate::audio2face::GeometryInvalidationLayer,
+    ) -> crate::Result<()> {
+        self.invalidate(layer)
+    }
+
+    fn is_geometry_valid(&self, layer: crate::audio2face::GeometryInvalidationLayer) -> bool {
+        self.is_valid(layer)
+    }
+
+    fn skin_geometry_size(&self) -> usize {
+        self.skin_geometry_size()
+    }
+
+    fn tongue_geometry_size(&self) -> usize {
+        self.tongue_geometry_size()
+    }
+
+    fn jaw_transform_size(&self) -> usize {
+        self.jaw_transform_size()
+    }
+
+    fn eyes_rotation_size(&self) -> usize {
+        self.eyes_rotation_size()
+    }
+
+    fn compute_frame<'a>(
+        &'a mut self,
+        frame: usize,
+        callback: &'a mut (
+                    dyn for<'r> FnMut(crate::audio2face::GeometryResults<'r>) -> ControlFlow<()>
+                        + Send
+                ),
+    ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
+        DiffusionGeometryInteractiveExecutor::compute_frame(self, frame, callback)
+    }
+
+    fn compute_all_frames<'a>(
+        &'a mut self,
+        callback: &'a mut (
+                    dyn for<'r> FnMut(crate::audio2face::GeometryResults<'r>) -> ControlFlow<()>
+                        + Send
+                ),
+    ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
+        DiffusionGeometryInteractiveExecutor::compute_all_frames(self, callback)
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+fn map_invalidation_layer(
+    layer: crate::audio2face::GeometryInvalidationLayer,
+) -> crate::animation::GeometryInvalidationLayer {
+    match layer {
+        crate::audio2face::GeometryInvalidationLayer::None => {
+            crate::animation::GeometryInvalidationLayer::None
+        }
+        crate::audio2face::GeometryInvalidationLayer::All => {
+            crate::animation::GeometryInvalidationLayer::All
+        }
+        crate::audio2face::GeometryInvalidationLayer::Inference => {
+            crate::animation::GeometryInvalidationLayer::Inference
+        }
+        crate::audio2face::GeometryInvalidationLayer::Skin => {
+            crate::animation::GeometryInvalidationLayer::Skin
+        }
+        crate::audio2face::GeometryInvalidationLayer::Tongue => {
+            crate::animation::GeometryInvalidationLayer::Tongue
+        }
+        crate::audio2face::GeometryInvalidationLayer::Teeth => {
+            crate::animation::GeometryInvalidationLayer::Teeth
+        }
+        crate::audio2face::GeometryInvalidationLayer::Eyes => {
+            crate::animation::GeometryInvalidationLayer::Eyes
+        }
+    }
 }
 
 #[cfg(feature = "tensorrt")]

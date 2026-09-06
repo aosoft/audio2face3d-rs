@@ -75,6 +75,7 @@ pub struct GpuRegressionPostprocessor {
 
 /// Device-resident Regression PCA reconstruction followed by the shared
 /// geometry animator pipeline.
+#[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
 pub(crate) struct GpuRegressionPcaPostprocessor {
     postprocessor: GpuRegressionPostprocessor,
     blas: crate::cuda::CublasHandle,
@@ -88,6 +89,7 @@ pub(crate) struct GpuRegressionPcaPostprocessor {
     track_count: usize,
 }
 
+#[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
 impl GpuRegressionPcaPostprocessor {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -132,6 +134,7 @@ impl GpuRegressionPcaPostprocessor {
         })
     }
 
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
     pub(crate) fn reset_track(&mut self, track: usize, stream: &CudaStream) -> Result<()> {
         self.postprocessor.reset_track(track, stream)
     }

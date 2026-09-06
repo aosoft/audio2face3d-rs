@@ -103,6 +103,7 @@ impl GpuEmotionPostProcessor {
         self.track_count
     }
 
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
     pub(crate) fn preferred_enabled(&self, track: usize) -> Result<bool> {
         self.host_parameters
             .get(track)
@@ -186,6 +187,7 @@ impl GpuEmotionPostProcessor {
         stream.synchronize()
     }
 
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
     pub(crate) fn reset_track(&mut self, track: usize, stream: &CudaStream) -> Result<()> {
         if track >= self.track_count {
             return Err(invalid("GPU emotion reset track is out of range"));

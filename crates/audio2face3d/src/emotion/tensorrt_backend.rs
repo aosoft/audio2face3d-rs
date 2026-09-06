@@ -14,6 +14,39 @@ pub struct TensorRtClassifierBackend {
 }
 
 impl TensorRtClassifierBackend {
+    pub(crate) fn load_interactive(
+        device: Arc<GpuDevice>,
+        engine: &Path,
+        sample_rate: usize,
+        emotion_length: usize,
+        frame_rate_numerator: usize,
+        frame_rate_denominator: usize,
+        inferences_to_skip: usize,
+    ) -> Result<(Self, ClassifierContract)> {
+        let session =
+            TensorRtSession::load(Arc::clone(&device), engine).map_err(inference_error)?;
+        let input = session
+            .metadata()
+            .get("input_values")
+            .ok_or_else(|| invalid("classifier input_values binding is missing"))?;
+        let buffer_length = match input.shape.dimensions().get(1) {
+            Some(Dimension::Fixed(value)) => *value,
+            Some(Dimension::Dynamic { min, max }) if min == max => *min,
+            Some(Dimension::Dynamic { max, .. }) => *max,
+            _ => return Err(invalid("classifier audio buffer dimension is missing")),
+        };
+        let contract = ClassifierContract::new(
+            buffer_length,
+            sample_rate,
+            emotion_length,
+            frame_rate_numerator,
+            frame_rate_denominator,
+            inferences_to_skip,
+        )?;
+        drop(session);
+        Ok((Self::load(device, engine, contract.clone())?, contract))
+    }
+
     pub fn load(
         device: Arc<GpuDevice>,
         engine: &Path,

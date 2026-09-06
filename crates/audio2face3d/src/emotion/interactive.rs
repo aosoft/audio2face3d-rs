@@ -24,6 +24,7 @@ pub(crate) struct ClassifierInteractiveExecution<B> {
     inference_valid: bool,
     input_strength: f32,
     cached_audio_length: Option<usize>,
+    batch_size: usize,
 }
 
 /// Legacy generic executor retained until the Step 7 API removal.
@@ -45,6 +46,21 @@ impl<B: ClassifierBackend> InteractiveEmotionExecutor<B> {
 
     pub fn inference_cache_is_valid(&self) -> bool {
         self.inner.inference_cache_is_valid()
+    }
+
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    pub(crate) fn emotion_count(&self) -> usize {
+        self.inner.data.output_emotion_length
+    }
+
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    pub(crate) fn frame_count(&self, audio: &AudioAccumulator) -> Result<usize> {
+        self.inner.frame_count(audio)
+    }
+
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    pub(crate) fn set_batch_size(&mut self, batch_size: usize) -> Result<()> {
+        self.inner.set_batch_size(batch_size)
     }
 
     pub fn invalidate_audio(&mut self) {
@@ -111,6 +127,7 @@ impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
             inference_valid: false,
             input_strength: 1.0,
             cached_audio_length: None,
+            batch_size: 1,
         })
     }
 
@@ -129,6 +146,28 @@ impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
         }
         if self.input_strength != strength {
             self.input_strength = strength;
+            self.invalidate_audio();
+        }
+        Ok(())
+    }
+
+    fn set_batch_size(&mut self, batch_size: usize) -> Result<()> {
+        if batch_size == 0 {
+            return Err(invalid(
+                "interactive classifier batch size must be non-zero",
+            ));
+        }
+        if self
+            .backend
+            .max_batch_size()
+            .is_some_and(|max| batch_size > max)
+        {
+            return Err(invalid(
+                "interactive classifier batch size exceeds backend maximum",
+            ));
+        }
+        if self.batch_size != batch_size {
+            self.batch_size = batch_size;
             self.invalidate_audio();
         }
         Ok(())
@@ -206,7 +245,12 @@ impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
         C: FnMut(EmotionCallbackMetadata, &[f32]) -> bool,
     {
         validate_preferred(preferred, self.data.output_emotion_length)?;
-        self.ensure_inference_cache(audio)?;
+        let frames_per_inference = self.contract.frames_per_inference();
+        let required_inferences = end_frame
+            .checked_add(frames_per_inference - 1)
+            .ok_or_else(|| invalid("interactive inference prefix length overflow"))?
+            / frames_per_inference;
+        self.ensure_inference_cache(audio, required_inferences)?;
         let mut processor = EmotionPostProcessor::new(self.data.clone(), self.parameters.clone())?;
         let mut emitted = 0;
         for frame in 0..end_frame {
@@ -245,32 +289,55 @@ impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
         Ok(InteractiveEmotionStatus::Complete { frames: emitted })
     }
 
-    fn ensure_inference_cache(&mut self, audio: &AudioAccumulator) -> Result<()> {
+    fn ensure_inference_cache(
+        &mut self,
+        audio: &AudioAccumulator,
+        required_inferences: usize,
+    ) -> Result<()> {
         let audio_length = audio.nb_accumulated_samples();
-        if self.inference_valid && self.cached_audio_length == Some(audio_length) {
-            return Ok(());
+        if self.cached_audio_length != Some(audio_length) {
+            self.inference_cache.clear();
+            self.inference_valid = false;
+            self.cached_audio_length = Some(audio_length);
         }
-        let inference_count = self
+        let available_inferences = self
             .contract
             .inference_progress
             .available_windows(i64::try_from(audio_length).unwrap_or(i64::MAX), true)?;
-        self.inference_cache.clear();
-        self.inference_cache.reserve(inference_count);
-        for inference in 0..inference_count {
-            let window = self.contract.inference_progress.window(inference)?;
-            let input = audio.read(
-                window.start,
-                self.contract.buffer_length,
-                self.input_strength,
-            )?;
-            let result = self.backend.infer(0, &input)?;
-            if result.len() != self.contract.emotion_length {
+        let required_inferences = required_inferences.min(available_inferences);
+        if self.inference_cache.len() >= required_inferences {
+            self.inference_valid = self.inference_cache.len() == available_inferences;
+            return Ok(());
+        }
+        self.inference_cache
+            .reserve(required_inferences - self.inference_cache.len());
+        for chunk_start in
+            (self.inference_cache.len()..required_inferences).step_by(self.batch_size)
+        {
+            let chunk_end = (chunk_start + self.batch_size).min(required_inferences);
+            let mut inputs = Vec::with_capacity(chunk_end - chunk_start);
+            for inference in chunk_start..chunk_end {
+                let window = self.contract.inference_progress.window(inference)?;
+                inputs.push((
+                    0,
+                    audio.read(
+                        window.start,
+                        self.contract.buffer_length,
+                        self.input_strength,
+                    )?,
+                ));
+            }
+            let results = self.backend.infer_batch(&inputs)?;
+            if results.len() != inputs.len()
+                || results
+                    .iter()
+                    .any(|result| result.len() != self.contract.emotion_length)
+            {
                 return Err(invalid("interactive classifier output dimensions differ"));
             }
-            self.inference_cache.push(result);
+            self.inference_cache.extend(results);
         }
-        self.inference_valid = true;
-        self.cached_audio_length = Some(audio_length);
+        self.inference_valid = self.inference_cache.len() == available_inferences;
         Ok(())
     }
 }
@@ -379,5 +446,55 @@ mod tests {
                 .unwrap(),
             InteractiveEmotionStatus::Complete { frames: 1 }
         ));
+    }
+
+    #[test]
+    fn frame_replay_builds_only_the_required_inference_prefix() {
+        let (mut executor, audio, calls) = setup();
+        executor
+            .compute_frame(0, &audio, None, |_, _| true)
+            .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert!(!executor.inference_cache_is_valid());
+
+        // Frame 1 reuses inference 0. Frame 2 requires inference 1 and appends
+        // only that missing suffix; asking for frame 0 never runs inference 1.
+        executor
+            .compute_frame(1, &audio, None, |_, _| true)
+            .unwrap();
+        assert_eq!(calls.get(), 1);
+        executor
+            .compute_frame(2, &audio, None, |_, _| true)
+            .unwrap();
+        assert_eq!(calls.get(), 2);
+        executor
+            .compute_frame(0, &audio, None, |_, _| true)
+            .unwrap();
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn batched_and_scalar_prefix_caches_have_identical_outputs() {
+        let (mut scalar, audio, scalar_calls) = setup();
+        let (mut batched, _, batched_calls) = setup();
+        batched.set_batch_size(2).unwrap();
+        let mut scalar_output = Vec::new();
+        let mut batched_output = Vec::new();
+        scalar
+            .compute_all(&audio, None, |metadata, output| {
+                scalar_output.push((metadata.frame, output.to_vec()));
+                true
+            })
+            .unwrap();
+        batched
+            .compute_all(&audio, None, |metadata, output| {
+                batched_output.push((metadata.frame, output.to_vec()));
+                true
+            })
+            .unwrap();
+        assert_eq!(scalar_output, batched_output);
+        assert_eq!(scalar_calls.get(), batched_calls.get());
+        assert!(scalar.inference_cache_is_valid());
+        assert!(batched.inference_cache_is_valid());
     }
 }

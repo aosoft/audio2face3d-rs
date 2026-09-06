@@ -6,14 +6,16 @@ use std::sync::Arc;
 #[cfg(feature = "tensorrt")]
 use std::cell::Cell;
 #[cfg(feature = "tensorrt")]
-use std::convert::Infallible;
-#[cfg(feature = "tensorrt")]
 use std::ops::ControlFlow;
+#[cfg(feature = "tensorrt")]
+use std::task::Poll;
 
 use crate::audio2emotion::{
     EmotionExecutorCreationParameters, EmotionInteractiveExecutorCreationParameters,
     PostProcessData, PostProcessParams,
 };
+#[cfg(feature = "tensorrt")]
+use crate::audio2x::InteractiveExecutor;
 use crate::audio2x::{EmotionAccumulator, FrameRate};
 
 #[cfg(feature = "tensorrt")]
@@ -107,7 +109,16 @@ pub struct ClassifierEmotionExecutor {
 /// the current generic `crate::emotion::InteractiveEmotionExecutor<B>`.
 #[cfg(feature = "tensorrt")]
 pub struct ClassifierEmotionInteractiveExecutor {
-    _opaque: Infallible,
+    inner: crate::emotion::InteractiveEmotionExecutor<TensorRtClassifierBackend>,
+    contract: ClassifierContract,
+    audio: Arc<crate::audio2x::AudioAccumulator>,
+    preferred_emotions: Option<Arc<EmotionAccumulator>>,
+    frame_rate: FrameRate,
+    sample_rate: usize,
+    output: crate::cuda::DeviceBuffer<f32>,
+    stream: crate::cuda::CudaStream,
+    interrupt: crate::audio2x::InteractiveInterruptHandle,
+    post_processing_valid: bool,
     _not_sync: Cell<()>,
 }
 
@@ -250,6 +261,336 @@ impl ClassifierEmotionExecutor {
     pub fn reset_track(&mut self, track: usize) -> crate::Result<()> {
         <Self as crate::audio2x::Executor>::reset_track(self, track)
     }
+}
+
+#[cfg(feature = "tensorrt")]
+impl ClassifierEmotionInteractiveExecutor {
+    /// Loads the single-track interactive classifier facade.
+    pub fn load(
+        parameters: ClassifierEmotionInteractiveExecutorCreationParameters,
+    ) -> crate::Result<Self> {
+        if parameters.batch_size == 0 {
+            return Err(crate::Error::InvalidArgument {
+                field: "batch_size",
+                reason: "must be non-zero".into(),
+            });
+        }
+        let model = Model::load(&parameters.model_path)?;
+        if model.kind() != ModelKind::Emotion {
+            return Err(crate::Error::InvalidSchema(
+                "classifier interactive executor requires an emotion model".into(),
+            ));
+        }
+        let NetworkDocument::Emotion(network) = model.network() else {
+            return Err(crate::Error::InvalidSchema(
+                "emotion network is missing".into(),
+            ));
+        };
+        let config = match model.parameters(0)? {
+            ModelParameters::Emotion(value) => value,
+            _ => {
+                return Err(crate::Error::InvalidSchema(
+                    "emotion post-process config is missing".into(),
+                ));
+            }
+        };
+        let (data, model_parameters) =
+            crate::emotion::EmotionPostProcessData::from_model(network, config)?;
+        validate_interactive_inputs(
+            &parameters.common.audio,
+            parameters.common.preferred_emotions.as_deref(),
+            data.output_emotion_length,
+        )?;
+        if data.output_emotion_length != parameters.post_process_data.output_emotion_length
+            && parameters.post_process_data.output_emotion_length != 0
+        {
+            return Err(crate::Error::SizeMismatch {
+                field: "post_process_data.output_emotion_length",
+                expected: data.output_emotion_length,
+                actual: parameters.post_process_data.output_emotion_length,
+            });
+        }
+        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let (backend, contract) = TensorRtClassifierBackend::load_interactive(
+            Arc::clone(&device),
+            model.engine_path(),
+            network.audio_params.samplerate,
+            network.emotions.len(),
+            parameters.frame_rate.numerator(),
+            parameters.frame_rate.denominator(),
+            parameters.inferences_to_skip,
+        )?;
+        if parameters.batch_size > backend.max_batch_size() {
+            return Err(crate::Error::InvalidArgument {
+                field: "batch_size",
+                reason: format!(
+                    "must not exceed classifier engine maximum {}",
+                    backend.max_batch_size()
+                ),
+            });
+        }
+        let mut inner = crate::emotion::InteractiveEmotionExecutor::new(
+            backend,
+            contract.clone(),
+            data.clone(),
+            model_parameters,
+        )?;
+        inner.set_input_strength(parameters.input_strength)?;
+        inner.set_batch_size(parameters.batch_size)?;
+        let output = device.allocate(data.output_emotion_length)?;
+        let stream = device.create_stream()?;
+        Ok(Self {
+            inner,
+            contract,
+            audio: Arc::clone(&parameters.common.audio),
+            preferred_emotions: parameters.common.preferred_emotions,
+            frame_rate: parameters.frame_rate,
+            sample_rate: network.audio_params.samplerate,
+            output,
+            stream,
+            interrupt: crate::audio2x::InteractiveInterruptHandle::new(),
+            post_processing_valid: false,
+            _not_sync: Cell::new(()),
+        })
+    }
+
+    fn compute_one(
+        &mut self,
+        frame: usize,
+        generation: u64,
+        callback: &mut (
+                 dyn for<'r> FnMut(crate::audio2emotion::EmotionResults<'r>) -> ControlFlow<()>
+                     + Send
+             ),
+    ) -> crate::Result<crate::emotion::InteractiveEmotionStatus> {
+        let interrupt = self.interrupt.clone();
+        let output = &mut self.output;
+        let stream = &self.stream;
+        let preferred = self.preferred_emotions.as_deref();
+        let mut copy_error = None;
+        let status =
+            self.inner
+                .compute_frame(frame, &self.audio, preferred, |metadata, values| {
+                    if interrupt.is_interrupted_since(generation) {
+                        return false;
+                    }
+                    if let Err(error) = output.copy_from(values, stream) {
+                        copy_error = Some(error);
+                        return false;
+                    }
+                    let keep_going = matches!(
+                        callback(crate::audio2emotion::EmotionResults {
+                            metadata: crate::audio2x::CallbackMetadata {
+                                track_index: metadata.track,
+                                frame_index: metadata.frame,
+                                timestamp: metadata.timestamp,
+                                next_timestamp: metadata.next_timestamp,
+                            },
+                            emotions: crate::audio2x::DeviceComponentResults {
+                                values: output.view(),
+                                stream: stream.as_ref(),
+                            },
+                        }),
+                        ControlFlow::Continue(())
+                    );
+                    keep_going && !interrupt.is_interrupted_since(generation)
+                })?;
+        if let Some(error) = copy_error {
+            return Err(error);
+        }
+        Ok(status)
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl crate::audio2x::InteractiveExecutor for ClassifierEmotionInteractiveExecutor {
+    fn invalidate_all(&mut self) -> crate::Result<()> {
+        self.inner.invalidate_audio();
+        self.post_processing_valid = false;
+        Ok(())
+    }
+
+    fn is_fully_valid(&self) -> bool {
+        self.inner.inference_cache_is_valid() && self.post_processing_valid
+    }
+
+    fn total_frame_count(&self) -> crate::Result<usize> {
+        validate_interactive_inputs(
+            &self.audio,
+            self.preferred_emotions.as_deref(),
+            self.inner.emotion_count(),
+        )?;
+        self.inner.frame_count(&self.audio)
+    }
+
+    fn sample_rate(&self) -> usize {
+        self.sample_rate
+    }
+
+    fn frame_rate(&self) -> FrameRate {
+        self.frame_rate
+    }
+
+    fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        self.contract.frame_timestamp(frame)
+    }
+
+    fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        self.interrupt.clone()
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl crate::audio2emotion::EmotionInteractiveExecutor for ClassifierEmotionInteractiveExecutor {
+    fn invalidate_emotion(
+        &mut self,
+        layer: crate::audio2emotion::EmotionInvalidationLayer,
+    ) -> crate::Result<()> {
+        match layer {
+            crate::audio2emotion::EmotionInvalidationLayer::None => {}
+            crate::audio2emotion::EmotionInvalidationLayer::Inference
+            | crate::audio2emotion::EmotionInvalidationLayer::All => {
+                self.inner.invalidate_audio();
+                self.post_processing_valid = false;
+            }
+            crate::audio2emotion::EmotionInvalidationLayer::PostProcessing => {
+                self.post_processing_valid = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_emotion_valid(&self, layer: crate::audio2emotion::EmotionInvalidationLayer) -> bool {
+        match layer {
+            crate::audio2emotion::EmotionInvalidationLayer::None => true,
+            crate::audio2emotion::EmotionInvalidationLayer::Inference => {
+                self.inner.inference_cache_is_valid()
+            }
+            crate::audio2emotion::EmotionInvalidationLayer::PostProcessing => {
+                self.post_processing_valid
+            }
+            crate::audio2emotion::EmotionInvalidationLayer::All => {
+                <Self as crate::audio2x::InteractiveExecutor>::is_fully_valid(self)
+            }
+        }
+    }
+
+    fn emotion_count(&self) -> usize {
+        self.inner.emotion_count()
+    }
+
+    fn compute_frame<'a>(
+        &'a mut self,
+        frame: usize,
+        callback: &'a mut (
+                    dyn for<'r> FnMut(crate::audio2emotion::EmotionResults<'r>) -> ControlFlow<()>
+                        + Send
+                ),
+    ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
+        Box::pin(async move {
+            self.post_processing_valid = false;
+            let total = self.total_frame_count()?;
+            if frame >= total {
+                return Err(crate::Error::OutOfBounds {
+                    field: "frame",
+                    index: frame,
+                    len: total,
+                });
+            }
+            let generation = self.interrupt.generation();
+            match self.compute_one(frame, generation, callback)? {
+                crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
+                    self.post_processing_valid = false;
+                    Ok(crate::audio2x::InteractiveExecutionReport {
+                        status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                        emitted_frames: frames,
+                    })
+                }
+                crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
+                    self.post_processing_valid = false;
+                    Ok(crate::audio2x::InteractiveExecutionReport {
+                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                        emitted_frames: frames,
+                    })
+                }
+            }
+        })
+    }
+
+    fn compute_all_frames<'a>(
+        &'a mut self,
+        callback: &'a mut (
+                    dyn for<'r> FnMut(crate::audio2emotion::EmotionResults<'r>) -> ControlFlow<()>
+                        + Send
+                ),
+    ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
+        Box::pin(async move {
+            self.post_processing_valid = false;
+            let total = self.total_frame_count()?;
+            let generation = self.interrupt.generation();
+            let mut emitted = 0;
+            for frame in 0..total {
+                match self.compute_one(frame, generation, callback)? {
+                    crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
+                        emitted += frames;
+                    }
+                    crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
+                        emitted += frames;
+                        self.post_processing_valid = false;
+                        return Ok(crate::audio2x::InteractiveExecutionReport {
+                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                            emitted_frames: emitted,
+                        });
+                    }
+                }
+                if frame + 1 < total {
+                    yield_once().await;
+                }
+            }
+            self.post_processing_valid = true;
+            Ok(crate::audio2x::InteractiveExecutionReport {
+                status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                emitted_frames: emitted,
+            })
+        })
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+fn validate_interactive_inputs(
+    audio: &crate::audio2x::AudioAccumulator,
+    preferred: Option<&EmotionAccumulator>,
+    output_length: usize,
+) -> crate::Result<()> {
+    if !audio.is_closed() || audio.nb_dropped_samples() != 0 {
+        return Err(crate::Error::InputHistoryUnavailable { track: 0 });
+    }
+    if let Some(preferred) = preferred {
+        let state = preferred.state();
+        if !state.closed
+            || state.dropped_emotions != 0
+            || state.last_dropped_timestamp != i64::MIN
+            || state.emotion_size != output_length
+        {
+            return Err(crate::Error::InputHistoryUnavailable { track: 0 });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "tensorrt")]
+async fn yield_once() {
+    let mut yielded = false;
+    std::future::poll_fn(move |cx| {
+        if yielded {
+            Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await;
 }
 
 #[cfg(feature = "tensorrt")]
