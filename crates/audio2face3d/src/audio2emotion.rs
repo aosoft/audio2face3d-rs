@@ -26,10 +26,33 @@ use crate::audio2x::{
     Executor, ExecutorFuture, InteractiveExecutionReport, InteractiveExecutor, Result,
 };
 
+pub use crate::emotion::EmotionBinder;
+
+#[cfg(feature = "cuda")]
+pub mod bundle;
 pub mod classifier;
 pub mod post_process;
 
+#[cfg(feature = "tensorrt")]
+pub use bundle::create_classifier_bundle;
+#[cfg(feature = "cuda")]
+pub use bundle::{
+    EmotionExecutorBundle, EmotionExecutorBundleCreationParameters, EmotionExecutorBundleFactory,
+    EmotionExecutorMut, EmotionExecutorRef, create_post_process_bundle,
+};
 pub use post_process::{PostProcessData, PostProcessParams};
+
+/// Creates an emotion callback binder for caller-owned output accumulators.
+///
+/// The returned binder borrows the supplied accumulators, preserving their
+/// identity so a classifier and a post-process/animation consumer can share
+/// one output timeline without copying it.
+pub fn create_emotion_binder<'a>(
+    accumulators: Vec<&'a EmotionAccumulator>,
+    emotion_length: usize,
+) -> Result<crate::emotion::EmotionBinder<'a>> {
+    EmotionBinder::new(accumulators, emotion_length)
+}
 
 /// Shared input owned by one emotion track.
 #[derive(Clone, Debug)]

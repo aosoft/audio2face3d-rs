@@ -64,6 +64,22 @@ pub struct RegressionGeometryExecutorCreationParameters {
     pub source_emotion_frame: usize,
 }
 
+/// Canonical asynchronous factory for standard Regression geometry.
+#[cfg(feature = "tensorrt")]
+pub struct RegressionGeometryExecutorFactory;
+
+#[cfg(feature = "tensorrt")]
+impl RegressionGeometryExecutorFactory {
+    /// Loads model files and initializes CUDA/TensorRT on a worker thread.
+    pub fn load(
+        parameters: RegressionGeometryExecutorCreationParameters,
+    ) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            RegressionGeometryExecutor::load_sync(parameters)
+        })
+    }
+}
+
 /// Parameters for loading an owning interactive Regression geometry executor.
 ///
 /// `batch_size` is the executor's internal inference/cache batch size, not a
@@ -81,6 +97,22 @@ pub struct RegressionGeometryInteractiveExecutorCreationParameters {
     pub source_emotion_shot: Option<String>,
     pub source_emotion_frame: usize,
     pub batch_size: usize,
+}
+
+/// Canonical asynchronous factory for interactive Regression geometry.
+#[cfg(feature = "tensorrt")]
+pub struct RegressionGeometryInteractiveExecutorFactory;
+
+#[cfg(feature = "tensorrt")]
+impl RegressionGeometryInteractiveExecutorFactory {
+    /// Loads model files and initializes CUDA/TensorRT on a worker thread.
+    pub fn load(
+        parameters: RegressionGeometryInteractiveExecutorCreationParameters,
+    ) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryInteractiveExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            RegressionGeometryInteractiveExecutor::load_sync(parameters)
+        })
+    }
 }
 
 /// Non-generic owning Regression geometry executor facade.
@@ -127,6 +159,8 @@ pub struct RegressionGeometryExecutor {
 pub struct RegressionGeometryInteractiveExecutor {
     execution: InteractiveRegressionExecutor<TensorRtRegressionBackend, RegressionPostprocessor>,
     contract: RegressionContract,
+    audio: Arc<crate::audio2x::AudioAccumulator>,
+    emotions: Arc<crate::audio2x::EmotionAccumulator>,
     stream: crate::cuda::CudaStream,
     skin: crate::cuda::DeviceBuffer<f32>,
     tongue: crate::cuda::DeviceBuffer<f32>,
@@ -183,7 +217,7 @@ fn validate_regression_inputs(
 
 #[cfg(feature = "tensorrt")]
 impl RegressionGeometryInteractiveExecutor {
-    pub fn load(
+    pub(crate) fn load_sync(
         parameters: RegressionGeometryInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
         if parameters.batch_size == 0 {
@@ -250,12 +284,14 @@ impl RegressionGeometryInteractiveExecutor {
             model_parameters.num_shapes_skin,
             model_parameters.num_shapes_tongue,
         )?;
+        let audio = Arc::clone(&parameters.common.audio);
+        let emotions = Arc::clone(&parameters.common.emotions);
         let execution = InteractiveRegressionExecutor::new_shared(
             backend,
             contract.clone(),
             processor,
-            Arc::clone(&parameters.common.audio),
-            Arc::clone(&parameters.common.emotions),
+            Arc::clone(&audio),
+            Arc::clone(&emotions),
             vec![0.0; contract.implicit_emotion_size],
             parameters.input_strength,
         )?;
@@ -268,6 +304,8 @@ impl RegressionGeometryInteractiveExecutor {
         Ok(Self {
             execution,
             contract,
+            audio,
+            emotions,
             stream,
             skin,
             tongue,
@@ -298,6 +336,15 @@ impl RegressionGeometryInteractiveExecutor {
     }
     pub fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
         self.interrupt_handle.clone()
+    }
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        &self.stream
+    }
+    pub fn audio_accumulator(&self) -> &Arc<crate::audio2x::AudioAccumulator> {
+        &self.audio
+    }
+    pub fn emotion_accumulator(&self) -> &Arc<crate::audio2x::EmotionAccumulator> {
+        &self.emotions
     }
     pub fn invalidate(
         &mut self,
@@ -513,6 +560,15 @@ impl RegressionGeometryInteractiveExecutor {
     }
 }
 
+/// Creates an owning interactive Regression geometry executor without
+/// blocking the thread that polls the returned future.
+#[cfg(feature = "tensorrt")]
+pub fn create_regression_geometry_interactive_executor(
+    parameters: RegressionGeometryInteractiveExecutorCreationParameters,
+) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryInteractiveExecutor> {
+    RegressionGeometryInteractiveExecutorFactory::load(parameters)
+}
+
 #[cfg(feature = "tensorrt")]
 impl crate::audio2x::InteractiveExecutor for RegressionGeometryInteractiveExecutor {
     fn invalidate_all(&mut self) -> crate::Result<()> {
@@ -630,6 +686,38 @@ impl RegressionGeometryExecutor {
         Arc::clone(&self.device)
     }
 
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        &self.result_stream
+    }
+
+    pub fn audio_accumulator(
+        &self,
+        track: usize,
+    ) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        self.tracks
+            .get(track)
+            .map(|resources| &resources.audio)
+            .ok_or(crate::Error::OutOfBounds {
+                field: "track",
+                index: track,
+                len: self.tracks.len(),
+            })
+    }
+
+    pub fn emotion_accumulator(
+        &self,
+        track: usize,
+    ) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        self.tracks
+            .get(track)
+            .map(|resources| &resources.emotions)
+            .ok_or(crate::Error::OutOfBounds {
+                field: "track",
+                index: track,
+                len: self.tracks.len(),
+            })
+    }
+
     #[allow(clippy::result_large_err)]
     pub fn try_into_host_blendshape(
         self,
@@ -676,7 +764,9 @@ impl RegressionGeometryExecutor {
     /// path. Runtime-independent asynchronous factories are layered on top in
     /// the factory step; the executor itself never borrows `Model` or caller
     /// supplied model data.
-    pub fn load(parameters: RegressionGeometryExecutorCreationParameters) -> crate::Result<Self> {
+    pub(crate) fn load_sync(
+        parameters: RegressionGeometryExecutorCreationParameters,
+    ) -> crate::Result<Self> {
         let model = Model::load(&parameters.model_path)?;
         if model.kind() != ModelKind::Regression {
             return Err(crate::Error::InvalidSchema(
@@ -861,6 +951,15 @@ impl RegressionGeometryExecutor {
         }
         result
     }
+}
+
+/// Creates an owning Regression geometry executor without blocking the thread
+/// that polls the returned future.
+#[cfg(feature = "tensorrt")]
+pub fn create_regression_geometry_executor(
+    parameters: RegressionGeometryExecutorCreationParameters,
+) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryExecutor> {
+    RegressionGeometryExecutorFactory::load(parameters)
 }
 
 #[cfg(feature = "tensorrt")]

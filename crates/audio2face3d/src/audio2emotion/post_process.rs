@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use std::convert::Infallible;
 #[cfg(feature = "cuda")]
 use std::ops::ControlFlow;
 #[cfg(feature = "cuda")]
@@ -94,14 +93,107 @@ pub struct PostProcessEmotionInteractiveExecutorCreationParameters {
     pub post_process_params: PostProcessParams,
 }
 
+/// Canonical asynchronous factory for [`PostProcessEmotionExecutor`].
+#[cfg(feature = "cuda")]
+pub struct PostProcessEmotionExecutorFactory;
+
+/// Canonical asynchronous factory for
+/// [`PostProcessEmotionInteractiveExecutor`].
+#[cfg(feature = "cuda")]
+pub struct PostProcessEmotionInteractiveExecutorFactory;
+
+#[cfg(feature = "cuda")]
+impl PostProcessEmotionExecutorFactory {
+    pub fn load(
+        parameters: PostProcessEmotionExecutorCreationParameters,
+    ) -> crate::audio2x::ExecutorFuture<'static, PostProcessEmotionExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            PostProcessEmotionExecutor::load_sync(parameters)
+        })
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl PostProcessEmotionInteractiveExecutorFactory {
+    pub fn load(
+        parameters: PostProcessEmotionInteractiveExecutorCreationParameters,
+    ) -> crate::audio2x::ExecutorFuture<'static, PostProcessEmotionInteractiveExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            PostProcessEmotionInteractiveExecutor::load_sync(parameters)
+        })
+    }
+}
+
+/// Creates the owning standard post-process-only executor asynchronously.
+#[cfg(feature = "cuda")]
+pub fn create_post_process_emotion_executor(
+    parameters: PostProcessEmotionExecutorCreationParameters,
+) -> crate::audio2x::ExecutorFuture<'static, PostProcessEmotionExecutor> {
+    PostProcessEmotionExecutorFactory::load(parameters)
+}
+
+/// Creates the owning interactive post-process-only executor asynchronously.
+#[cfg(feature = "cuda")]
+pub fn create_post_process_emotion_interactive_executor(
+    parameters: PostProcessEmotionInteractiveExecutorCreationParameters,
+) -> crate::audio2x::ExecutorFuture<'static, PostProcessEmotionInteractiveExecutor> {
+    PostProcessEmotionInteractiveExecutorFactory::load(parameters)
+}
+
 /// Opaque host emotion post-processor component.
 ///
 /// Corresponds to `nva2e::IPostProcessor` in
 /// `audio2emotion-sdk/include/audio2emotion/postprocess.h` and replaces
 /// `crate::emotion::EmotionPostProcessor` at the SDK-facing module boundary.
 pub struct PostProcessor {
-    _opaque: Infallible,
+    inner: crate::emotion::EmotionPostProcessor,
     _not_sync: std::cell::Cell<()>,
+}
+
+/// Creates the host post-processor from facade values.
+pub fn create_post_processor(
+    data: PostProcessData,
+    params: PostProcessParams,
+) -> crate::Result<PostProcessor> {
+    PostProcessor::new(data, params)
+}
+
+impl PostProcessor {
+    /// Creates the host post-processor from the model-derived facade values.
+    pub fn new(data: PostProcessData, params: PostProcessParams) -> crate::Result<Self> {
+        Ok(Self {
+            inner: crate::emotion::EmotionPostProcessor::new(
+                into_internal_data(data),
+                into_internal_params(params),
+            )?,
+            _not_sync: std::cell::Cell::new(()),
+        })
+    }
+
+    /// Processes one inference emotion vector and returns host-owned output.
+    pub fn process(&mut self, input: &[f32]) -> crate::Result<Vec<f32>> {
+        self.inner.process(input)
+    }
+
+    /// Processes one inference vector using an optional preferred-emotion
+    /// vector supplied by the caller.
+    pub fn process_with_preferred(
+        &mut self,
+        input: &[f32],
+        preferred_emotion: Option<&[f32]>,
+    ) -> crate::Result<Vec<f32>> {
+        self.inner.process_with_preferred(input, preferred_emotion)
+    }
+
+    /// Replaces runtime parameters after validating their dimensions.
+    pub fn set_parameters(&mut self, params: PostProcessParams) -> crate::Result<()> {
+        self.inner.set_parameters(into_internal_params(params))
+    }
+
+    /// Resets temporal smoothing state while retaining model parameters.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
 }
 
 /// Non-generic owning post-process-only emotion executor facade.
@@ -146,7 +238,9 @@ pub struct PostProcessEmotionInteractiveExecutor {
 #[cfg(feature = "cuda")]
 impl PostProcessEmotionExecutor {
     /// Creates an owning post-process-only executor and its device result stream.
-    pub fn load(parameters: PostProcessEmotionExecutorCreationParameters) -> crate::Result<Self> {
+    pub(crate) fn load_sync(
+        parameters: PostProcessEmotionExecutorCreationParameters,
+    ) -> crate::Result<Self> {
         let track_count = parameters.common.tracks.len();
         if track_count == 0 {
             return Err(crate::Error::InvalidArgument {
@@ -200,6 +294,33 @@ impl PostProcessEmotionExecutor {
                 field: "track",
                 index: track,
                 len: self.tracks.len(),
+            })
+    }
+
+    /// Returns the stream used for device result copies.
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        &self.stream
+    }
+
+    /// Borrows the caller-owned audio accumulator retained by this executor.
+    pub fn audio_accumulator(
+        &self,
+        track: usize,
+    ) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        self.audio(track)
+    }
+
+    /// Borrows the preferred-emotion accumulator configured for a track.
+    pub fn emotion_accumulator(
+        &self,
+        track: usize,
+    ) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        self.preferred_emotions
+            .get(track)
+            .ok_or(crate::Error::OutOfBounds {
+                field: "emotion_accumulator",
+                index: track,
+                len: self.preferred_emotions.len(),
             })
     }
 }
@@ -369,7 +490,7 @@ impl crate::audio2emotion::EmotionExecutor for PostProcessEmotionExecutor {
 
 #[cfg(feature = "cuda")]
 impl PostProcessEmotionInteractiveExecutor {
-    pub fn load(
+    pub(crate) fn load_sync(
         parameters: PostProcessEmotionInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
         if parameters.batch_size == 0 {
@@ -409,6 +530,26 @@ impl PostProcessEmotionInteractiveExecutor {
             post_processing_valid: false,
             _not_sync: std::cell::Cell::new(()),
         })
+    }
+
+    /// Returns the stream used for device result copies.
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        &self.stream
+    }
+
+    /// Borrows the closed audio timeline retained by this executor.
+    pub fn audio_accumulator(&self) -> &Arc<crate::audio2x::AudioAccumulator> {
+        &self.audio
+    }
+
+    /// Borrows the optional preferred-emotion timeline, when configured.
+    pub fn emotion_accumulator(&self) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        self.preferred_emotions
+            .as_ref()
+            .ok_or(crate::Error::InvalidState {
+                operation: "access emotion accumulator",
+                state: "preferred emotions are not configured",
+            })
     }
 
     fn compute_one(
@@ -627,7 +768,6 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for PostProcessEmotionInte
     }
 }
 
-#[cfg(feature = "cuda")]
 fn into_internal_data(data: PostProcessData) -> crate::emotion::EmotionPostProcessData {
     crate::emotion::EmotionPostProcessData {
         inference_emotion_length: data.inference_emotion_length,
@@ -640,7 +780,6 @@ fn into_internal_data(data: PostProcessData) -> crate::emotion::EmotionPostProce
     }
 }
 
-#[cfg(feature = "cuda")]
 fn into_internal_params(params: PostProcessParams) -> crate::emotion::EmotionPostProcessParameters {
     crate::emotion::EmotionPostProcessParameters {
         emotion_contrast: params.emotion_contrast,

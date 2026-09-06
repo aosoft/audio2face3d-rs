@@ -42,6 +42,100 @@ pub use crate::cuda::{CudaStreamRef, DeviceView};
 /// and `Wait` methods; C++ does not expose a Future type.
 pub type ExecutorFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
+/// Starts a model factory on a dedicated worker and returns a runtime-neutral
+/// completion future.
+///
+/// Model file I/O, TensorRT deserialization, and CUDA initialization are
+/// deliberately kept out of [`Future::poll`]. Dropping the returned future
+/// only drops the observation handle; the worker keeps owning its closure and
+/// therefore releases any partially-created resources when construction
+/// finishes or fails.
+#[allow(dead_code)]
+pub(crate) fn spawn_blocking_factory<T, F>(load: F) -> ExecutorFuture<'static, T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    let state = Arc::new(FactoryState {
+        state: Mutex::new(FactoryCompletionState {
+            result: None,
+            waker: None,
+        }),
+    });
+    let worker_state = Arc::clone(&state);
+    if let Err(error) = std::thread::Builder::new()
+        .name("audio2face3d-factory".into())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(load))
+                .unwrap_or_else(|panic| {
+                    let message = panic
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).to_owned())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic payload".to_owned());
+                    Err(Error::Io {
+                        operation: "run factory worker",
+                        message: format!("factory worker panicked: {message}"),
+                    })
+                });
+            let waker = {
+                let mut state = worker_state
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.result = Some(result);
+                state.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        })
+    {
+        state
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .result = Some(Err(Error::Io {
+            operation: "spawn factory worker",
+            message: error.to_string(),
+        }));
+    }
+    Box::pin(FactoryFuture { state })
+}
+
+#[allow(dead_code)]
+struct FactoryState<T> {
+    state: Mutex<FactoryCompletionState<T>>,
+}
+
+#[allow(dead_code)]
+struct FactoryCompletionState<T> {
+    result: Option<Result<T>>,
+    waker: Option<Waker>,
+}
+
+#[allow(dead_code)]
+struct FactoryFuture<T> {
+    state: Arc<FactoryState<T>>,
+}
+
+impl<T> Future for FactoryFuture<T> {
+    type Output = Result<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let state = &self.get_mut().state;
+        let mut completion = state
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(result) = completion.result.take() {
+            return Poll::Ready(result);
+        }
+        completion.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
 /// A positive rational frame rate in frames per second.
 ///
 /// Corresponds to `nva2x::IExecutor::GetFrameRate` in
@@ -740,5 +834,78 @@ mod tests {
         assert!(!handle.is_interrupted_since(call_generation));
         handle.interrupt();
         assert!(handle.is_interrupted_since(call_generation));
+    }
+
+    fn wait_for_factory<T>(future: &mut ExecutorFuture<'static, T>) -> Result<T> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut context = Context::from_waker(Waker::noop());
+        loop {
+            if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+                return result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "factory worker did not complete"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn factory_poll_is_non_blocking_and_worker_wakes_observer() {
+        let (release, released) = std::sync::mpsc::channel();
+        let mut future = spawn_blocking_factory(move || {
+            released.recv().unwrap();
+            Ok(17)
+        });
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let waker = Waker::from(Arc::new(CountingWaker(Arc::clone(&wake_count))));
+        let mut context = Context::from_waker(&waker);
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while wake_count.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "factory worker did not wake its observer"
+            );
+            std::thread::yield_now();
+        }
+        assert!(wake_count.load(Ordering::SeqCst) > 0);
+        assert_eq!(wait_for_factory(&mut future).unwrap(), 17);
+    }
+
+    #[test]
+    fn dropped_factory_future_releases_unobserved_result() {
+        struct DropSignal(std::sync::mpsc::Sender<()>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+
+        let (release, released) = std::sync::mpsc::channel();
+        let (dropped, observed_drop) = std::sync::mpsc::channel();
+        let future = spawn_blocking_factory(move || {
+            released.recv().unwrap();
+            Ok(DropSignal(dropped))
+        });
+        drop(future);
+        release.send(()).unwrap();
+        observed_drop
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("worker must release a successful but unobserved result");
+    }
+
+    #[test]
+    fn factory_worker_panic_completes_with_an_error() {
+        let mut future = spawn_blocking_factory::<(), _>(|| panic!("injected factory panic"));
+        assert!(matches!(
+            wait_for_factory(&mut future),
+            Err(Error::Io {
+                operation: "run factory worker",
+                ..
+            })
+        ));
     }
 }

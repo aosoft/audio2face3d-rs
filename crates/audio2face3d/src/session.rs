@@ -8,7 +8,7 @@ use crate::common::{
     AudioAccumulator, EmotionAccumulator, Error, GeometryAudioParameters, GeometryParameters,
     NetworkDocument, Result,
 };
-use crate::cuda::GpuDevice;
+use crate::cuda::{CudaStream, GpuDevice};
 use crate::emotion::{
     ClassifierContract, EmotionExecutionStatus, EmotionExecutor, EmotionPostProcessData,
     EmotionPostProcessParameters, EmotionTrack, TensorRtClassifierBackend,
@@ -362,6 +362,39 @@ impl TensorRtPipeline {
         }
     }
 
+    /// Returns the CUDA stream owned by the geometry backend.
+    ///
+    /// The pipeline is also used for emotion models, which do not expose a
+    /// geometry stream through this facade; callers must therefore handle the
+    /// model-kind error instead of receiving a stream with unrelated
+    /// ownership semantics.
+    pub fn cuda_stream(&self) -> Result<&CudaStream> {
+        match self.geometry_components()? {
+            GeometryPipelineComponents::Regression { backend, .. } => Ok(backend.stream()),
+            GeometryPipelineComponents::Diffusion { backend, .. } => Ok(backend.stream()),
+        }
+    }
+
+    /// Borrows the audio accumulator owned by one pipeline track.
+    pub fn audio_accumulator(&self, track: usize) -> Result<&AudioAccumulator> {
+        match self.track_components(track)? {
+            PipelineTrackComponents::Regression { audio, .. }
+            | PipelineTrackComponents::Diffusion { audio, .. }
+            | PipelineTrackComponents::Emotion { audio, .. } => Ok(audio),
+        }
+    }
+
+    /// Borrows the emotion accumulator owned by one geometry track.
+    pub fn emotion_accumulator(&self, track: usize) -> Result<&EmotionAccumulator> {
+        match self.track_components(track)? {
+            PipelineTrackComponents::Regression { emotions, .. }
+            | PipelineTrackComponents::Diffusion { emotions, .. } => Ok(emotions),
+            PipelineTrackComponents::Emotion { .. } => Err(invalid(
+                "emotion pipelines have no geometry emotion accumulator",
+            )),
+        }
+    }
+
     /// Borrows the low-level geometry executor/backend pair without
     /// transferring ownership. Emotion pipelines reject this accessor.
     pub fn geometry_components(&self) -> Result<GeometryPipelineComponents<'_>> {
@@ -703,6 +736,26 @@ impl GeometryExecutorBundle {
 
     pub fn pipeline_mut(&mut self) -> &mut TensorRtPipeline {
         &mut self.pipeline
+    }
+
+    /// Formal owning-executor accessor for bundle consumers.
+    pub fn executor(&self) -> &TensorRtPipeline {
+        &self.pipeline
+    }
+
+    /// Returns the stream owned by this geometry executor.
+    pub fn cuda_stream(&self) -> Result<&CudaStream> {
+        self.pipeline.cuda_stream()
+    }
+
+    /// Borrows a track's shared audio accumulator.
+    pub fn audio_accumulator(&self, track: usize) -> Result<&AudioAccumulator> {
+        self.pipeline.audio_accumulator(track)
+    }
+
+    /// Borrows a track's shared emotion accumulator.
+    pub fn emotion_accumulator(&self, track: usize) -> Result<&EmotionAccumulator> {
+        self.pipeline.emotion_accumulator(track)
     }
 
     pub fn model_data(&self, track: usize) -> Result<&GeometryModelData> {

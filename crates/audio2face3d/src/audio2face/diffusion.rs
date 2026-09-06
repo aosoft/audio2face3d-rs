@@ -69,6 +69,22 @@ pub struct DiffusionGeometryExecutorCreationParameters {
     pub constant_noise: bool,
 }
 
+/// Canonical asynchronous factory for standard Diffusion geometry.
+#[cfg(feature = "tensorrt")]
+pub struct DiffusionGeometryExecutorFactory;
+
+#[cfg(feature = "tensorrt")]
+impl DiffusionGeometryExecutorFactory {
+    /// Loads model files and initializes CUDA/TensorRT on a worker thread.
+    pub fn load(
+        parameters: DiffusionGeometryExecutorCreationParameters,
+    ) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            DiffusionGeometryExecutor::load_sync(parameters)
+        })
+    }
+}
+
 /// Parameters for loading an owning interactive Diffusion geometry executor.
 ///
 /// `preview_inference_count` corresponds to the original interactive preview
@@ -85,6 +101,22 @@ pub struct DiffusionGeometryInteractiveExecutorCreationParameters {
     pub identity_index: usize,
     pub constant_noise: bool,
     pub preview_inference_count: usize,
+}
+
+/// Canonical asynchronous factory for interactive Diffusion geometry.
+#[cfg(feature = "tensorrt")]
+pub struct DiffusionGeometryInteractiveExecutorFactory;
+
+#[cfg(feature = "tensorrt")]
+impl DiffusionGeometryInteractiveExecutorFactory {
+    /// Loads model files and initializes CUDA/TensorRT on a worker thread.
+    pub fn load(
+        parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
+    ) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryInteractiveExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            DiffusionGeometryInteractiveExecutor::load_sync(parameters)
+        })
+    }
 }
 
 /// Non-generic owning Diffusion geometry executor facade.
@@ -127,6 +159,8 @@ pub struct DiffusionGeometryExecutor {
 pub struct DiffusionGeometryInteractiveExecutor {
     execution: InteractiveDiffusionExecutor<TensorRtDiffusionBackend, DiffusionPostprocessor>,
     contract: DiffusionContract,
+    audio: Arc<crate::audio2x::AudioAccumulator>,
+    emotions: Arc<crate::audio2x::EmotionAccumulator>,
     stream: crate::cuda::CudaStream,
     skin: crate::cuda::DeviceBuffer<f32>,
     tongue: crate::cuda::DeviceBuffer<f32>,
@@ -183,7 +217,7 @@ fn validate_diffusion_inputs(
 
 #[cfg(feature = "tensorrt")]
 impl DiffusionGeometryInteractiveExecutor {
-    pub fn load(
+    pub(crate) fn load_sync(
         parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
         if !parameters.input_strength.is_finite() {
@@ -242,12 +276,14 @@ impl DiffusionGeometryInteractiveExecutor {
         };
         let model_data = GeometryModelData::load_diffusion(model.model_data_path(0)?)?;
         let processor = model_data.diffusion_postprocessor(config, contract.result_layout)?;
+        let audio = Arc::clone(&parameters.common.audio);
+        let emotions = Arc::clone(&parameters.common.emotions);
         let execution = InteractiveDiffusionExecutor::new_shared(
             backend,
             contract.clone(),
             processor,
-            Arc::clone(&parameters.common.audio),
-            Arc::clone(&parameters.common.emotions),
+            Arc::clone(&audio),
+            Arc::clone(&emotions),
             parameters.identity_index,
             parameters.input_strength,
             parameters.preview_inference_count,
@@ -262,6 +298,8 @@ impl DiffusionGeometryInteractiveExecutor {
         Ok(Self {
             execution,
             contract,
+            audio,
+            emotions,
             stream,
             skin,
             tongue,
@@ -295,6 +333,15 @@ impl DiffusionGeometryInteractiveExecutor {
     }
     pub fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
         self.interrupt_handle.clone()
+    }
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        &self.stream
+    }
+    pub fn audio_accumulator(&self) -> &Arc<crate::audio2x::AudioAccumulator> {
+        &self.audio
+    }
+    pub fn emotion_accumulator(&self) -> &Arc<crate::audio2x::EmotionAccumulator> {
+        &self.emotions
     }
     pub fn invalidate(
         &mut self,
@@ -508,6 +555,15 @@ impl DiffusionGeometryInteractiveExecutor {
     }
 }
 
+/// Creates an owning interactive Diffusion geometry executor without
+/// blocking the thread that polls the returned future.
+#[cfg(feature = "tensorrt")]
+pub fn create_diffusion_geometry_interactive_executor(
+    parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
+) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryInteractiveExecutor> {
+    DiffusionGeometryInteractiveExecutorFactory::load(parameters)
+}
+
 #[cfg(feature = "tensorrt")]
 impl crate::audio2x::InteractiveExecutor for DiffusionGeometryInteractiveExecutor {
     fn invalidate_all(&mut self) -> crate::Result<()> {
@@ -625,6 +681,38 @@ impl DiffusionGeometryExecutor {
         Arc::clone(&self.device)
     }
 
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        &self.result_stream
+    }
+
+    pub fn audio_accumulator(
+        &self,
+        track: usize,
+    ) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        self.tracks
+            .get(track)
+            .map(|resources| &resources.audio)
+            .ok_or(crate::Error::OutOfBounds {
+                field: "track",
+                index: track,
+                len: self.tracks.len(),
+            })
+    }
+
+    pub fn emotion_accumulator(
+        &self,
+        track: usize,
+    ) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        self.tracks
+            .get(track)
+            .map(|resources| &resources.emotions)
+            .ok_or(crate::Error::OutOfBounds {
+                field: "track",
+                index: track,
+                len: self.tracks.len(),
+            })
+    }
+
     #[allow(clippy::result_large_err)]
     pub fn try_into_host_blendshape(
         self,
@@ -666,7 +754,9 @@ impl DiffusionGeometryExecutor {
     }
 
     /// Loads an owning Diffusion executor and all model-side state.
-    pub fn load(parameters: DiffusionGeometryExecutorCreationParameters) -> crate::Result<Self> {
+    pub(crate) fn load_sync(
+        parameters: DiffusionGeometryExecutorCreationParameters,
+    ) -> crate::Result<Self> {
         let model = Model::load(&parameters.model_path)?;
         if model.kind() != ModelKind::Diffusion {
             return Err(crate::Error::InvalidSchema(
@@ -848,6 +938,15 @@ impl DiffusionGeometryExecutor {
     pub const fn constant_noise(&self) -> bool {
         self.constant_noise
     }
+}
+
+/// Creates an owning Diffusion geometry executor without blocking the thread
+/// that polls the returned future.
+#[cfg(feature = "tensorrt")]
+pub fn create_diffusion_geometry_executor(
+    parameters: DiffusionGeometryExecutorCreationParameters,
+) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryExecutor> {
+    DiffusionGeometryExecutorFactory::load(parameters)
 }
 
 #[cfg(feature = "tensorrt")]

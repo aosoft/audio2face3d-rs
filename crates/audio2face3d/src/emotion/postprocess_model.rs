@@ -167,15 +167,24 @@ pub struct PostProcessEmotionExecutorBundle {
 }
 
 impl PostProcessEmotionExecutorBundle {
+    /// Loads the legacy host bundle on a runtime-independent worker.
     pub fn load(
+        descriptor: impl AsRef<Path>,
+        options: PostProcessEmotionBundleOptions,
+    ) -> crate::audio2x::ExecutorFuture<'static, Self> {
+        let descriptor = descriptor.as_ref().to_owned();
+        crate::audio2x::spawn_blocking_factory(move || Self::load_sync(descriptor, options))
+    }
+
+    pub(crate) fn load_sync(
         descriptor: impl AsRef<Path>,
         options: PostProcessEmotionBundleOptions,
     ) -> Result<Self> {
         let model = PostProcessEmotionModel::load(descriptor)?;
-        Self::from_model(model, options)
+        Self::from_model_sync(model, options)
     }
 
-    pub fn from_model(
+    pub(crate) fn from_model_sync(
         model: PostProcessEmotionModel,
         options: PostProcessEmotionBundleOptions,
     ) -> Result<Self> {
@@ -328,13 +337,13 @@ mod tests {
     #[test]
     fn bundle_owns_model_accumulators_and_executor() {
         let fixture = Fixture::new();
-        let mut bundle = PostProcessEmotionExecutorBundle::load(
+        let mut bundle = PostProcessEmotionExecutorBundle::load_sync(
             fixture.root.join("model.json"),
             PostProcessEmotionBundleOptions::new(2, 30, 1),
         )
         .unwrap();
         assert!(
-            PostProcessEmotionExecutorBundle::load(
+            PostProcessEmotionExecutorBundle::load_sync(
                 fixture.root.join("model.json"),
                 PostProcessEmotionBundleOptions::new(0, 30, 1),
             )

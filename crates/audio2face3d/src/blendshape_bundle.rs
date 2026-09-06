@@ -3,7 +3,9 @@
 use crate::animation::{
     BlendshapeData, BlendshapeSolverKind, CpuBlendshapeSolver, GpuBlendshapeSolver,
 };
-use crate::common::{Error, ModelDataPaths, Result, load_blendshape_config};
+use crate::common::{
+    AudioAccumulator, EmotionAccumulator, Error, ModelDataPaths, Result, load_blendshape_config,
+};
 use crate::cuda::{CudaStream, DeviceBuffer, DeviceView, GpuDevice, ensure_same_device};
 use crate::{
     CallbackMetadata, GeometryExecutorBundle, GeometryFrame, Model, PipelineOptions,
@@ -286,6 +288,34 @@ impl BlendshapeExecutorBundle {
 
     pub fn geometry(&self) -> &GeometryExecutorBundle {
         &self.geometry
+    }
+
+    /// Formal owning geometry executor accessor.
+    pub fn executor(&self) -> &GeometryExecutorBundle {
+        &self.geometry
+    }
+
+    /// Returns the optional CUDA stream owned by the BlendShape bundle.
+    ///
+    /// CPU bundles do not own a CUDA stream. GPU bundles return their
+    /// solver stream, which is the stream used for dependent BlendShape work.
+    pub fn cuda_stream(&self) -> Option<&CudaStream> {
+        match &self.solvers {
+            BundleSolvers::Cpu(_) => None,
+            BundleSolvers::Gpu(components) => Some(components.stream()),
+        }
+    }
+
+    /// Borrows a shared audio accumulator from the underlying geometry
+    /// executor.
+    pub fn audio_accumulator(&self, track: usize) -> Result<&AudioAccumulator> {
+        self.geometry.audio_accumulator(track)
+    }
+
+    /// Borrows a shared emotion accumulator from the underlying geometry
+    /// executor.
+    pub fn emotion_accumulator(&self, track: usize) -> Result<&EmotionAccumulator> {
+        self.geometry.emotion_accumulator(track)
     }
 
     pub fn geometry_mut(&mut self) -> &mut GeometryExecutorBundle {

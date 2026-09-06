@@ -80,6 +80,53 @@ pub struct ClassifierEmotionInteractiveExecutorCreationParameters {
     pub post_process_params: PostProcessParams,
 }
 
+/// Canonical asynchronous factory for [`ClassifierEmotionExecutor`].
+#[cfg(feature = "tensorrt")]
+pub struct ClassifierEmotionExecutorFactory;
+
+/// Canonical asynchronous factory for
+/// [`ClassifierEmotionInteractiveExecutor`].
+#[cfg(feature = "tensorrt")]
+pub struct ClassifierEmotionInteractiveExecutorFactory;
+
+#[cfg(feature = "tensorrt")]
+impl ClassifierEmotionExecutorFactory {
+    pub fn load(
+        parameters: ClassifierEmotionExecutorCreationParameters,
+    ) -> crate::audio2x::ExecutorFuture<'static, ClassifierEmotionExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            ClassifierEmotionExecutor::load_sync(parameters)
+        })
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl ClassifierEmotionInteractiveExecutorFactory {
+    pub fn load(
+        parameters: ClassifierEmotionInteractiveExecutorCreationParameters,
+    ) -> crate::audio2x::ExecutorFuture<'static, ClassifierEmotionInteractiveExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            ClassifierEmotionInteractiveExecutor::load_sync(parameters)
+        })
+    }
+}
+
+/// Creates the owning standard classifier executor asynchronously.
+#[cfg(feature = "tensorrt")]
+pub fn create_classifier_emotion_executor(
+    parameters: ClassifierEmotionExecutorCreationParameters,
+) -> crate::audio2x::ExecutorFuture<'static, ClassifierEmotionExecutor> {
+    ClassifierEmotionExecutorFactory::load(parameters)
+}
+
+/// Creates the owning interactive classifier executor asynchronously.
+#[cfg(feature = "tensorrt")]
+pub fn create_classifier_emotion_interactive_executor(
+    parameters: ClassifierEmotionInteractiveExecutorCreationParameters,
+) -> crate::audio2x::ExecutorFuture<'static, ClassifierEmotionInteractiveExecutor> {
+    ClassifierEmotionInteractiveExecutorFactory::load(parameters)
+}
+
 /// Non-generic owning classifier emotion executor facade.
 ///
 /// Corresponds to `nva2e::IClassifierModel::EmotionExecutor` and implements
@@ -127,7 +174,9 @@ impl ClassifierEmotionExecutor {
     /// Loads an owning classifier executor. The model, TensorRT backend, and
     /// post-processing state are all moved into this value; no `Model` borrow
     /// is retained after construction.
-    pub fn load(parameters: ClassifierEmotionExecutorCreationParameters) -> crate::Result<Self> {
+    pub(crate) fn load_sync(
+        parameters: ClassifierEmotionExecutorCreationParameters,
+    ) -> crate::Result<Self> {
         let model = Model::load(&parameters.model_path)?;
         if model.kind() != ModelKind::Emotion {
             return Err(crate::Error::InvalidSchema(
@@ -212,6 +261,11 @@ impl ClassifierEmotionExecutor {
     pub fn track_count(&self) -> usize {
         self.tracks.len()
     }
+    /// Returns the stream owned by the classifier backend.
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        self.backend.stream()
+    }
+
     pub fn sample_rate(&self) -> usize {
         self.sample_rate
     }
@@ -226,6 +280,28 @@ impl ClassifierEmotionExecutor {
                 field: "track",
                 index: track,
                 len: self.tracks.len(),
+            })
+    }
+
+    /// Borrows the caller-owned audio accumulator retained by this executor.
+    pub fn audio_accumulator(
+        &self,
+        track: usize,
+    ) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        self.audio(track)
+    }
+
+    /// Borrows the preferred-emotion accumulator configured for a track.
+    pub fn emotion_accumulator(
+        &self,
+        track: usize,
+    ) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        self.preferred_emotions
+            .get(track)
+            .ok_or(crate::Error::OutOfBounds {
+                field: "emotion_accumulator",
+                index: track,
+                len: self.preferred_emotions.len(),
             })
     }
     pub fn emotion_count(&self) -> usize {
@@ -266,7 +342,7 @@ impl ClassifierEmotionExecutor {
 #[cfg(feature = "tensorrt")]
 impl ClassifierEmotionInteractiveExecutor {
     /// Loads the single-track interactive classifier facade.
-    pub fn load(
+    pub(crate) fn load_sync(
         parameters: ClassifierEmotionInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
         if parameters.batch_size == 0 {
@@ -352,6 +428,26 @@ impl ClassifierEmotionInteractiveExecutor {
             post_processing_valid: false,
             _not_sync: Cell::new(()),
         })
+    }
+
+    /// Returns the stream used for device result copies.
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        &self.stream
+    }
+
+    /// Borrows the closed audio timeline retained by this executor.
+    pub fn audio_accumulator(&self) -> &Arc<crate::audio2x::AudioAccumulator> {
+        &self.audio
+    }
+
+    /// Borrows the optional preferred-emotion timeline, when configured.
+    pub fn emotion_accumulator(&self) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        self.preferred_emotions
+            .as_ref()
+            .ok_or(crate::Error::InvalidState {
+                operation: "access emotion accumulator",
+                state: "preferred emotions are not configured",
+            })
     }
 
     fn compute_one(

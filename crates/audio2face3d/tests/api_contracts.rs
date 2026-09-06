@@ -171,6 +171,31 @@ fn borrowed_cuda_contracts_follow_the_audited_thread_safety_matrix() {
     assert_send_sync::<CudaStreamRef<'static>>();
 }
 
+#[cfg(all(feature = "animation", feature = "emotion"))]
+#[test]
+fn face_and_emotion_creation_parameters_share_one_audio_accumulator() {
+    let audio = std::sync::Arc::new(AudioAccumulator::new(16, 1).unwrap());
+    let face = audio2face3d::audio2face::GeometryExecutorCreationParameters {
+        tracks: vec![audio2face3d::audio2face::GeometryTrackResources {
+            audio: std::sync::Arc::clone(&audio),
+            emotions: std::sync::Arc::new(EmotionAccumulator::new(2, 1).unwrap()),
+        }],
+        device_ordinal: 0,
+        execution_option: audio2face3d::audio2face::GeometryExecutionOption::ALL,
+    };
+    let emotion = audio2face3d::audio2emotion::EmotionExecutorCreationParameters {
+        tracks: vec![audio2face3d::audio2emotion::EmotionTrackResources {
+            audio: std::sync::Arc::clone(&audio),
+        }],
+        device_ordinal: 0,
+    };
+    assert!(std::sync::Arc::ptr_eq(&face.tracks[0].audio, &audio));
+    assert!(std::sync::Arc::ptr_eq(
+        &face.tracks[0].audio,
+        &emotion.tracks[0].audio
+    ));
+}
+
 #[cfg(feature = "animation")]
 mod face {
     use super::*;
@@ -282,6 +307,40 @@ mod face {
         assert!(GeometryExecutionOption::SKIN_TONGUE.contains(GeometryExecutionOption::SKIN));
     }
 
+    #[test]
+    fn sdk_named_animator_and_solver_factories_are_concrete() {
+        let teeth = create_animator_teeth(
+            AnimatorTeethParams {
+                lower_teeth_strength: 1.0,
+                lower_teeth_height_offset: 0.0,
+                lower_teeth_depth_offset: 0.0,
+            },
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        )
+        .unwrap();
+        assert_eq!(teeth.neutral_pose().len(), 9);
+
+        let names = ["pose"];
+        let solver = create_blendshape_solver(BlendshapeSolveComponentParameters {
+            params: BlendshapeSolverParams::default(),
+            config: BlendshapeSolverConfigView {
+                active_poses: &[1],
+                cancel_poses: &[-1],
+                symmetry_poses: &[-1],
+                multipliers: &[1.0],
+                offsets: &[0.0],
+            },
+            data: BlendshapeSolverDataView {
+                neutral_pose: &[0.0, 0.0, 0.0],
+                delta_poses: &[1.0, 0.0, 0.0],
+                pose_mask: None,
+                pose_names: &names,
+            },
+        })
+        .unwrap();
+        assert_eq!(solver.pose_name(0), Some("pose"));
+    }
+
     #[cfg(feature = "tensorrt")]
     #[test]
     fn native_model_facades_are_unique_sendable_types() {
@@ -296,6 +355,18 @@ mod face {
         assert_not_impl!(DiffusionGeometryInteractiveExecutor, Sync);
         assert_not_impl!(RegressionGeometryExecutor, Clone);
         assert_not_impl!(DiffusionGeometryExecutor, Clone);
+        assert_send::<GeometryExecutorBundle>();
+        assert_send::<BlendshapeExecutorBundle>();
+        assert_not_impl!(GeometryExecutorBundle, Clone);
+        let _ = RegressionGeometryExecutorFactory::load;
+        let _ = RegressionGeometryInteractiveExecutorFactory::load;
+        let _ = DiffusionGeometryExecutorFactory::load;
+        let _ = DiffusionGeometryInteractiveExecutorFactory::load;
+        let _ = GeometryExecutorBundleFactory::load;
+        let _ = create_regression_geometry_executor;
+        let _ = create_diffusion_geometry_executor;
+        let _ = create_host_blendshape_solve_executor;
+        let _ = create_device_blendshape_solve_executor;
     }
 
     #[cfg(feature = "cuda")]
@@ -354,6 +425,22 @@ mod emotion {
         assert_eq!(EmotionInvalidationLayer::All as usize, 1);
         assert_eq!(EmotionInvalidationLayer::Inference as usize, 2);
         assert_eq!(EmotionInvalidationLayer::PostProcessing as usize, 3);
+
+        let mut processor = post_process::create_post_processor(
+            PostProcessData {
+                inference_emotion_length: 1,
+                output_emotion_length: 1,
+                emotion_correspondence: vec![0],
+            },
+            PostProcessParams {
+                max_emotions: 1,
+                beginning_emotion: vec![0.0],
+                preferred_emotion: vec![0.0],
+                ..PostProcessParams::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(processor.process(&[0.0]).unwrap().len(), 1);
     }
 
     #[cfg(feature = "tensorrt")]
@@ -365,6 +452,11 @@ mod emotion {
         assert_not_impl!(ClassifierEmotionExecutor, Sync);
         assert_not_impl!(ClassifierEmotionInteractiveExecutor, Sync);
         assert_not_impl!(ClassifierEmotionExecutor, Clone);
+        assert_send::<EmotionExecutorBundle>();
+        assert_not_impl!(EmotionExecutorBundle, Clone);
+        let _ = ClassifierEmotionExecutorFactory::load;
+        let _ = ClassifierEmotionInteractiveExecutorFactory::load;
+        let _ = EmotionExecutorBundleFactory::load;
     }
 
     #[cfg(feature = "cuda")]
@@ -376,5 +468,9 @@ mod emotion {
         assert_not_impl!(PostProcessEmotionExecutor, Sync);
         assert_not_impl!(PostProcessEmotionInteractiveExecutor, Sync);
         assert_not_impl!(PostProcessEmotionExecutor, Clone);
+        assert_send::<EmotionExecutorBundle>();
+        let _ = PostProcessEmotionExecutorFactory::load;
+        let _ = PostProcessEmotionInteractiveExecutorFactory::load;
+        let _ = EmotionExecutorBundleFactory::post_process;
     }
 }

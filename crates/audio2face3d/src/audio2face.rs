@@ -48,12 +48,38 @@ use crate::audio2x::{
 #[cfg(feature = "tensorrt")]
 use crate::audio2x::{ExecutionReport, ExecutionState};
 
+pub mod animator;
+pub mod blendshape_solver;
+#[cfg(feature = "tensorrt")]
+pub mod bundle;
 pub mod diffusion;
 pub mod job_runner;
+#[cfg(feature = "cuda")]
+pub mod noise;
 pub mod regression;
 
+pub use crate::animation::CpuBlendshapeSolver;
+#[cfg(feature = "cuda")]
+pub use crate::animation::GpuPhiloxNoise;
 pub use crate::audio2x::RangeConfig;
-pub use job_runner::{JobRunner, JobRunnerTask, ThreadPoolJobRunner};
+pub use animator::{
+    AnimatorEyes, AnimatorPcaReconstruction, AnimatorSkin, AnimatorTeeth, AnimatorTongue,
+    create_animator_eyes, create_animator_pca_reconstruction, create_animator_skin,
+    create_animator_teeth, create_animator_tongue,
+};
+pub use blendshape_solver::create_blendshape_solver;
+#[cfg(feature = "tensorrt")]
+pub use bundle::{
+    BlendshapeExecutorBundle, BlendshapeExecutorMut, BlendshapeExecutorRef, GeometryExecutorBundle,
+    GeometryExecutorBundleCreationParameters, GeometryExecutorBundleFactory, GeometryExecutorMut,
+    GeometryExecutorRef, create_device_blendshape_solve_executor, create_diffusion_bundle,
+    create_host_blendshape_solve_executor, create_regression_bundle,
+};
+pub use job_runner::{
+    JobRunner, JobRunnerTask, ThreadPoolJobRunner, create_thread_pool_job_runner,
+};
+#[cfg(feature = "cuda")]
+pub use noise::create_noise_generator;
 
 /// Bit mask selecting the geometry components produced by an execution.
 ///
@@ -1299,6 +1325,27 @@ impl GeometrySource {
         }
     }
 
+    fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        match self {
+            Self::Regression(source) => source.cuda_stream(),
+            Self::Diffusion(source) => source.cuda_stream(),
+        }
+    }
+
+    fn audio_accumulator(&self, track: usize) -> Result<&Arc<AudioAccumulator>> {
+        match self {
+            Self::Regression(source) => source.audio_accumulator(track),
+            Self::Diffusion(source) => source.audio_accumulator(track),
+        }
+    }
+
+    fn emotion_accumulator(&self, track: usize) -> Result<&Arc<EmotionAccumulator>> {
+        match self {
+            Self::Regression(source) => source.emotion_accumulator(track),
+            Self::Diffusion(source) => source.emotion_accumulator(track),
+        }
+    }
+
     fn set_execution_option(&mut self, option: GeometryExecutionOption) -> Result<()> {
         match self {
             Self::Regression(source) => GeometryExecutor::set_execution_option(source, option),
@@ -1638,6 +1685,21 @@ impl HostBlendshapeSolveExecutor {
         })
     }
 
+    /// Returns the geometry result stream retained by this owning executor.
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        self.source.cuda_stream()
+    }
+
+    /// Returns the exact shared audio accumulator transferred with geometry.
+    pub fn audio_accumulator(&self, track: usize) -> Result<&Arc<AudioAccumulator>> {
+        self.source.audio_accumulator(track)
+    }
+
+    /// Returns the exact shared emotion accumulator transferred with geometry.
+    pub fn emotion_accumulator(&self, track: usize) -> Result<&Arc<EmotionAccumulator>> {
+        self.source.emotion_accumulator(track)
+    }
+
     /// Schedules CPU solve jobs and returns a call-local completion handle.
     pub fn execute(&mut self, callback: HostBlendshapeCallback) -> Result<Execution> {
         let track_count = self.source.track_count();
@@ -1821,6 +1883,21 @@ impl DeviceBlendshapeSolveExecutor {
             weight_count,
             _not_sync: std::marker::PhantomData,
         })
+    }
+
+    /// Returns the solver stream owned by this device-result executor.
+    pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        &self.stream
+    }
+
+    /// Returns the exact shared audio accumulator transferred with geometry.
+    pub fn audio_accumulator(&self, track: usize) -> Result<&Arc<AudioAccumulator>> {
+        self.source.audio_accumulator(track)
+    }
+
+    /// Returns the exact shared emotion accumulator transferred with geometry.
+    pub fn emotion_accumulator(&self, track: usize) -> Result<&Arc<EmotionAccumulator>> {
+        self.source.emotion_accumulator(track)
     }
 
     /// Solves synchronously and exposes callback-scoped device weights.

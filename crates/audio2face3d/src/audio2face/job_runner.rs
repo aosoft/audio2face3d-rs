@@ -203,6 +203,15 @@ impl JobRunner for ThreadPoolJobRunner {
     }
 }
 
+/// Creates the standard shared host job runner used by BlendShape executors.
+///
+/// Returning the concrete runner keeps the standard factory free of a public
+/// implementation trait object while callers may still coerce the `Arc` to
+/// `Arc<dyn JobRunner>` when injecting it into creation parameters.
+pub fn create_thread_pool_job_runner(thread_count: usize) -> Result<Arc<ThreadPoolJobRunner>> {
+    Ok(Arc::new(ThreadPoolJobRunner::new(thread_count)?))
+}
+
 impl Drop for ThreadPoolJobRunner {
     fn drop(&mut self) {
         request_shutdown(&self.inner);
