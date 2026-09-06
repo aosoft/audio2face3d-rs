@@ -358,6 +358,32 @@ mod face {
         assert_send::<GeometryExecutorBundle>();
         assert_send::<BlendshapeExecutorBundle>();
         assert_not_impl!(GeometryExecutorBundle, Clone);
+
+        use audio2face3d::audio2face::{
+            InteractiveGeometryBundleCreationParameters, InteractiveGeometryExecutorBundle,
+            InteractiveGeometryExecutorBundleFactory, InteractiveGeometryExecutorMut,
+            InteractiveGeometryExecutorRef,
+        };
+        assert_send::<InteractiveGeometryExecutorBundle>();
+        assert_not_impl!(InteractiveGeometryExecutorBundle, Clone);
+
+        fn interactive_bundle_accessors(bundle: &InteractiveGeometryExecutorBundle) {
+            let _: InteractiveGeometryExecutorRef<'_> = bundle.executor();
+            let _: &audio2face3d::cuda::CudaStream = bundle.cuda_stream();
+            let _: &std::sync::Arc<AudioAccumulator> = bundle.audio_accumulator();
+            let _: &std::sync::Arc<EmotionAccumulator> = bundle.emotion_accumulator();
+        }
+        fn interactive_bundle_mut_accessor(bundle: &mut InteractiveGeometryExecutorBundle) {
+            let _: InteractiveGeometryExecutorMut<'_> = bundle.executor_mut();
+        }
+        fn interactive_bundle_factory(
+            parameters: InteractiveGeometryBundleCreationParameters,
+        ) -> ExecutorFuture<'static, InteractiveGeometryExecutorBundle> {
+            InteractiveGeometryExecutorBundleFactory::load(parameters)
+        }
+        let _ = interactive_bundle_accessors;
+        let _ = interactive_bundle_mut_accessor;
+        let _ = interactive_bundle_factory;
         let _ = RegressionGeometryExecutorFactory::load;
         let _ = RegressionGeometryInteractiveExecutorFactory::load;
         let _ = DiffusionGeometryExecutorFactory::load;

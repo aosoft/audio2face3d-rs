@@ -718,6 +718,37 @@ impl RegressionGeometryExecutor {
             })
     }
 
+    pub fn set_input_strength(&mut self, value: f32) -> crate::Result<()> {
+        if !value.is_finite() {
+            return Err(crate::Error::InvalidArgument {
+                field: "input_strength",
+                reason: "input strength must be finite".into(),
+            });
+        }
+        self.input_strength = value;
+        Ok(())
+    }
+
+    pub fn set_implicit_emotion(&mut self, track: usize, values: &[f32]) -> crate::Result<()> {
+        let track_count = self.implicit_emotions.len();
+        let target = self
+            .implicit_emotions
+            .get_mut(track)
+            .ok_or(crate::Error::OutOfBounds {
+                field: "track",
+                index: track,
+                len: track_count,
+            })?;
+        if target.len() != values.len() || values.iter().any(|value| !value.is_finite()) {
+            return Err(crate::Error::InvalidArgument {
+                field: "implicit_emotion",
+                reason: "implicit emotion dimensions or values are invalid".into(),
+            });
+        }
+        target.copy_from_slice(values);
+        Ok(())
+    }
+
     #[allow(clippy::result_large_err)]
     pub fn try_into_host_blendshape(
         self,

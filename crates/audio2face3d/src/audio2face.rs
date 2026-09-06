@@ -72,7 +72,10 @@ pub use blendshape_solver::create_blendshape_solver;
 pub use bundle::{
     BlendshapeExecutorBundle, BlendshapeExecutorMut, BlendshapeExecutorRef, GeometryExecutorBundle,
     GeometryExecutorBundleCreationParameters, GeometryExecutorBundleFactory, GeometryExecutorMut,
-    GeometryExecutorRef, create_device_blendshape_solve_executor, create_diffusion_bundle,
+    GeometryExecutorRef, InteractiveGeometryBundleCreationParameters,
+    InteractiveGeometryExecutorBundle, InteractiveGeometryExecutorBundleFactory,
+    InteractiveGeometryExecutorMut, InteractiveGeometryExecutorRef,
+    create_device_blendshape_solve_executor, create_diffusion_bundle,
     create_host_blendshape_solve_executor, create_regression_bundle,
 };
 pub use job_runner::{

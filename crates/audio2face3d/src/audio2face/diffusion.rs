@@ -67,6 +67,7 @@ pub struct DiffusionGeometryExecutorCreationParameters {
     pub frame_rate: FrameRate,
     pub identity_index: usize,
     pub constant_noise: bool,
+    pub noise_seed: u64,
 }
 
 /// Canonical asynchronous factory for standard Diffusion geometry.
@@ -101,6 +102,7 @@ pub struct DiffusionGeometryInteractiveExecutorCreationParameters {
     pub identity_index: usize,
     pub constant_noise: bool,
     pub preview_inference_count: usize,
+    pub noise_seed: u64,
 }
 
 /// Canonical asynchronous factory for interactive Diffusion geometry.
@@ -287,7 +289,7 @@ impl DiffusionGeometryInteractiveExecutor {
             parameters.identity_index,
             parameters.input_strength,
             parameters.preview_inference_count,
-            u64::from(parameters.constant_noise),
+            parameters.noise_seed,
         )?;
         let stream = device.create_stream()?;
         let skin = device.allocate(contract.result_layout.skin)?;
@@ -713,6 +715,29 @@ impl DiffusionGeometryExecutor {
             })
     }
 
+    pub fn set_input_strength(&mut self, value: f32) -> crate::Result<()> {
+        if !value.is_finite() {
+            return Err(crate::Error::InvalidArgument {
+                field: "input_strength",
+                reason: "input strength must be finite".into(),
+            });
+        }
+        self.input_strength = value;
+        Ok(())
+    }
+
+    pub fn set_identity_index(&mut self, value: usize) -> crate::Result<()> {
+        if value >= self.contract.identity_size {
+            return Err(crate::Error::OutOfBounds {
+                field: "identity_index",
+                index: value,
+                len: self.contract.identity_size,
+            });
+        }
+        self.identity_index = value;
+        Ok(())
+    }
+
     #[allow(clippy::result_large_err)]
     pub fn try_into_host_blendshape(
         self,
@@ -816,7 +841,7 @@ impl DiffusionGeometryExecutor {
             parameters.frame_rate.denominator() as f32 / parameters.frame_rate.numerator() as f32;
         let gpu_postprocessor =
             model_data.gpu_postprocessor(&device, backend.stream(), config, track_count, dt)?;
-        let execution = DiffusionExecutor::new(contract, track_count, 0)?;
+        let execution = DiffusionExecutor::new(contract, track_count, parameters.noise_seed)?;
         let skin_output = device.allocate(
             owned_contract
                 .result_layout

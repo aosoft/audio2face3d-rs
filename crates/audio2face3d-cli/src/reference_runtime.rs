@@ -1,23 +1,47 @@
+use crate::async_util::block_on;
 use audio2face3d::animation::{
-    BlendshapeSolverKind, GeometryInvalidationLayer, GeometryModelData, GpuMultiTrackTeethAnimator,
-    GpuTeethInputBatch, GpuTeethOutputBatch, JawParameters, TensorBatchInfo,
+    BlendshapeData, BlendshapeSolverKind, GeometryModelData, GpuBlendshapeSolver,
+    InteractiveGpuBlendshapeLayer, RegressionGeometry,
 };
-use audio2face3d::common::{GeometryParameters, NetworkDocument};
+use audio2face3d::audio2emotion::classifier::{
+    ClassifierEmotionExecutorCreationParameters, ClassifierEmotionExecutorFactory,
+};
+use audio2face3d::audio2emotion::{
+    EmotionExecutor, EmotionExecutorCreationParameters, EmotionTrackResources, PostProcessData,
+    PostProcessParams,
+};
+use audio2face3d::audio2face::diffusion::DiffusionGeometryExecutorCreationParameters;
+use audio2face3d::audio2face::diffusion::DiffusionGeometryInteractiveExecutorCreationParameters;
+use audio2face3d::audio2face::regression::RegressionGeometryExecutorCreationParameters;
+use audio2face3d::audio2face::regression::RegressionGeometryInteractiveExecutorCreationParameters;
+use audio2face3d::audio2face::{
+    AnimatorTeethParams, BlendshapeInteractiveExecutor, BlendshapeInvalidationLayer,
+    BlendshapeSolveComponentParameters, BlendshapeSolveExecutorCreationParameters,
+    BlendshapeSolverConfigView, BlendshapeSolverDataView, BlendshapeSolverParams,
+    DeviceBlendshapeSolveExecutorCreationParameters, DeviceBlendshapeSolveInteractiveExecutor,
+    GeometryExecutionOption, GeometryExecutorBundle as FacadeGeometryExecutorBundle,
+    GeometryExecutorBundleCreationParameters, GeometryExecutorBundleFactory,
+    GeometryInteractiveExecutor, GeometryInteractiveExecutorCreationParameters,
+    GeometryInvalidationLayer, GeometryResults, GeometryTrackResources,
+    HostBlendshapeSolveExecutorCreationParameters, InteractiveGeometryBundleCreationParameters,
+    InteractiveGeometryExecutorBundle as FacadeInteractiveGeometryExecutorBundle,
+    InteractiveGeometryExecutorBundleFactory, create_animator_teeth,
+};
+use audio2face3d::audio2x::{
+    AudioAccumulator, DeviceComponentResults, EmotionAccumulator, ExecutionState, FrameRate,
+    InteractiveExecutionReport, InteractiveExecutor,
+};
+use audio2face3d::common::{
+    BlendshapeConfig, GeometryParameters, NetworkDocument, load_blendshape_config,
+};
 use audio2face3d::cuda::GpuDevice;
-use audio2face3d::{
-    BlendshapeExecutorBundle, BlendshapeOutput, CallbackMetadata, ComposedGeometryExecutorBundle,
-    GeometryExecutorBundle, GeometryFrame, GeometryObserver, InteractiveGeometryExecutorBundle,
-    InteractiveGpuBlendshapeExecutorBundle, InteractivePipelineOptions, Model, ModelKind,
-    ModelParameters, PipelineOptions, PipelineOutput, PipelineStatus, TensorRtPipeline,
-    TrackParameters,
-};
+use audio2face3d::{CallbackMetadata, GeometryFrame, Model, ModelKind, ModelParameters};
 use audio2face3d_cli::reference::{
     ArtifactWriter, Case, FileProvenance, Producer, RecordMetadata, load_fixture, sha256_file,
 };
-use std::cell::Cell;
 use std::io;
+use std::ops::ControlFlow;
 use std::path::Path;
-use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Execution {
@@ -170,47 +194,21 @@ fn capture_teeth(
         }
     };
     let default = match model.parameters(0)? {
-        ModelParameters::Geometry(value) => JawParameters {
-            strength: value.lower_teeth_strength,
-            height_offset: value.lower_teeth_height_offset,
-            depth_offset: value.lower_teeth_depth_offset,
+        ModelParameters::Geometry(value) => AnimatorTeethParams {
+            lower_teeth_strength: value.lower_teeth_strength,
+            lower_teeth_height_offset: value.lower_teeth_height_offset,
+            lower_teeth_depth_offset: value.lower_teeth_depth_offset,
         },
         ModelParameters::Emotion(_) => {
             return Err("geometry model does not expose teeth parameters".into());
         }
     };
-    let device = GpuDevice::new(0)?;
-    let stream = device.create_stream()?;
-    let mut animator =
-        GpuMultiTrackTeethAnimator::new(&device, &stream, &data.jaw_neutral_pose, default, tracks)?;
+    let mut animator = create_animator_teeth(default, data.jaw_neutral_pose.clone())?;
+    let deltas = teeth_deltas(tracks, data.jaw_neutral_pose.len());
     for track in 0..tracks {
-        animator.set_parameters(track, teeth_parameters(default, track), &stream)?;
-    }
-    let input_info = TensorBatchInfo {
-        offset: 2,
-        size: data.jaw_neutral_pose.len(),
-        stride: data.jaw_neutral_pose.len() + 3,
-    };
-    let output_info = TensorBatchInfo {
-        offset: 3,
-        size: 16,
-        stride: 20,
-    };
-    let deltas = teeth_deltas(tracks, input_info);
-    let mut input = device.allocate(deltas.len())?;
-    input.copy_from(&deltas, &stream)?;
-    let mut output = device.allocate(output_info.stride * tracks)?;
-    let fence = animator.compute(
-        GpuTeethInputBatch::new(&input, input_info),
-        GpuTeethOutputBatch::new(&mut output, output_info),
-        &stream,
-    )?;
-    fence.synchronize()?;
-    drop(fence);
-    let mut transforms = vec![0.0; output_info.stride * tracks];
-    output.copy_to(&mut transforms, &stream)?;
-    for track in 0..tracks {
-        let start = track * output_info.stride + output_info.offset;
+        animator.set_parameters(teeth_parameters(default, track))?;
+        let start = track * data.jaw_neutral_pose.len();
+        let transform = animator.compute(&deltas[start..start + data.jaw_neutral_pose.len()])?;
         writer.push_f32(
             RecordMetadata {
                 layer: "standalone-teeth".into(),
@@ -220,9 +218,9 @@ fn capture_teeth(
                 inference: None,
                 timestamp: Some(0),
                 next_timestamp: Some(0),
-                shape: vec![output_info.size],
+                shape: vec![transform.len()],
             },
-            &transforms[start..start + output_info.size],
+            &transform,
         )?;
     }
     writer
@@ -232,28 +230,27 @@ fn capture_teeth(
     Ok(())
 }
 
-fn teeth_parameters(default: JawParameters, track: usize) -> JawParameters {
+fn teeth_parameters(default: AnimatorTeethParams, track: usize) -> AnimatorTeethParams {
     match track % 3 {
         0 => default,
-        1 => JawParameters {
-            strength: 0.5,
-            height_offset: 0.25,
-            depth_offset: -0.5,
+        1 => AnimatorTeethParams {
+            lower_teeth_strength: 0.5,
+            lower_teeth_height_offset: 0.25,
+            lower_teeth_depth_offset: -0.5,
         },
-        _ => JawParameters {
-            strength: 2.0,
-            height_offset: -3.0,
-            depth_offset: 3.0,
+        _ => AnimatorTeethParams {
+            lower_teeth_strength: 2.0,
+            lower_teeth_height_offset: -3.0,
+            lower_teeth_depth_offset: 3.0,
         },
     }
 }
 
-fn teeth_deltas(tracks: usize, info: TensorBatchInfo) -> Vec<f32> {
-    let mut values = vec![0.0; info.stride * tracks];
+fn teeth_deltas(tracks: usize, size: usize) -> Vec<f32> {
+    let mut values = vec![0.0; size * tracks];
     for track in 0..tracks {
-        for index in 0..info.size {
-            values[track * info.stride + info.offset + index] =
-                ((track + 1) * (index % 7 + 1)) as f32 * 0.001;
+        for index in 0..size {
+            values[track * size + index] = ((track + 1) * (index % 7 + 1)) as f32 * 0.001;
         }
     }
     values
@@ -266,35 +263,382 @@ fn capture_standard(
     samples: &[f32],
     writer: &mut ArtifactWriter,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let options = options(tracks, seed);
     if model.kind() == ModelKind::Emotion {
-        let mut pipeline = TensorRtPipeline::load(model, options)?;
-        configure_tracks(&mut pipeline, model, tracks, samples)?;
-        execute_to_completion(&mut pipeline, |metadata, output| {
-            let PipelineOutput::Emotion(values) = output else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "emotion pipeline returned geometry",
-                ));
-            };
-            writer.push_f32(
-                record("postprocess", "emotion", metadata, values.len()),
-                values,
-            )
-        })?;
+        capture_standard_emotion(model, tracks, samples, writer)?;
     } else {
-        let observed_frames = Rc::new(Cell::new(0_u64));
-        let mut geometry = GeometryExecutorBundle::builder(model, options)?
-            .observer(ReferenceGeometryObserver(Rc::clone(&observed_frames)))
-            .build()?;
-        configure_geometry(&mut geometry, model, tracks, samples)?;
-        execute_geometry_to_completion(&mut geometry, writer, "postprocess")?;
-        writer
-            .manifest_mut()
-            .counters
-            .insert("geometry-observer-frames".into(), observed_frames.get());
+        let mut geometry = create_facade_geometry(model, tracks, seed)?;
+        for track in 0..tracks {
+            geometry.audio_accumulator(track)?.accumulate(samples)?;
+            geometry.audio_accumulator(track)?.close()?;
+        }
+        execute_facade_geometry(&mut geometry, writer, "postprocess", &mut vec![0; tracks])?;
     }
     Ok(())
+}
+
+fn capture_standard_emotion(
+    model: &Model,
+    tracks: usize,
+    samples: &[f32],
+    writer: &mut ArtifactWriter,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let audio_length = 60_000;
+    let (network, config) = match (model.network(), model.parameters(0)?) {
+        (NetworkDocument::Emotion(network), ModelParameters::Emotion(config)) => (network, config),
+        _ => return Err("emotion model schema is unavailable".into()),
+    };
+    let frame_rate = FrameRate::new(30, 1)?;
+    let post_process_data = PostProcessData {
+        inference_emotion_length: network.emotions.len(),
+        output_emotion_length: config.output_emotion_length,
+        emotion_correspondence: network
+            .emotions
+            .iter()
+            .map(|name| {
+                config
+                    .emotion_correspondence
+                    .get(name)
+                    .copied()
+                    .ok_or_else(|| format!("emotion correspondence is missing for {name}"))
+                    .and_then(|value| {
+                        i32::try_from(value)
+                            .map_err(|_| format!("emotion correspondence is out of range: {value}"))
+                    })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    };
+    let post_process_params = PostProcessParams {
+        emotion_contrast: config.emotion_contrast,
+        max_emotions: config.max_emotions,
+        beginning_emotion: vec![0.0; config.output_emotion_length],
+        preferred_emotion: config.preferred_emotion.clone(),
+        live_blend_coefficient: config.live_blend_coef,
+        enable_preferred_emotion: config.enable_preferred_emotion,
+        preferred_emotion_strength: config.preferred_emotion_strength,
+        live_transition_time: config.transition_smoothing,
+        fixed_dt: config.fixed_dt,
+        emotion_strength: config.emotion_strength,
+    };
+    let resources = (0..tracks)
+        .map(|_| {
+            Ok(EmotionTrackResources {
+                audio: std::sync::Arc::new(AudioAccumulator::new(audio_length, 0)?),
+            })
+        })
+        .collect::<Result<Vec<_>, audio2face3d::Error>>()?;
+    let mut executor = block_on(ClassifierEmotionExecutorFactory::load(
+        ClassifierEmotionExecutorCreationParameters {
+            model_path: model.descriptor_path().to_owned(),
+            common: EmotionExecutorCreationParameters {
+                tracks: resources,
+                device_ordinal: 0,
+            },
+            input_strength: 1.0,
+            buffer_length: audio_length,
+            frame_rate,
+            inferences_to_skip: 0,
+            post_process_data,
+            post_process_params,
+            preferred_emotions: Vec::new(),
+        },
+    ))?;
+    for track in 0..tracks {
+        executor.audio_accumulator(track)?.accumulate(samples)?;
+        executor.audio_accumulator(track)?.close()?;
+    }
+    let mut callback_frames = vec![0; tracks];
+    loop {
+        let mut callback_error = None;
+        let execution = executor.execute(&mut |results| {
+            let frame = callback_frames[results.metadata.track_index];
+            callback_frames[results.metadata.track_index] += 1;
+            let mut values = vec![0.0; results.emotions.values.len()];
+            if let Err(error) = results.emotions.copy_to(&mut values) {
+                callback_error = Some(io::Error::other(error));
+                return ControlFlow::Break(());
+            }
+            if let Err(error) = writer.push_f32(
+                record(
+                    "postprocess",
+                    "emotion",
+                    CallbackMetadata {
+                        kind: ModelKind::Emotion,
+                        track: results.metadata.track_index,
+                        inference: None,
+                        frame,
+                        timestamp: results.metadata.timestamp,
+                        next_timestamp: results.metadata.next_timestamp,
+                    },
+                    results.emotions.values.len(),
+                ),
+                &values,
+            ) {
+                callback_error = Some(error);
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        })?;
+        if let Some(error) = callback_error {
+            return Err(error.into());
+        }
+        let report = block_on(execution.wait_all())?;
+        match report.state {
+            ExecutionState::Complete => break,
+            ExecutionState::Progress => {}
+            ExecutionState::AwaitingInput => {
+                return Err("emotion executor is awaiting input".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn create_facade_geometry(
+    model: &Model,
+    tracks: usize,
+    seed: u64,
+) -> Result<FacadeGeometryExecutorBundle, Box<dyn std::error::Error>> {
+    let NetworkDocument::Geometry(network) = model.network() else {
+        return Err("geometry model schema is unavailable".into());
+    };
+    let config = match model.parameters(0)? {
+        ModelParameters::Geometry(value) => value,
+        _ => return Err("geometry config is unavailable".into()),
+    };
+    let frame_rate = FrameRate::new(30, 1)?;
+    let resources = match &network.params {
+        GeometryParameters::Regression(parameters) => (0..tracks)
+            .map(|_| {
+                let audio = std::sync::Arc::new(AudioAccumulator::new(
+                    match &network.audio_params {
+                        audio2face3d::common::GeometryAudioParameters::Regression(value) => {
+                            value.buffer_len
+                        }
+                        _ => {
+                            return Err(audio2face3d::Error::InvalidSchema(
+                                "regression audio schema is unavailable".into(),
+                            ));
+                        }
+                    },
+                    0,
+                )?);
+                let emotions = std::sync::Arc::new(
+                    EmotionAccumulator::new(parameters.explicit_emotions.len(), 30)
+                        .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?,
+                );
+                emotions
+                    .accumulate(0, &parameters.default_emotion)
+                    .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
+                emotions
+                    .close()
+                    .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
+                Ok(GeometryTrackResources { audio, emotions })
+            })
+            .collect::<Result<Vec<_>, audio2face3d::Error>>()?,
+        GeometryParameters::Diffusion(parameters) => (0..tracks)
+            .map(|_| {
+                let audio_len = match &network.audio_params {
+                    audio2face3d::common::GeometryAudioParameters::Diffusion(value) => {
+                        value.buffer_len
+                    }
+                    _ => {
+                        return Err(audio2face3d::Error::InvalidSchema(
+                            "diffusion audio schema is unavailable".into(),
+                        ));
+                    }
+                };
+                let audio = std::sync::Arc::new(AudioAccumulator::new(audio_len, 0)?);
+                let emotions = std::sync::Arc::new(
+                    EmotionAccumulator::new(parameters.emotions.len(), 300)
+                        .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?,
+                );
+                emotions
+                    .accumulate(0, &parameters.default_emotion)
+                    .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
+                emotions
+                    .close()
+                    .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
+                Ok(GeometryTrackResources { audio, emotions })
+            })
+            .collect::<Result<Vec<_>, audio2face3d::Error>>()?,
+    };
+    let common = audio2face3d::audio2face::GeometryExecutorCreationParameters {
+        tracks: resources,
+        device_ordinal: 0,
+        execution_option: GeometryExecutionOption::ALL,
+    };
+    let parameters = match &network.params {
+        GeometryParameters::Regression(_) => GeometryExecutorBundleCreationParameters::Regression(
+            RegressionGeometryExecutorCreationParameters {
+                model_path: model.descriptor_path().to_owned(),
+                common,
+                input_strength: config.input_strength,
+                frame_rate,
+                source_emotion_shot: config.source_shot.clone(),
+                source_emotion_frame: config
+                    .source_frame
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(0),
+            },
+        ),
+        GeometryParameters::Diffusion(_) => GeometryExecutorBundleCreationParameters::Diffusion(
+            DiffusionGeometryExecutorCreationParameters {
+                model_path: model.descriptor_path().to_owned(),
+                common,
+                input_strength: config.input_strength,
+                frame_rate,
+                identity_index: 0,
+                constant_noise: false,
+                noise_seed: seed,
+            },
+        ),
+    };
+    let mut bundle = block_on(GeometryExecutorBundleFactory::load(parameters))?;
+    match (&mut bundle, &network.params) {
+        (
+            FacadeGeometryExecutorBundle::Regression(executor),
+            GeometryParameters::Regression(parameters),
+        ) => {
+            executor.set_input_strength(config.input_strength)?;
+            for track in 0..tracks {
+                executor
+                    .set_implicit_emotion(track, &vec![0.0; parameters.implicit_emotion_len])?;
+            }
+        }
+        (FacadeGeometryExecutorBundle::Diffusion(executor), GeometryParameters::Diffusion(_)) => {
+            executor.set_input_strength(config.input_strength)?;
+            executor.set_identity_index(0)?;
+        }
+        _ => return Err("geometry bundle kind differs from the model".into()),
+    }
+    Ok(bundle)
+}
+
+fn execute_facade_geometry(
+    geometry: &mut FacadeGeometryExecutorBundle,
+    writer: &mut ArtifactWriter,
+    layer: &str,
+    _callback_frames: &mut [usize],
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let kind = geometry.kind();
+        let mut callback_error = None;
+        let mut callback = |results: GeometryResults<'_>| {
+            if callback_error.is_some() {
+                return ControlFlow::Break(());
+            }
+            if let Err(error) = write_facade_geometry_result(writer, layer, kind, results) {
+                callback_error = Some(error);
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let execution = match geometry {
+            FacadeGeometryExecutorBundle::Regression(executor) => {
+                audio2face3d::audio2face::GeometryExecutor::execute(
+                    executor,
+                    audio2face3d::audio2face::GeometryCallbacks {
+                        results: &mut callback,
+                        emotions: None,
+                    },
+                )?
+            }
+            FacadeGeometryExecutorBundle::Diffusion(executor) => {
+                audio2face3d::audio2face::GeometryExecutor::execute(
+                    executor,
+                    audio2face3d::audio2face::GeometryCallbacks {
+                        results: &mut callback,
+                        emotions: None,
+                    },
+                )?
+            }
+        };
+        if let Some(error) = callback_error {
+            return Err(error.into());
+        }
+        match block_on(execution.wait_all())?.state {
+            ExecutionState::Complete => return Ok(()),
+            ExecutionState::Progress => {}
+            ExecutionState::AwaitingInput => {
+                return Err("geometry executor is awaiting input".into());
+            }
+        }
+    }
+}
+
+fn write_facade_geometry_result(
+    writer: &mut ArtifactWriter,
+    layer: &str,
+    kind: ModelKind,
+    results: GeometryResults<'_>,
+) -> io::Result<()> {
+    let metadata = results.metadata;
+    let frame = copy_facade_geometry_result(results)?;
+    push_geometry(
+        writer,
+        layer,
+        CallbackMetadata {
+            kind,
+            track: metadata.track_index,
+            inference: None,
+            frame: metadata.frame_index,
+            timestamp: metadata.timestamp,
+            next_timestamp: metadata.next_timestamp,
+        },
+        &frame,
+    )
+}
+
+fn copy_facade_geometry_result(results: GeometryResults<'_>) -> io::Result<GeometryFrame> {
+    let copy = |component: Option<DeviceComponentResults<'_>>| {
+        component.map_or_else(
+            || Ok::<Vec<f32>, io::Error>(Vec::new()),
+            |component| {
+                let mut values = vec![0.0; component.values.len()];
+                component.copy_to(&mut values).map_err(io::Error::other)?;
+                Ok(values)
+            },
+        )
+    };
+    let skin = copy(results.skin)?;
+    let tongue = copy(results.tongue)?;
+    let jaw = copy(results.jaw)?;
+    let eyes = copy(results.eyes)?;
+    if jaw.len() != 16 || eyes.len() != 6 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unexpected geometry component sizes: jaw={}, eyes={}",
+                jaw.len(),
+                eyes.len()
+            ),
+        ));
+    }
+    Ok(GeometryFrame {
+        skin,
+        tongue,
+        jaw_transform: jaw.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "jaw transform must contain 16 values",
+            )
+        })?,
+        eyes_rotation: audio2face3d::animation::EyesRotation {
+            right: eyes[..3].try_into().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "right eye rotation must contain 3 values",
+                )
+            })?,
+            left: eyes[3..].try_into().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "left eye rotation must contain 3 values",
+                )
+            })?,
+        },
+    })
 }
 
 fn capture_blendshape(
@@ -305,62 +649,218 @@ fn capture_blendshape(
     kind: BlendshapeSolverKind,
     writer: &mut ArtifactWriter,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let options = options(tracks, seed);
-    let mut bundle = BlendshapeExecutorBundle::load(model, options, kind)?;
-    for track in 0..tracks {
-        configure_track_parameters_bundle(&mut bundle, model, track)?;
-        bundle.accumulate_audio(track, samples)?;
-        bundle.close_audio(track)?;
+    let geometry = create_facade_geometry(model, tracks, seed)?;
+    let skin = load_reference_blendshape_component(model, "skin")?;
+    let tongue = load_reference_blendshape_component(model, "tongue")?;
+    let skin_names = skin
+        .as_ref()
+        .map(|component| {
+            component
+                .data
+                .pose_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let tongue_names = tongue
+        .as_ref()
+        .map(|component| {
+            component
+                .data
+                .pose_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let components = BlendshapeSolveExecutorCreationParameters {
+        skin: skin
+            .as_ref()
+            .map(|component| component.creation_parameters(&skin_names)),
+        tongue: tongue
+            .as_ref()
+            .map(|component| component.creation_parameters(&tongue_names)),
+    };
+    match kind {
+        BlendshapeSolverKind::Cpu => {
+            let mut executor = geometry
+                .try_into_host_blendshape(HostBlendshapeSolveExecutorCreationParameters {
+                    components,
+                    job_runner: None,
+                })
+                .map_err(|failure| failure.error)?;
+            for track in 0..tracks {
+                executor.audio_accumulator(track)?.accumulate(samples)?;
+                executor.audio_accumulator(track)?.close()?;
+            }
+            capture_host_blendshape(&mut executor, model.kind(), writer)?;
+        }
+        BlendshapeSolverKind::Gpu => {
+            let mut executor = geometry
+                .try_into_device_blendshape(DeviceBlendshapeSolveExecutorCreationParameters {
+                    components,
+                })
+                .map_err(|failure| failure.error)?;
+            for track in 0..tracks {
+                executor.audio_accumulator(track)?.accumulate(samples)?;
+                executor.audio_accumulator(track)?.close()?;
+            }
+            capture_device_blendshape(&mut executor, model.kind(), writer)?;
+        }
     }
-    let mut callback_frames = vec![0_usize; tracks];
+    Ok(())
+}
+
+struct ReferenceBlendshapeComponent {
+    data: BlendshapeData,
+    config: BlendshapeConfig,
+}
+
+impl ReferenceBlendshapeComponent {
+    fn creation_parameters<'a>(
+        &'a self,
+        pose_names: &'a [&'a str],
+    ) -> BlendshapeSolveComponentParameters<'a> {
+        BlendshapeSolveComponentParameters {
+            params: BlendshapeSolverParams {
+                l1_regularization: self.config.l1_regularization,
+                l2_regularization: self.config.l2_regularization,
+                symmetry_regularization: self.config.symmetry_regularization,
+                temporal_regularization: self.config.temporal_regularization,
+                template_bounding_box_size: self.config.template_bb_size,
+                tolerance: self.config.tolerance,
+            },
+            config: BlendshapeSolverConfigView {
+                active_poses: &self.config.active_poses,
+                cancel_poses: &self.config.cancel_poses,
+                symmetry_poses: &self.config.symmetry_poses,
+                multipliers: &self.config.multipliers,
+                offsets: &self.config.offsets,
+            },
+            data: BlendshapeSolverDataView {
+                neutral_pose: &self.data.neutral_pose,
+                delta_poses: &self.data.delta_poses,
+                pose_mask: self.data.pose_mask.as_deref(),
+                pose_names,
+            },
+        }
+    }
+}
+
+fn load_reference_blendshape_component(
+    model: &Model,
+    name: &str,
+) -> Result<Option<ReferenceBlendshapeComponent>, Box<dyn std::error::Error>> {
+    let paths = model.blendshape_paths(0)?;
+    let Some(paths) = paths.get(name) else {
+        return Ok(None);
+    };
+    Ok(Some(ReferenceBlendshapeComponent {
+        data: BlendshapeData::load_npz(&paths.data)?,
+        config: load_blendshape_config(&paths.config)?.blendshape_params,
+    }))
+}
+
+fn capture_host_blendshape(
+    executor: &mut audio2face3d::audio2face::HostBlendshapeSolveExecutor,
+    kind: ModelKind,
+    writer: &mut ArtifactWriter,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, Mutex};
+
+    loop {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let callback_results = Arc::clone(&captured);
+        let execution = executor.execute(Arc::new(move |event| {
+            callback_results
+                .lock()
+                .expect("reference BlendShape callback mutex poisoned")
+                .push(event.map(|result| (result.metadata, result.weights.to_vec())));
+        }))?;
+        let report = block_on(execution.wait_all())?;
+        let mut captured = captured
+            .lock()
+            .map_err(|_| "reference BlendShape callback mutex poisoned")?;
+        captured.sort_by_key(|event| {
+            event
+                .as_ref()
+                .map(|(metadata, _)| (metadata.frame_index, metadata.track_index))
+                .unwrap_or((usize::MAX, usize::MAX))
+        });
+        for event in captured.drain(..) {
+            let (metadata, weights) = event?;
+            push_blendshape(
+                writer,
+                facade_callback_metadata(kind, metadata),
+                &weights,
+                &[],
+            )?;
+        }
+        match report.state {
+            ExecutionState::Complete => return Ok(()),
+            ExecutionState::Progress => {}
+            ExecutionState::AwaitingInput => {
+                return Err("host BlendShape executor is awaiting input".into());
+            }
+        }
+    }
+}
+
+fn capture_device_blendshape(
+    executor: &mut audio2face3d::audio2face::DeviceBlendshapeSolveExecutor,
+    kind: ModelKind,
+    writer: &mut ArtifactWriter,
+) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let mut callback_error = None;
-        let status = bundle.execute(|mut metadata, output| {
-            metadata.frame = callback_frames[metadata.track];
-            callback_frames[metadata.track] += 1;
-            let result = match output {
-                BlendshapeOutput::Host {
-                    skin_weights,
-                    tongue_weights,
-                } => push_blendshape(writer, metadata, skin_weights, tongue_weights),
-                BlendshapeOutput::Device {
-                    skin_weights,
-                    tongue_weights,
-                    stream,
-                } => {
-                    let mut skin = vec![0.0; skin_weights.map_or(0, |values| values.len())];
-                    let mut tongue = vec![0.0; tongue_weights.map_or(0, |values| values.len())];
-                    skin_weights
-                        .map(|values| values.copy_to(&mut skin, stream))
-                        .transpose()
-                        .and_then(|_| {
-                            tongue_weights
-                                .map(|values| values.copy_to(&mut tongue, stream))
-                                .transpose()
-                        })
-                        .map_err(io::Error::other)
-                        .and_then(|_| push_blendshape(writer, metadata, &skin, &tongue))
-                }
-            };
-            if let Err(error) = result {
+        let execution = executor.execute(&mut |result| {
+            let mut weights = vec![0.0; result.weights.values.len()];
+            let captured = result
+                .weights
+                .copy_to(&mut weights)
+                .map_err(io::Error::other)
+                .and_then(|_| {
+                    push_blendshape(
+                        writer,
+                        facade_callback_metadata(kind, result.metadata),
+                        &weights,
+                        &[],
+                    )
+                });
+            if let Err(error) = captured {
                 callback_error = Some(error);
-                false
+                ControlFlow::Break(())
             } else {
-                true
+                ControlFlow::Continue(())
             }
         })?;
         if let Some(error) = callback_error {
             return Err(error.into());
         }
-        if matches!(status, PipelineStatus::Complete) {
-            break;
-        }
-        if matches!(status, PipelineStatus::Interrupted) {
-            return Err("blendshape capture was interrupted".into());
+        let report = block_on(execution.wait_all())?;
+        match report.state {
+            ExecutionState::Complete => return Ok(()),
+            ExecutionState::Progress => {}
+            ExecutionState::AwaitingInput => {
+                return Err("device BlendShape executor is awaiting input".into());
+            }
         }
     }
-    bundle.wait()?;
-    Ok(())
+}
+
+fn facade_callback_metadata(
+    kind: ModelKind,
+    metadata: audio2face3d::audio2x::CallbackMetadata,
+) -> CallbackMetadata {
+    CallbackMetadata {
+        kind,
+        track: metadata.track_index,
+        inference: None,
+        frame: metadata.frame_index,
+        timestamp: metadata.timestamp,
+        next_timestamp: metadata.next_timestamp,
+    }
 }
 
 fn capture_interactive(
@@ -371,34 +871,22 @@ fn capture_interactive(
     all_frames: bool,
     writer: &mut ArtifactWriter,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut bundle = InteractiveGeometryExecutorBundle::load(
-        model,
-        InteractivePipelineOptions {
-            diffusion_seed: seed,
-            ..InteractivePipelineOptions::default()
-        },
-    )?;
-    bundle.audio().accumulate(samples)?;
-    bundle.audio().close()?;
-    bundle.emotions().close()?;
-    let total = bundle.total_frames()?;
+    let mut bundle = create_interactive_facade_geometry(model, seed, samples)?;
+    let total = match &bundle {
+        FacadeInteractiveGeometryExecutorBundle::Regression(executor) => {
+            InteractiveExecutor::total_frame_count(executor.as_ref())?
+        }
+        FacadeInteractiveGeometryExecutorBundle::Diffusion(executor) => {
+            InteractiveExecutor::total_frame_count(executor.as_ref())?
+        }
+    };
     let frame = selected_frame.unwrap_or(total / 2);
     if frame >= total {
         return Err(format!("selected frame {frame} is outside {total} frames").into());
     }
     if all_frames {
-        let mut callback_error = None;
-        bundle.compute_all_frames(|metadata, geometry| {
-            if let Err(error) = push_interactive(writer, "interactive-all", metadata, geometry) {
-                callback_error = Some(error);
-                false
-            } else {
-                true
-            }
-        })?;
-        if let Some(error) = callback_error {
-            return Err(error.into());
-        }
+        let report = compute_interactive_geometry(&mut bundle, None, "interactive-all", writer)?;
+        ensure_interactive_complete(report)?;
     } else {
         for (layer, invalidate) in [
             ("interactive-random", None),
@@ -409,25 +897,22 @@ fn capture_interactive(
             ),
         ] {
             if let Some(invalidation) = invalidate {
-                bundle.invalidate(invalidation);
+                match &mut bundle {
+                    FacadeInteractiveGeometryExecutorBundle::Regression(executor) => {
+                        executor.invalidate_geometry(invalidation)?;
+                    }
+                    FacadeInteractiveGeometryExecutorBundle::Diffusion(executor) => {
+                        executor.invalidate_geometry(invalidation)?;
+                    }
+                }
                 *writer
                     .manifest_mut()
                     .counters
                     .entry("invalidation.skin".into())
                     .or_default() += 1;
             }
-            let mut callback_error = None;
-            bundle.compute_frame(frame, |metadata, geometry| {
-                if let Err(error) = push_interactive(writer, layer, metadata, geometry) {
-                    callback_error = Some(error);
-                    false
-                } else {
-                    true
-                }
-            })?;
-            if let Some(error) = callback_error {
-                return Err(error.into());
-            }
+            let report = compute_interactive_geometry(&mut bundle, Some(frame), layer, writer)?;
+            ensure_interactive_complete(report)?;
         }
     }
     writer
@@ -435,6 +920,142 @@ fn capture_interactive(
         .counters
         .insert("total_frames".into(), total as u64);
     Ok(())
+}
+
+fn create_interactive_facade_geometry(
+    model: &Model,
+    seed: u64,
+    samples: &[f32],
+) -> Result<FacadeInteractiveGeometryExecutorBundle, Box<dyn std::error::Error>> {
+    let NetworkDocument::Geometry(network) = model.network() else {
+        return Err("geometry model schema is unavailable".into());
+    };
+    let config = match model.parameters(0)? {
+        ModelParameters::Geometry(value) => value,
+        _ => return Err("geometry config is unavailable".into()),
+    };
+    let (audio_size, emotion_size, default_emotion) = match (&network.params, &network.audio_params)
+    {
+        (
+            GeometryParameters::Regression(parameters),
+            audio2face3d::common::GeometryAudioParameters::Regression(audio),
+        ) => (
+            audio.buffer_len,
+            parameters.explicit_emotions.len(),
+            parameters.default_emotion.as_slice(),
+        ),
+        (
+            GeometryParameters::Diffusion(parameters),
+            audio2face3d::common::GeometryAudioParameters::Diffusion(audio),
+        ) => (
+            audio.buffer_len,
+            parameters.emotions.len(),
+            parameters.default_emotion.as_slice(),
+        ),
+        _ => return Err("geometry model schema is inconsistent".into()),
+    };
+    let audio = std::sync::Arc::new(AudioAccumulator::new(audio_size, 0)?);
+    audio.accumulate(samples)?;
+    audio.close()?;
+    let emotions = std::sync::Arc::new(
+        EmotionAccumulator::new(emotion_size, 300)
+            .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?,
+    );
+    emotions
+        .accumulate(0, default_emotion)
+        .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
+    emotions
+        .close()
+        .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
+    let common = GeometryInteractiveExecutorCreationParameters {
+        audio,
+        emotions,
+        device_ordinal: 0,
+        execution_option: GeometryExecutionOption::ALL,
+    };
+    let frame_rate = FrameRate::new(30, 1)?;
+    let parameters = match &network.params {
+        GeometryParameters::Regression(_) => {
+            InteractiveGeometryBundleCreationParameters::Regression(
+                RegressionGeometryInteractiveExecutorCreationParameters {
+                    model_path: model.descriptor_path().to_owned(),
+                    common,
+                    input_strength: config.input_strength,
+                    frame_rate,
+                    source_emotion_shot: config.source_shot.clone(),
+                    source_emotion_frame: config
+                        .source_frame
+                        .and_then(|value| usize::try_from(value).ok())
+                        .unwrap_or(0),
+                    batch_size: 1,
+                },
+            )
+        }
+        GeometryParameters::Diffusion(_) => InteractiveGeometryBundleCreationParameters::Diffusion(
+            DiffusionGeometryInteractiveExecutorCreationParameters {
+                model_path: model.descriptor_path().to_owned(),
+                common,
+                input_strength: config.input_strength,
+                identity_index: 0,
+                constant_noise: false,
+                preview_inference_count: 0,
+                noise_seed: seed,
+            },
+        ),
+    };
+    Ok(block_on(InteractiveGeometryExecutorBundleFactory::load(
+        parameters,
+    ))?)
+}
+
+fn compute_interactive_geometry(
+    bundle: &mut FacadeInteractiveGeometryExecutorBundle,
+    frame: Option<usize>,
+    layer: &str,
+    writer: &mut ArtifactWriter,
+) -> Result<InteractiveExecutionReport, Box<dyn std::error::Error>> {
+    let kind = match bundle {
+        FacadeInteractiveGeometryExecutorBundle::Regression(_) => ModelKind::Regression,
+        FacadeInteractiveGeometryExecutorBundle::Diffusion(_) => ModelKind::Diffusion,
+    };
+    let mut callback_error = None;
+    let mut callback = |results: GeometryResults<'_>| {
+        if callback_error.is_some() {
+            return ControlFlow::Break(());
+        }
+        match write_facade_geometry_result(writer, layer, kind, results) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => {
+                callback_error = Some(error);
+                ControlFlow::Break(())
+            }
+        }
+    };
+    let report = match bundle {
+        FacadeInteractiveGeometryExecutorBundle::Regression(executor) => match frame {
+            Some(frame) => block_on(executor.compute_frame(frame, &mut callback))?,
+            None => block_on(executor.compute_all_frames(&mut callback))?,
+        },
+        FacadeInteractiveGeometryExecutorBundle::Diffusion(executor) => match frame {
+            Some(frame) => block_on(executor.compute_frame(frame, &mut callback))?,
+            None => block_on(executor.compute_all_frames(&mut callback))?,
+        },
+    };
+    if let Some(error) = callback_error {
+        return Err(error.into());
+    }
+    Ok(report)
+}
+
+fn ensure_interactive_complete(
+    report: InteractiveExecutionReport,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match report.status {
+        audio2face3d::audio2x::InteractiveExecutionStatus::Complete => Ok(()),
+        audio2face3d::audio2x::InteractiveExecutionStatus::Interrupted => {
+            Err("interactive geometry capture was interrupted".into())
+        }
+    }
 }
 
 fn capture_interactive_blendshape(
@@ -445,24 +1066,27 @@ fn capture_interactive_blendshape(
     all_frames: bool,
     writer: &mut ArtifactWriter,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut bundle = InteractiveGpuBlendshapeExecutorBundle::load(
-        model,
-        InteractivePipelineOptions {
-            diffusion_seed: seed,
-            ..InteractivePipelineOptions::default()
-        },
-    )?;
-    bundle.geometry().audio().accumulate(samples)?;
-    bundle.geometry().audio().close()?;
-    bundle.geometry().emotions().close()?;
-    let total = bundle.geometry().total_frames()?;
+    let mut geometry = create_interactive_facade_geometry(model, seed, samples)?;
+    let total = match &geometry {
+        FacadeInteractiveGeometryExecutorBundle::Regression(executor) => {
+            InteractiveExecutor::total_frame_count(executor.as_ref())?
+        }
+        FacadeInteractiveGeometryExecutorBundle::Diffusion(executor) => {
+            InteractiveExecutor::total_frame_count(executor.as_ref())?
+        }
+    };
     let frame = selected_frame.unwrap_or(total / 2);
     if frame >= total {
         return Err(format!("selected frame {frame} is outside {total} frames").into());
     }
+    let mut blendshape = create_interactive_device_blendshape(model)?;
     if all_frames {
+        let geometry_frames = collect_interactive_geometry(&mut geometry, None)?;
         let mut callback_error = None;
-        bundle.compute_all_frames(|metadata, output| {
+        let mut callback_frame = 0_usize;
+        let report = block_on(blendshape.compute_all_frames(&geometry_frames, |output| {
+            let metadata = interactive_geometry_metadata(model.sample_rate(), callback_frame);
+            callback_frame += 1;
             if let Err(error) = push_interactive_gpu_blendshape(
                 writer,
                 "interactive-blendshape-all",
@@ -474,10 +1098,11 @@ fn capture_interactive_blendshape(
             } else {
                 true
             }
-        })?;
+        }))?;
         if let Some(error) = callback_error {
             return Err(error.into());
         }
+        ensure_interactive_complete(report)?;
     } else {
         for (layer, invalidate) in [
             ("interactive-blendshape-random", false),
@@ -485,36 +1110,131 @@ fn capture_interactive_blendshape(
             ("interactive-blendshape-invalidation", true),
         ] {
             if invalidate {
-                bundle.invalidate_blendshape(
-                    audio2face3d::animation::BlendshapeInvalidationLayer::Weights,
-                );
+                match &mut geometry {
+                    FacadeInteractiveGeometryExecutorBundle::Regression(executor) => {
+                        executor.invalidate_geometry(GeometryInvalidationLayer::Skin)?;
+                    }
+                    FacadeInteractiveGeometryExecutorBundle::Diffusion(executor) => {
+                        executor.invalidate_geometry(GeometryInvalidationLayer::Skin)?;
+                    }
+                }
+                blendshape.invalidate_blendshape(BlendshapeInvalidationLayer::BlendshapeWeights)?;
                 *writer
                     .manifest_mut()
                     .counters
                     .entry("invalidation.weights".into())
                     .or_default() += 1;
             }
+            let geometry_frame = collect_interactive_geometry(&mut geometry, Some(frame))?
+                .into_iter()
+                .next()
+                .ok_or("interactive geometry callback returned no frame")?;
             let mut callback_error = None;
-            bundle.compute_frame(frame, |metadata, output| {
-                if let Err(error) = push_interactive_gpu_blendshape(writer, layer, metadata, output)
-                {
-                    callback_error = Some(error);
-                    false
-                } else {
-                    true
-                }
-            })?;
+            let report =
+                block_on(
+                    blendshape.compute_frame(frame, total, &geometry_frame, |output| {
+                        let metadata = interactive_geometry_metadata(model.sample_rate(), frame);
+                        if let Err(error) =
+                            push_interactive_gpu_blendshape(writer, layer, metadata, output)
+                        {
+                            callback_error = Some(error);
+                            false
+                        } else {
+                            true
+                        }
+                    }),
+                )?;
             if let Some(error) = callback_error {
                 return Err(error.into());
             }
+            ensure_interactive_complete(report)?;
         }
     }
-    bundle.wait()?;
     writer
         .manifest_mut()
         .counters
         .insert("total_frames".into(), total as u64);
     Ok(())
+}
+
+fn interactive_geometry_metadata(
+    sample_rate: usize,
+    frame: usize,
+) -> audio2face3d::animation::InteractiveGeometryMetadata {
+    let timestamp = frame.saturating_mul(sample_rate) / 30;
+    let next_timestamp = frame.saturating_add(1).saturating_mul(sample_rate) / 30;
+    audio2face3d::animation::InteractiveGeometryMetadata {
+        frame,
+        inference: None,
+        timestamp: i64::try_from(timestamp).unwrap_or(i64::MAX),
+        next_timestamp: i64::try_from(next_timestamp).unwrap_or(i64::MAX),
+    }
+}
+
+fn create_interactive_device_blendshape(
+    model: &Model,
+) -> Result<DeviceBlendshapeSolveInteractiveExecutor, Box<dyn std::error::Error>> {
+    let device = GpuDevice::new(0)?;
+    let stream = device.create_stream()?;
+    let skin = load_reference_blendshape_component(model, "skin")?
+        .map(|component| {
+            GpuBlendshapeSolver::new(&device, &stream, component.data, &component.config)
+        })
+        .transpose()?;
+    let tongue = load_reference_blendshape_component(model, "tongue")?
+        .map(|component| {
+            GpuBlendshapeSolver::new(&device, &stream, component.data, &component.config)
+        })
+        .transpose()?;
+    let layer = InteractiveGpuBlendshapeLayer::with_default_cache(
+        std::sync::Arc::clone(&device),
+        stream,
+        skin,
+        tongue,
+    )?;
+    Ok(DeviceBlendshapeSolveInteractiveExecutor::from_layer(
+        layer,
+        model.sample_rate(),
+        FrameRate::new(30, 1)?,
+    ))
+}
+
+fn collect_interactive_geometry(
+    bundle: &mut FacadeInteractiveGeometryExecutorBundle,
+    frame: Option<usize>,
+) -> Result<Vec<RegressionGeometry>, Box<dyn std::error::Error>> {
+    let mut frames = Vec::new();
+    let mut callback_error = None;
+    let mut callback = |results: GeometryResults<'_>| match copy_facade_geometry_result(results) {
+        Ok(frame) => {
+            frames.push(RegressionGeometry {
+                skin: frame.skin,
+                tongue: frame.tongue,
+                jaw_transform: frame.jaw_transform,
+                eyes_rotation: frame.eyes_rotation,
+            });
+            ControlFlow::Continue(())
+        }
+        Err(error) => {
+            callback_error = Some(error);
+            ControlFlow::Break(())
+        }
+    };
+    let report = match bundle {
+        FacadeInteractiveGeometryExecutorBundle::Regression(executor) => match frame {
+            Some(frame) => block_on(executor.compute_frame(frame, &mut callback))?,
+            None => block_on(executor.compute_all_frames(&mut callback))?,
+        },
+        FacadeInteractiveGeometryExecutorBundle::Diffusion(executor) => match frame {
+            Some(frame) => block_on(executor.compute_frame(frame, &mut callback))?,
+            None => block_on(executor.compute_all_frames(&mut callback))?,
+        },
+    };
+    if let Some(error) = callback_error {
+        return Err(error.into());
+    }
+    ensure_interactive_complete(report)?;
+    Ok(frames)
 }
 
 fn push_interactive_gpu_blendshape(
@@ -550,66 +1270,6 @@ fn push_interactive_gpu_blendshape(
         },
         &weights,
     )
-}
-
-fn execute_to_completion(
-    pipeline: &mut TensorRtPipeline,
-    mut callback: impl for<'a> FnMut(CallbackMetadata, PipelineOutput<'a>) -> io::Result<()>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    loop {
-        let mut callback_error = None;
-        let status = pipeline.execute(|metadata, output| {
-            if let Err(error) = callback(metadata, output) {
-                callback_error = Some(error);
-                false
-            } else {
-                true
-            }
-        })?;
-        if let Some(error) = callback_error {
-            return Err(error.into());
-        }
-        match status {
-            PipelineStatus::Complete => return Ok(()),
-            PipelineStatus::Interrupted => return Err("reference capture was interrupted".into()),
-            PipelineStatus::AwaitingInput => {
-                return Err("closed fixture unexpectedly needs more input".into());
-            }
-            PipelineStatus::Executed { .. } => {}
-        }
-    }
-}
-
-fn execute_geometry_to_completion(
-    geometry: &mut ComposedGeometryExecutorBundle<GeometryExecutorBundle>,
-    writer: &mut ArtifactWriter,
-    layer: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut callback_frames = vec![0_usize; geometry.track_count()];
-    loop {
-        let mut callback_error = None;
-        let status = geometry.execute(|mut metadata, frame| {
-            metadata.frame = callback_frames[metadata.track];
-            callback_frames[metadata.track] += 1;
-            if let Err(error) = push_geometry(writer, layer, metadata, frame) {
-                callback_error = Some(error);
-                false
-            } else {
-                true
-            }
-        })?;
-        if let Some(error) = callback_error {
-            return Err(error.into());
-        }
-        match status {
-            PipelineStatus::Complete => return Ok(()),
-            PipelineStatus::Interrupted => return Err("geometry capture was interrupted".into()),
-            PipelineStatus::AwaitingInput => {
-                return Err("closed fixture unexpectedly needs more input".into());
-            }
-            PipelineStatus::Executed { .. } => {}
-        }
-    }
 }
 
 fn push_geometry(
@@ -648,24 +1308,6 @@ fn push_blendshape(
     )
 }
 
-fn push_interactive(
-    writer: &mut ArtifactWriter,
-    layer: &str,
-    metadata: audio2face3d::animation::InteractiveGeometryMetadata,
-    geometry: &audio2face3d::animation::RegressionGeometry,
-) -> io::Result<()> {
-    let metadata = CallbackMetadata {
-        kind: ModelKind::Regression,
-        track: 0,
-        inference: None,
-        frame: metadata.frame,
-        timestamp: metadata.timestamp,
-        next_timestamp: metadata.next_timestamp,
-    };
-    let frame = GeometryFrame::from(geometry.clone());
-    push_geometry(writer, layer, metadata, &frame)
-}
-
 fn record(layer: &str, component: &str, metadata: CallbackMetadata, len: usize) -> RecordMetadata {
     RecordMetadata {
         layer: layer.into(),
@@ -676,95 +1318,6 @@ fn record(layer: &str, component: &str, metadata: CallbackMetadata, len: usize) 
         timestamp: Some(metadata.timestamp),
         next_timestamp: Some(metadata.next_timestamp),
         shape: vec![len],
-    }
-}
-
-fn configure_tracks(
-    pipeline: &mut TensorRtPipeline,
-    model: &Model,
-    tracks: usize,
-    samples: &[f32],
-) -> Result<(), audio2face3d::Error> {
-    for track in 0..tracks {
-        configure_track_parameters(pipeline, model, track)?;
-        pipeline.accumulate_audio(track, samples)?;
-        pipeline.close_audio(track)?;
-    }
-    Ok(())
-}
-
-fn configure_geometry(
-    geometry: &mut ComposedGeometryExecutorBundle<GeometryExecutorBundle>,
-    model: &Model,
-    tracks: usize,
-    samples: &[f32],
-) -> Result<(), audio2face3d::Error> {
-    for track in 0..tracks {
-        if let Some(parameters) = geometry_parameters(model, track) {
-            geometry.set_track_parameters(track, parameters)?;
-        }
-        geometry.accumulate_audio(track, samples)?;
-        geometry.close_audio(track)?;
-    }
-    Ok(())
-}
-
-struct ReferenceGeometryObserver(Rc<Cell<u64>>);
-
-impl GeometryObserver for ReferenceGeometryObserver {
-    fn observe(&mut self, _: CallbackMetadata, _: &GeometryFrame) -> audio2face3d::Result<()> {
-        self.0.set(self.0.get() + 1);
-        Ok(())
-    }
-}
-
-fn configure_track_parameters_bundle(
-    bundle: &mut BlendshapeExecutorBundle,
-    model: &Model,
-    track: usize,
-) -> Result<(), audio2face3d::Error> {
-    if let Some(parameters) = geometry_parameters(model, track) {
-        bundle.set_track_parameters(track, parameters)?;
-    }
-    Ok(())
-}
-
-fn configure_track_parameters(
-    pipeline: &mut TensorRtPipeline,
-    model: &Model,
-    track: usize,
-) -> Result<(), audio2face3d::Error> {
-    if let Some(parameters) = geometry_parameters(model, track) {
-        pipeline.set_track_parameters(track, parameters)?;
-    }
-    Ok(())
-}
-
-fn geometry_parameters(model: &Model, _track: usize) -> Option<TrackParameters> {
-    let NetworkDocument::Geometry(network) = model.network() else {
-        return None;
-    };
-    let input_strength = match model.parameters(0).ok()? {
-        ModelParameters::Geometry(parameters) => parameters.input_strength,
-        ModelParameters::Emotion(_) => return None,
-    };
-    match &network.params {
-        GeometryParameters::Regression(parameters) => Some(TrackParameters::Regression {
-            input_strength,
-            implicit_emotion: vec![0.0; parameters.implicit_emotion_len],
-        }),
-        GeometryParameters::Diffusion(_) => Some(TrackParameters::Diffusion {
-            input_strength,
-            identity_index: 0,
-        }),
-    }
-}
-
-fn options(tracks: usize, seed: u64) -> PipelineOptions {
-    PipelineOptions {
-        track_count: tracks,
-        diffusion_seed: seed,
-        ..PipelineOptions::default()
     }
 }
 

@@ -1,4 +1,6 @@
 #[cfg(feature = "runtime")]
+mod async_util;
+#[cfg(feature = "runtime")]
 mod benchmark_command;
 mod progress;
 mod raw_engine;

@@ -41,6 +41,9 @@ pub use accumulator::{DeviceAudioAccumulatorExt, DeviceFloatAccumulatorExt};
 pub use borrowed::{CudaStreamRef, DeviceView};
 
 #[cfg(feature = "cuda")]
+pub(crate) use native::copy_device_view_to_host;
+
+#[cfg(feature = "cuda")]
 pub use native::{
     CublasFence, CublasHandle, CublasTranspose, CudaEvent, CudaFunction, CudaModule, CudaStream,
     CurandFence, CurandHandle, DeviceBuffer, GpuDevice, PcaDimensions,

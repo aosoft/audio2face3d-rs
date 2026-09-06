@@ -12,9 +12,15 @@ use crate::audio2face::diffusion::{
     DiffusionGeometryExecutor, DiffusionGeometryExecutorCreationParameters,
     DiffusionGeometryExecutorFactory,
 };
+use crate::audio2face::diffusion::{
+    DiffusionGeometryInteractiveExecutor, DiffusionGeometryInteractiveExecutorCreationParameters,
+    DiffusionGeometryInteractiveExecutorFactory,
+};
 use crate::audio2face::regression::{
     RegressionGeometryExecutor, RegressionGeometryExecutorCreationParameters,
-    RegressionGeometryExecutorFactory,
+    RegressionGeometryExecutorFactory, RegressionGeometryInteractiveExecutor,
+    RegressionGeometryInteractiveExecutorCreationParameters,
+    RegressionGeometryInteractiveExecutorFactory,
 };
 use crate::audio2face::{
     DeviceBlendshapeSolveExecutor, DeviceBlendshapeSolveExecutorCreationParameters,
@@ -49,6 +55,92 @@ pub enum GeometryExecutorBundleCreationParameters {
 pub enum GeometryExecutorBundle {
     Regression(RegressionGeometryExecutor),
     Diffusion(DiffusionGeometryExecutor),
+}
+
+pub enum InteractiveGeometryExecutorRef<'a> {
+    Regression(&'a RegressionGeometryInteractiveExecutor),
+    Diffusion(&'a DiffusionGeometryInteractiveExecutor),
+}
+
+pub enum InteractiveGeometryExecutorMut<'a> {
+    Regression(&'a mut RegressionGeometryInteractiveExecutor),
+    Diffusion(&'a mut DiffusionGeometryInteractiveExecutor),
+}
+
+pub enum InteractiveGeometryBundleCreationParameters {
+    Regression(RegressionGeometryInteractiveExecutorCreationParameters),
+    Diffusion(DiffusionGeometryInteractiveExecutorCreationParameters),
+}
+
+/// Closed, non-generic interactive geometry bundle backed by completed
+/// model-specific facades.
+pub enum InteractiveGeometryExecutorBundle {
+    // Both completed interactive executors exceed one KiB. Indirection keeps
+    // runtime model selection from inheriting either executor's stack size.
+    Regression(Box<RegressionGeometryInteractiveExecutor>),
+    Diffusion(Box<DiffusionGeometryInteractiveExecutor>),
+}
+
+impl InteractiveGeometryExecutorBundle {
+    pub fn executor(&self) -> InteractiveGeometryExecutorRef<'_> {
+        match self {
+            Self::Regression(executor) => InteractiveGeometryExecutorRef::Regression(executor),
+            Self::Diffusion(executor) => InteractiveGeometryExecutorRef::Diffusion(executor),
+        }
+    }
+
+    pub fn executor_mut(&mut self) -> InteractiveGeometryExecutorMut<'_> {
+        match self {
+            Self::Regression(executor) => InteractiveGeometryExecutorMut::Regression(executor),
+            Self::Diffusion(executor) => InteractiveGeometryExecutorMut::Diffusion(executor),
+        }
+    }
+
+    pub fn cuda_stream(&self) -> &CudaStream {
+        match self {
+            Self::Regression(executor) => executor.cuda_stream(),
+            Self::Diffusion(executor) => executor.cuda_stream(),
+        }
+    }
+
+    pub fn audio_accumulator(&self) -> &Arc<AudioAccumulator> {
+        match self {
+            Self::Regression(executor) => executor.audio_accumulator(),
+            Self::Diffusion(executor) => executor.audio_accumulator(),
+        }
+    }
+
+    pub fn emotion_accumulator(&self) -> &Arc<EmotionAccumulator> {
+        match self {
+            Self::Regression(executor) => executor.emotion_accumulator(),
+            Self::Diffusion(executor) => executor.emotion_accumulator(),
+        }
+    }
+}
+
+pub struct InteractiveGeometryExecutorBundleFactory;
+
+impl InteractiveGeometryExecutorBundleFactory {
+    pub fn load(
+        parameters: InteractiveGeometryBundleCreationParameters,
+    ) -> ExecutorFuture<'static, InteractiveGeometryExecutorBundle> {
+        Box::pin(async move {
+            match parameters {
+                InteractiveGeometryBundleCreationParameters::Regression(parameters) => {
+                    RegressionGeometryInteractiveExecutorFactory::load(parameters)
+                        .await
+                        .map(Box::new)
+                        .map(InteractiveGeometryExecutorBundle::Regression)
+                }
+                InteractiveGeometryBundleCreationParameters::Diffusion(parameters) => {
+                    DiffusionGeometryInteractiveExecutorFactory::load(parameters)
+                        .await
+                        .map(Box::new)
+                        .map(InteractiveGeometryExecutorBundle::Diffusion)
+                }
+            }
+        })
+    }
 }
 
 /// Completed BlendShape executor borrowed from an owning bundle.

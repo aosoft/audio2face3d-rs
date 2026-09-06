@@ -290,6 +290,17 @@ pub struct DeviceComponentResults<'a> {
     pub stream: CudaStreamRef<'a>,
 }
 
+#[cfg(feature = "cuda")]
+impl DeviceComponentResults<'_> {
+    /// Copies this callback-scoped device result into caller-owned host memory.
+    ///
+    /// The copy is enqueued on the result's producer stream and synchronized
+    /// before returning, so `destination` is immediately ready for CPU use.
+    pub fn copy_to(&self, destination: &mut [f32]) -> Result<()> {
+        crate::cuda::copy_device_view_to_host(self.values, destination, self.stream)
+    }
+}
+
 /// Completion handle for a single synchronously started execution.
 ///
 /// Corresponds to `Execute`/host BlendShape `Wait(track)` completion in

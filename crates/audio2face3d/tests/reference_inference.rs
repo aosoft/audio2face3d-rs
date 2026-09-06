@@ -90,6 +90,9 @@ struct ReferenceTensorSpec {
 #[test]
 #[ignore = "requires a local C++ fixture, TensorRT engine, and CUDA device"]
 fn cpp_fixture_matches_rust_tensor_rt_engine() {
+    // This intentionally remains a low-level TensorRT adapter test. It
+    // validates binding metadata and raw engine enqueue independently of the
+    // public model-specific executor factories.
     let engine = env::var_os("AUDIO2FACE3D_REFERENCE_ENGINE")
         .expect("AUDIO2FACE3D_REFERENCE_ENGINE must name the generated TensorRT engine");
     let fixture = env::var_os("AUDIO2FACE3D_REFERENCE_TENSORS")

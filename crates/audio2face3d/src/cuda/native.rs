@@ -214,7 +214,9 @@ impl CudaStream {
     pub fn as_ref(&self) -> CudaStreamRef<'_> {
         // SAFETY: the borrow prevents this owning stream from being dropped for
         // the returned lifetime, and the stream's device cannot change.
-        unsafe { CudaStreamRef::from_raw(self.as_raw(), self.device_id()) }
+        unsafe {
+            CudaStreamRef::from_raw(self.as_raw(), self.device.context.cast(), self.device_id())
+        }
     }
 
     pub fn synchronize(&self) -> Result<()> {
@@ -261,6 +263,40 @@ impl Drop for CudaStream {
             let _ = cuStreamSynchronize(self.raw);
             let _ = cuStreamDestroy_v2(self.raw);
         }
+    }
+}
+
+pub(crate) fn copy_device_view_to_host<T: Copy>(
+    source: DeviceView<'_, T>,
+    destination: &mut [T],
+    stream: CudaStreamRef<'_>,
+) -> Result<()> {
+    ensure_same_device(source.device_id(), stream.device_id())?;
+    if destination.len() != source.len() {
+        return Err(Error::InvalidSchema(format!(
+            "copy length {} does not match device view length {}",
+            destination.len(),
+            source.len()
+        )));
+    }
+    let _context = CurrentContextGuard::enter(stream.context_raw().cast())?;
+    // SAFETY: the callback-scoped view covers the checked byte count, the host
+    // destination remains borrowed through synchronization, and the borrowed
+    // stream/context remain alive for this call.
+    unsafe {
+        check(
+            cuMemcpyDtoHAsync_v2(
+                destination.as_mut_ptr().cast(),
+                source.as_raw(),
+                std::mem::size_of_val(destination),
+                stream.as_raw().cast(),
+            ),
+            "cuMemcpyDtoHAsync",
+        )?;
+        check(
+            cuStreamSynchronize(stream.as_raw().cast()),
+            "cuStreamSynchronize",
+        )
     }
 }
 

@@ -133,6 +133,8 @@ unsafe impl<T: Sync> Sync for DeviceView<'_, T> {}
 #[derive(Debug, Clone, Copy)]
 pub struct CudaStreamRef<'a> {
     raw: *mut c_void,
+    #[cfg(feature = "cuda")]
+    context: *mut c_void,
     device: DeviceId,
     _stream: PhantomData<&'a ()>,
 }
@@ -145,9 +147,14 @@ impl<'a> CudaStreamRef<'a> {
     /// `raw` must remain a valid CUDA stream on `device` for `'a`. Only crate
     /// internals that retain the corresponding stream owner may call this.
     #[cfg(feature = "cuda")]
-    pub(crate) const unsafe fn from_raw(raw: *mut c_void, device: DeviceId) -> Self {
+    pub(crate) const unsafe fn from_raw(
+        raw: *mut c_void,
+        context: *mut c_void,
+        device: DeviceId,
+    ) -> Self {
         Self {
             raw,
+            context,
             device,
             _stream: PhantomData,
         }
@@ -162,6 +169,11 @@ impl<'a> CudaStreamRef<'a> {
     /// The handle must not be destroyed and must not be used after `'a` ends.
     pub const fn as_raw(&self) -> *mut c_void {
         self.raw
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(crate) const fn context_raw(&self) -> *mut c_void {
+        self.context
     }
 }
 

@@ -20,6 +20,9 @@ fn long_audio_accumulation_reset_and_reuse_stays_bounded() {
 #[cfg(feature = "animation")]
 #[test]
 fn asynchronous_blendshape_reset_replay_and_drop_stress() {
+    // This is a low-level CPU solver/job-runner stress test, not a public
+    // facade integration test; facade ownership and completion are covered by
+    // the API contract tests.
     use audio2face3d::animation::{
         BlendshapeData, BlendshapeSolverParameters, CpuBlendshapeJobRunner, CpuBlendshapeSolver,
     };

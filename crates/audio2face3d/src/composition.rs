@@ -1,5 +1,10 @@
 //! Ownership-preserving composition for geometry executor components.
 
+use crate::audio2face::GeometryExecutor;
+use crate::audio2face::bundle::{
+    GeometryExecutorBundle as FacadeGeometryExecutorBundle, GeometryExecutorRef,
+};
+use crate::audio2x::Executor;
 use crate::{
     CallbackMetadata, GeometryExecutorBundle, GeometryFrame, GeometryPipelineComponents, Model,
     ModelKind, PipelineOptions, PipelineStatus, TrackParameters,
@@ -127,6 +132,166 @@ impl GeometryExecutorComponent for GeometryExecutorBundle {
             }
             GeometryPipelineComponents::Diffusion { backend, .. } => backend.stream().synchronize(),
         }
+    }
+}
+
+/// Adapts the completed SDK-facing geometry bundle to the composition layer.
+///
+/// This adapter is deliberately kept here, rather than adding composition's
+/// legacy `PipelineStatus`/`GeometryFrame` types to the facade bundle API.
+impl GeometryExecutorComponent for FacadeGeometryExecutorBundle {
+    fn kind(&self) -> ModelKind {
+        self.kind()
+    }
+
+    fn track_count(&self) -> usize {
+        self.track_count()
+    }
+
+    fn device_ordinal(&self) -> Option<i32> {
+        match self.executor() {
+            GeometryExecutorRef::Regression(executor) => Some(executor.device_arc().id().ordinal()),
+            GeometryExecutorRef::Diffusion(executor) => Some(executor.device_arc().id().ordinal()),
+        }
+    }
+
+    fn output_shape(&self, track: usize) -> Result<GeometryOutputShape> {
+        if track >= self.track_count() {
+            return Err(invalid("geometry bundle track is out of range"));
+        }
+        let shape = match self.executor() {
+            GeometryExecutorRef::Regression(executor) => GeometryOutputShape {
+                skin: executor.skin_geometry_size(),
+                tongue: executor.tongue_geometry_size(),
+                jaw_transform: executor.jaw_transform_size(),
+                eyes_rotation: executor.eyes_rotation_size(),
+            },
+            GeometryExecutorRef::Diffusion(executor) => GeometryOutputShape {
+                skin: executor.skin_geometry_size(),
+                tongue: executor.tongue_geometry_size(),
+                jaw_transform: executor.jaw_transform_size(),
+                eyes_rotation: executor.eyes_rotation_size(),
+            },
+        };
+        shape.validate()?;
+        Ok(shape)
+    }
+
+    fn accumulate_audio(&self, track: usize, samples: &[f32]) -> Result<()> {
+        self.audio_accumulator(track)?.accumulate(samples)
+    }
+
+    fn close_audio(&self, track: usize) -> Result<()> {
+        self.audio_accumulator(track)?.close()
+    }
+
+    fn set_track_parameters(&mut self, track: usize, value: TrackParameters) -> Result<()> {
+        match (self, value) {
+            (
+                FacadeGeometryExecutorBundle::Regression(executor),
+                TrackParameters::Regression {
+                    input_strength,
+                    implicit_emotion,
+                },
+            ) => {
+                executor.set_input_strength(input_strength)?;
+                executor.set_implicit_emotion(track, &implicit_emotion)
+            }
+            (
+                FacadeGeometryExecutorBundle::Diffusion(executor),
+                TrackParameters::Diffusion {
+                    input_strength,
+                    identity_index,
+                },
+            ) => {
+                executor.set_input_strength(input_strength)?;
+                executor.set_identity_index(identity_index)
+            }
+            _ => Err(invalid(
+                "geometry track parameters do not match bundle model",
+            )),
+        }
+    }
+
+    fn execute(
+        &mut self,
+        callback: &mut dyn FnMut(CallbackMetadata, &GeometryFrame) -> bool,
+    ) -> Result<PipelineStatus> {
+        match self {
+            FacadeGeometryExecutorBundle::Regression(executor) => {
+                let status = executor.execute_host(|metadata, geometry| {
+                    let keep_going = callback(
+                        CallbackMetadata {
+                            kind: ModelKind::Regression,
+                            track: metadata.track,
+                            inference: None,
+                            frame: metadata.frame,
+                            timestamp: metadata.timestamp,
+                            next_timestamp: metadata.next_timestamp,
+                        },
+                        &GeometryFrame::from(geometry.clone()),
+                    );
+                    if keep_going {
+                        std::ops::ControlFlow::Continue(())
+                    } else {
+                        std::ops::ControlFlow::Break(())
+                    }
+                })?;
+                Ok(match status {
+                    crate::animation::PumpStatus::AwaitingInput => PipelineStatus::AwaitingInput,
+                    crate::animation::PumpStatus::Complete => PipelineStatus::Complete,
+                    crate::animation::PumpStatus::Interrupted => PipelineStatus::Interrupted,
+                })
+            }
+            FacadeGeometryExecutorBundle::Diffusion(executor) => {
+                let mut frames = 0;
+                let status = executor.execute_host(|metadata, geometry| {
+                    frames += 1;
+                    let keep_going = callback(
+                        CallbackMetadata {
+                            kind: ModelKind::Diffusion,
+                            track: metadata.track,
+                            inference: Some(metadata.inference),
+                            frame: metadata.frame,
+                            timestamp: metadata.timestamp,
+                            next_timestamp: metadata.next_timestamp,
+                        },
+                        &GeometryFrame::from(geometry.clone()),
+                    );
+                    if keep_going {
+                        std::ops::ControlFlow::Continue(())
+                    } else {
+                        std::ops::ControlFlow::Break(())
+                    }
+                })?;
+                Ok(match status {
+                    crate::animation::DiffusionExecutionStatus::AwaitingInput => {
+                        PipelineStatus::AwaitingInput
+                    }
+                    crate::animation::DiffusionExecutionStatus::Executed { tracks } => {
+                        PipelineStatus::Executed { tracks, frames }
+                    }
+                    crate::animation::DiffusionExecutionStatus::Complete => {
+                        PipelineStatus::Complete
+                    }
+                })
+            }
+        }
+    }
+
+    fn reset(&mut self, track: usize) -> Result<()> {
+        match self {
+            FacadeGeometryExecutorBundle::Regression(executor) => {
+                Executor::reset_track(executor, track)
+            }
+            FacadeGeometryExecutorBundle::Diffusion(executor) => {
+                Executor::reset_track(executor, track)
+            }
+        }
+    }
+
+    fn wait(&self) -> Result<()> {
+        self.cuda_stream().synchronize()
     }
 }
 

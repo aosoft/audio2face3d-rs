@@ -1,17 +1,23 @@
+use crate::async_util::block_on;
 use audio2face3d::animation::{
-    BlendshapeData, CpuBlendshapeSolver, DiffusionBackend, DiffusionContract, DiffusionFrameInput,
-    GpuBlendshapeSolver, InteractiveGpuBlendshapeLayer, RegressionBackend, RegressionContract,
-    RegressionFrameInput, RegressionGeometry, TensorRtDiffusionBackend, TensorRtRegressionBackend,
+    BlendshapeData, DiffusionBackend, DiffusionContract, DiffusionFrameInput, GpuBlendshapeSolver,
+    InteractiveGpuBlendshapeLayer, RegressionBackend, RegressionContract, RegressionFrameInput,
+    RegressionGeometry, TensorRtDiffusionBackend, TensorRtRegressionBackend,
+};
+use audio2face3d::audio2emotion::post_process::{
+    PostProcessData, PostProcessParams, PostProcessor,
+};
+use audio2face3d::audio2face::{
+    BlendshapeSolveComponentParameters, BlendshapeSolverConfigView, BlendshapeSolverDataView,
+    BlendshapeSolverParams, CpuBlendshapeSolver, DeviceBlendshapeSolveInteractiveExecutor,
+    create_blendshape_solver,
 };
 use audio2face3d::common::{
     Error, GeometryAudioParameters, GeometryParameters, NetworkDocument, Result,
     load_blendshape_config,
 };
 use audio2face3d::cuda::{CudaStream, DeviceBuffer, GpuDevice};
-use audio2face3d::emotion::{
-    ClassifierBackend, ClassifierContract, EmotionPostProcessData, EmotionPostProcessor,
-    TensorRtClassifierBackend,
-};
+use audio2face3d::emotion::{ClassifierBackend, ClassifierContract, TensorRtClassifierBackend};
 use audio2face3d::{BenchmarkRunner, Model, ModelKind, ModelParameters};
 use audio2face3d_cli::reference::sha256_file;
 use std::cell::RefCell;
@@ -116,7 +122,7 @@ enum Workload {
     Emotion {
         backend: TensorRtClassifierBackend,
         inputs: Vec<(usize, Vec<f32>)>,
-        processors: Vec<EmotionPostProcessor>,
+        processors: Vec<PostProcessor>,
         outputs: Vec<Vec<f32>>,
     },
     CpuBlendshape {
@@ -133,7 +139,7 @@ enum Workload {
         _device: Arc<GpuDevice>,
     },
     InteractiveGpuReplay {
-        layer: Box<InteractiveGpuBlendshapeLayer>,
+        executor: Box<DeviceBlendshapeSolveInteractiveExecutor>,
         geometry: RegressionGeometry,
     },
 }
@@ -208,7 +214,44 @@ impl Workload {
                 let ModelParameters::Emotion(config) = model.parameters(0)? else {
                     unreachable!()
                 };
-                let (data, parameters) = EmotionPostProcessData::from_model(network, config)?;
+                let data = PostProcessData {
+                    inference_emotion_length: network.emotions.len(),
+                    output_emotion_length: config.output_emotion_length,
+                    emotion_correspondence: network
+                        .emotions
+                        .iter()
+                        .map(|name| {
+                            config
+                                .emotion_correspondence
+                                .get(name)
+                                .copied()
+                                .ok_or_else(|| {
+                                    Error::InvalidSchema(format!(
+                                        "emotion correspondence is missing for {name}"
+                                    ))
+                                })
+                                .and_then(|value| {
+                                    i32::try_from(value).map_err(|_| {
+                                        Error::InvalidSchema(format!(
+                                            "emotion correspondence is out of range: {value}"
+                                        ))
+                                    })
+                                })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                };
+                let parameters = PostProcessParams {
+                    emotion_contrast: config.emotion_contrast,
+                    max_emotions: config.max_emotions,
+                    beginning_emotion: vec![0.0; config.output_emotion_length],
+                    preferred_emotion: config.preferred_emotion.clone(),
+                    live_blend_coefficient: config.live_blend_coef,
+                    enable_preferred_emotion: config.enable_preferred_emotion,
+                    preferred_emotion_strength: config.preferred_emotion_strength,
+                    live_transition_time: config.transition_smoothing,
+                    fixed_dt: config.fixed_dt,
+                    emotion_strength: config.emotion_strength,
+                };
                 let contract = ClassifierContract::new(
                     60_000,
                     network.audio_params.samplerate,
@@ -223,7 +266,7 @@ impl Workload {
                         .map(|track| (track, vec![0.0; contract.buffer_length]))
                         .collect(),
                     processors: (0..tracks)
-                        .map(|_| EmotionPostProcessor::new(data.clone(), parameters.clone()))
+                        .map(|_| PostProcessor::new(data.clone(), parameters.clone()))
                         .collect::<Result<Vec<_>>>()?,
                     outputs: Vec::new(),
                 })
@@ -252,8 +295,34 @@ impl Workload {
         let config = load_blendshape_config(&paths.config)?.blendshape_params;
         match scope {
             "blendshape-cpu" => {
-                let mut solver = CpuBlendshapeSolver::from_config(data, &config)?;
-                solver.prepare()?;
+                let pose_names = data
+                    .pose_names
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let solver = create_blendshape_solver(BlendshapeSolveComponentParameters {
+                    params: BlendshapeSolverParams {
+                        l1_regularization: config.l1_regularization,
+                        l2_regularization: config.l2_regularization,
+                        symmetry_regularization: config.symmetry_regularization,
+                        temporal_regularization: config.temporal_regularization,
+                        template_bounding_box_size: config.template_bb_size,
+                        tolerance: config.tolerance,
+                    },
+                    config: BlendshapeSolverConfigView {
+                        active_poses: &config.active_poses,
+                        cancel_poses: &config.cancel_poses,
+                        symmetry_poses: &config.symmetry_poses,
+                        multipliers: &config.multipliers,
+                        offsets: &config.offsets,
+                    },
+                    data: BlendshapeSolverDataView {
+                        neutral_pose: &data.neutral_pose,
+                        delta_poses: &data.delta_poses,
+                        pose_mask: data.pose_mask.as_deref(),
+                        pose_names: &pose_names,
+                    },
+                })?;
                 Ok(Self::CpuBlendshape {
                     solver: Box::new(solver),
                     target,
@@ -265,7 +334,7 @@ impl Workload {
                 let stream = device.create_stream()?;
                 let solver = GpuBlendshapeSolver::new(&device, &stream, data, &config)?;
                 if scope == "interactive-gpu-replay" {
-                    let mut layer = InteractiveGpuBlendshapeLayer::new(
+                    let layer = InteractiveGpuBlendshapeLayer::new(
                         Arc::clone(&device),
                         stream,
                         Some(solver),
@@ -281,10 +350,14 @@ impl Workload {
                             left: [0.0; 3],
                         },
                     };
-                    layer.compute_frame(0, 1, &geometry, |_| true)?;
-                    layer.wait()?;
+                    let mut executor = DeviceBlendshapeSolveInteractiveExecutor::from_layer(
+                        layer,
+                        model.sample_rate(),
+                        audio2face3d::audio2x::FrameRate::new(30, 1)?,
+                    );
+                    block_on(executor.compute_frame(0, 1, &geometry, |_| true))?;
                     Ok(Self::InteractiveGpuReplay {
-                        layer: Box::new(layer),
+                        executor: Box::new(executor),
                         geometry,
                     })
                 } else {
@@ -343,9 +416,8 @@ impl Workload {
                 stream,
                 ..
             } => solver.solve_async(target, output, stream)?.synchronize()?,
-            Self::InteractiveGpuReplay { layer, geometry } => {
-                layer.compute_frame(0, 1, geometry, |_| true)?;
-                layer.wait()?;
+            Self::InteractiveGpuReplay { executor, geometry } => {
+                block_on(executor.compute_frame(0, 1, geometry, |_| true))?;
             }
         }
         Ok(())
@@ -374,8 +446,8 @@ impl Workload {
                 stream,
                 ..
             } => output.copy_to(host_output, stream)?,
-            Self::InteractiveGpuReplay { layer, .. } => {
-                std::hint::black_box(layer.copy_cached_frame_to_host(0)?);
+            Self::InteractiveGpuReplay { executor, .. } => {
+                std::hint::black_box(executor.layer().copy_cached_frame_to_host(0)?);
             }
         }
         Ok(())

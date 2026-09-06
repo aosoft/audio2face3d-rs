@@ -58,83 +58,56 @@ cargo run -p audio2face3d-cli -- release audit
 
 ### Inference-free Audio2Emotion
 
-`PostProcessEmotionExecutorBundle` reproduces the original post-process-only
-path without loading a TensorRT engine. Audio samples define the duration but
-are not read; each frame feeds zero classifier output plus the configured or
+`PostProcessEmotionExecutorFactory` creates the original post-process-only
+executor without loading a TensorRT engine. Its `load` method returns a
+runtime-independent Future. Audio samples define the duration but are not
+read; each frame feeds zero classifier output plus the configured or
 accumulated preferred emotion into the post-processor.
 
 ```rust,no_run
-use audio2face3d::emotion::{
-    EmotionExecutionStatus, PostProcessEmotionBundleOptions,
-    PostProcessEmotionExecutorBundle,
+use audio2face3d::audio2emotion::EmotionExecutor;
+use audio2face3d::audio2emotion::post_process::{
+    PostProcessEmotionExecutorCreationParameters, PostProcessEmotionExecutorFactory,
 };
 
-# fn run() -> audio2face3d::Result<()> {
-let mut bundle = PostProcessEmotionExecutorBundle::load(
-    "models/emotion/model.json",
-    PostProcessEmotionBundleOptions::new(1, 30, 1),
-)?;
-bundle.audio_accumulator(0)?.accumulate(&vec![0.0; 16_000])?;
-bundle.audio_accumulator(0)?.close()?;
-
-let preferred = vec![0.0; bundle.executor().output_emotion_length()];
-bundle
-    .preferred_emotion_accumulator(0)?
-    .accumulate(0, &preferred)
-    .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
-bundle
-    .preferred_emotion_accumulator(0)?
-    .close()
-    .map_err(|error| audio2face3d::Error::InvalidSchema(error.to_string()))?;
-
-while !matches!(
-    bundle.execute(|metadata, emotions| {
-        println!("frame={} emotions={emotions:?}", metadata.frame);
-        true
-    })?,
-    EmotionExecutionStatus::Complete
-) {}
-# Ok(())
-# }
+async fn run(parameters: PostProcessEmotionExecutorCreationParameters) -> audio2face3d::Result<()> {
+let mut executor = PostProcessEmotionExecutorFactory::load(parameters).await?;
+let mut callback = |_result| std::ops::ControlFlow::Continue(());
+executor.execute(&mut callback)?.await?;
+Ok(())
+}
 ```
 
 ## Component composition
 
-`GeometryExecutorBundle::builder` wraps the default model-driven TensorRT
-component with build-time model kind, track count, CUDA device, and output
-shape validation. A `GeometryObserver` runs after shape validation and before
-the application callback:
+`GeometryExecutorBundleFactory` wraps the model-specific Regression or
+Diffusion factory in a closed, non-generic owning bundle. `load` returns a
+runtime-independent Future and retains model kind, track resources, CUDA
+stream, and output validation in the completed executor:
 
 ```rust,no_run
-use audio2face3d::{GeometryExecutorBundle, Model, PipelineOptions};
+use audio2face3d::audio2face::{
+    GeometryExecutorBundle, GeometryExecutorBundleCreationParameters,
+    GeometryExecutorBundleFactory,
+};
 
-# fn run() -> audio2face3d::Result<()> {
-let model = Model::load("models/mark/model.json")?;
-let mut bundle = GeometryExecutorBundle::builder(&model, PipelineOptions::default())?
-    .observer(|metadata, frame| {
-        println!("track={} skin={}", metadata.track, frame.skin.len());
-        Ok(())
-    })
-    .build()?;
-bundle.accumulate_audio(0, &vec![0.0; 16_000])?;
-bundle.close_audio(0)?;
-while !matches!(bundle.execute(|_, _| true)?, audio2face3d::PipelineStatus::Complete) {}
-# Ok(())
-# }
+async fn load(
+    parameters: GeometryExecutorBundleCreationParameters,
+) -> audio2face3d::Result<GeometryExecutorBundle> {
+    GeometryExecutorBundleFactory::load(parameters).await
+}
 ```
 
-Custom standard pipelines implement `GeometryExecutorComponent` and move all
-owned backends, post-processors, accumulators, typed buffers, and streams into
-the same high-level `ComposedGeometryExecutorBundle`. The builder validates the
-declared `GeometryComponentContract` before execution and revalidates every
-callback frame.
+After loading, accumulate and close the shared track accumulators. Match the
+closed bundle once to call `GeometryExecutor::execute`, copy any required
+`DeviceComponentResults` with `copy_to` inside the callback, and await the
+returned `Execution`.
 
-`BlendshapeExecutorBundleBuilder` accepts user-owned CPU track solvers or GPU
-components. GPU components move their solver, target/output `DeviceBuffer`,
-`CudaStream`, and retained `GpuDevice` into the bundle, with device and shape
-checks before execution. `InteractiveGeometryExecutorBundleBuilder` provides
-typed Regression and Diffusion constructors for custom backends,
-post-processors, accumulators, and contracts without type erasure.
+The closed bundle exposes `executor()`, `cuda_stream()`,
+`audio_accumulator()`, and `emotion_accumulator()` accessors. Geometry can be
+consumed exactly once by `try_into_host_blendshape` or
+`try_into_device_blendshape`; failed transfers return the original bundle in a
+`TransferError`.
 
 ## Interactive and GPU callback quick start
 
@@ -143,45 +116,34 @@ inside one owner. Callback device views are valid only for the callback and
 cannot be retained by safe Rust:
 
 ```rust,no_run
-use audio2face3d::{InteractiveGpuBlendshapeExecutorBundle, InteractivePipelineOptions, Model};
+use audio2face3d::audio2face::GeometryInteractiveExecutor;
+use audio2face3d::audio2face::regression::{
+    RegressionGeometryInteractiveExecutorCreationParameters,
+    RegressionGeometryInteractiveExecutorFactory,
+};
 
-# fn run() -> audio2face3d::Result<()> {
-let model = Model::load("models/mark/model.json")?;
-let mut bundle = InteractiveGpuBlendshapeExecutorBundle::load(
-    &model,
-    InteractivePipelineOptions::default(),
-)?;
-bundle.geometry().audio().accumulate(&vec![0.0; 16_000])?;
-bundle.geometry().audio().close()?;
-bundle.geometry().emotions().close()?;
-bundle.compute_frame(0, |_metadata, output| {
-    let mut weights = vec![0.0; output.skin_weight_count()];
-    if let Some(view) = output.skin_weights {
-        view.copy_to(&mut weights, output.stream).expect("CUDA copy");
-    }
-    true
-})?;
-bundle.wait()?;
-# Ok(())
-# }
+async fn run(
+    parameters: RegressionGeometryInteractiveExecutorCreationParameters,
+) -> audio2face3d::Result<()> {
+let mut executor = RegressionGeometryInteractiveExecutorFactory::load(parameters).await?;
+let mut callback = |_result| std::ops::ControlFlow::Continue(());
+executor.compute_frame(0, &mut callback).await?;
+Ok(())
+}
 ```
 
 Use `compute_all_frames` for an ordered temporal pass. Use `compute_frame` for
 random access and replay; invalidating geometry automatically invalidates the
-dependent BlendShape weight cache. The standalone CPU and GPU BlendShape
-bundles and Teeth animator are described by the component and Teeth sections
-above.
+dependent cache. Host/device BlendShape conversion is exposed by the owning
+geometry bundle and all device views require an explicit copy on their stream.
 
 ## Standalone teeth animation
 
-`TeethAnimator` is the host-side semantic name for `JawTransform` and matches
-the original `IAnimatorTeeth` parameter and column-major transform contract.
-With the `cuda` feature, `GpuMultiTrackTeethAnimator` runs independently of a
-Regression executor. Caller-owned device tensors are described by
-`GpuTeethInputBatch` / `GpuTeethOutputBatch` and `TensorBatchInfo`, while the
-returned fence retains the animator, buffers, and stream until CUDA completes.
-The animator is stateless and, like the original SDK, always computes every
-track; active-track masks are accepted but intentionally ignored.
+`AnimatorTeeth` is the host-side semantic name for the teeth transform and
+matches the original `IAnimatorTeeth` parameter and column-major transform
+contract. Create it through `create_animator_teeth`; the lower-level
+`JawTransform` helper remains an implementation detail. GPU solver work is
+returned through the owning device executor and its stream-scoped results.
 
 ## Runtime setup
 
