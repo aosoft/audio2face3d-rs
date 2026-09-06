@@ -140,7 +140,7 @@ pub fn create_post_process_emotion_interactive_executor(
     PostProcessEmotionInteractiveExecutorFactory::load(parameters)
 }
 
-/// Opaque host emotion post-processor component.
+/// Owning host emotion post-processor facade.
 ///
 /// Corresponds to `nva2e::IPostProcessor` in
 /// `audio2emotion-sdk/include/audio2emotion/postprocess.h` and replaces
