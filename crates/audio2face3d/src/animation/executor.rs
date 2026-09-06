@@ -1,10 +1,12 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
 use crate::animation::{RegressionContract, RegressionFrameInput};
 use crate::common::{AudioAccumulator, EmotionAccumulator, Error, Result};
-use std::sync::{Condvar, Mutex};
+use std::sync::Mutex;
 
 pub const MAX_REGRESSION_TRACKS: usize = 32;
 
-pub trait RegressionBackend {
+pub(crate) trait RegressionBackend {
     type Output;
 
     fn infer(&mut self, track: usize, input: &RegressionFrameInput) -> Result<Self::Output>;
@@ -39,7 +41,7 @@ pub struct RegressionCallbackMetadata {
     pub next_timestamp: i64,
 }
 
-pub struct RegressionTrack<'a> {
+pub(crate) struct RegressionTrack<'a> {
     pub audio: &'a AudioAccumulator,
     pub emotions: &'a EmotionAccumulator,
     pub implicit_emotion: &'a [f32],
@@ -51,13 +53,6 @@ pub enum PumpStatus {
     AwaitingInput,
     Complete,
     Interrupted,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RegressionExecutorState {
-    pub running: bool,
-    pub completed_tracks: usize,
-    pub track_count: usize,
 }
 
 #[derive(Debug)]
@@ -76,7 +71,6 @@ struct RegressionSchedulerState {
 struct RegressionExecutionState {
     contract: RegressionContract,
     state: Mutex<RegressionSchedulerState>,
-    idle: Condvar,
 }
 
 struct RegressionRunningGuard<'a> {
@@ -87,7 +81,6 @@ impl Drop for RegressionRunningGuard<'_> {
     fn drop(&mut self) {
         if let Ok(mut state) = self.execution.state.lock() {
             state.running = false;
-            self.execution.idle.notify_all();
         }
     }
 }
@@ -106,7 +99,6 @@ impl RegressionExecutionState {
                 frames: vec![0; track_count],
                 completed: vec![false; track_count],
             }),
-            idle: Condvar::new(),
         })
     }
 
@@ -428,30 +420,6 @@ impl RegressionExecutionState {
             .map_err(|error| Error::InvalidSchema(format!("emotion drop failed: {error}")))
     }
 
-    fn wait(&self) -> Result<()> {
-        let mut state = self.lock()?;
-        while state.running {
-            state = self
-                .idle
-                .wait(state)
-                .map_err(|_| Error::InvalidSchema("executor mutex poisoned".into()))?;
-        }
-        Ok(())
-    }
-
-    fn state(&self) -> Result<RegressionExecutorState> {
-        let state = self.lock()?;
-        Ok(RegressionExecutorState {
-            running: state.running,
-            completed_tracks: state
-                .completed
-                .iter()
-                .filter(|completed| **completed)
-                .count(),
-            track_count: state.frames.len(),
-        })
-    }
-
     #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
     fn next_frame_index(&self, track: usize) -> Result<usize> {
         let state = self.lock()?;
@@ -491,8 +459,7 @@ impl RegressionExecutionState {
 /// Internal static-dispatch execution used by the non-generic facade.
 ///
 /// `B` and `P` are implementation details and this concrete name is not
-/// re-exported from [`crate::animation`]. The legacy [`RegressionExecutor`]
-/// alias remains temporarily available until Step 7.
+/// re-exported from [`crate::animation`].
 #[derive(Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct RegressionGeometryExecution<B, P> {
@@ -501,13 +468,12 @@ pub(crate) struct RegressionGeometryExecution<B, P> {
     postprocessor: P,
 }
 
-/// Legacy low-level scheduler retained until the Step 7 API removal.
 #[derive(Debug)]
-pub struct RegressionExecutor {
+pub(crate) struct RegressionScheduler {
     inner: RegressionGeometryExecution<(), ()>,
 }
 
-impl RegressionExecutor {
+impl RegressionScheduler {
     pub fn new(contract: RegressionContract, track_count: usize) -> Result<Self> {
         Ok(Self {
             inner: RegressionGeometryExecution::with_dependencies(contract, track_count, (), ())?,
@@ -562,14 +528,6 @@ impl RegressionExecutor {
         )
     }
 
-    pub fn wait(&self) -> Result<()> {
-        self.inner.wait()
-    }
-
-    pub fn state(&self) -> Result<RegressionExecutorState> {
-        self.inner.state()
-    }
-
     pub fn reset(&self, track: usize) -> Result<()> {
         self.inner.reset(track)
     }
@@ -593,14 +551,6 @@ impl<B, P> RegressionGeometryExecution<B, P> {
             backend,
             postprocessor,
         })
-    }
-
-    pub(crate) fn wait(&self) -> Result<()> {
-        self.state.wait()
-    }
-
-    pub(crate) fn state(&self) -> Result<RegressionExecutorState> {
-        self.state.state()
     }
 
     pub(crate) fn reset(&self, track: usize) -> Result<()> {
@@ -708,11 +658,11 @@ mod tests {
 
     #[test]
     fn rejects_zero_and_over_max_tracks() {
-        assert!(RegressionExecutor::new(contract(), 0).is_err());
-        assert!(RegressionExecutor::new(contract(), MAX_REGRESSION_TRACKS + 1).is_err());
-        assert!(RegressionExecutor::new(contract(), 1).is_ok());
-        assert!(RegressionExecutor::new(contract(), 2).is_ok());
-        assert!(RegressionExecutor::new(contract(), MAX_REGRESSION_TRACKS).is_ok());
+        assert!(RegressionScheduler::new(contract(), 0).is_err());
+        assert!(RegressionScheduler::new(contract(), MAX_REGRESSION_TRACKS + 1).is_err());
+        assert!(RegressionScheduler::new(contract(), 1).is_ok());
+        assert!(RegressionScheduler::new(contract(), 2).is_ok());
+        assert!(RegressionScheduler::new(contract(), MAX_REGRESSION_TRACKS).is_ok());
     }
 
     #[test]
@@ -751,8 +701,6 @@ mod tests {
         assert_eq!(status, PumpStatus::Interrupted);
         assert_eq!(seen.iter().filter(|m| m.track == 0).count(), 1);
         assert_eq!(seen.iter().filter(|m| m.track == 1).count(), 3);
-        assert_eq!(execution.state().unwrap().completed_tracks, 2);
-        execution.wait().unwrap();
         assert!(audio0.nb_dropped_samples() > 0);
     }
 
@@ -795,7 +743,7 @@ mod tests {
         ];
         let mut backend = FixedBatchTrace::default();
         let mut first_seen = Vec::new();
-        let executor = RegressionExecutor::new(contract(), 4).unwrap();
+        let executor = RegressionScheduler::new(contract(), 4).unwrap();
 
         assert_eq!(
             executor
@@ -816,8 +764,6 @@ mod tests {
             batch[1].1.audio.iter().all(|sample| *sample == 0.0)
                 && batch[3].1.audio.iter().all(|sample| *sample == 0.0)
         }));
-        assert_eq!(executor.state().unwrap().completed_tracks, 2);
-
         audio1.accumulate(&[1.0, 2.0, 3.0]).unwrap();
         audio1.close().unwrap();
         emotion1.close().unwrap();
@@ -844,7 +790,7 @@ mod tests {
             implicit_emotion: &[0.5],
             input_strength: 1.0,
         };
-        let executor = RegressionExecutor::new(contract(), 1).unwrap();
+        let executor = RegressionScheduler::new(contract(), 1).unwrap();
         let mut backend = |track, _: &RegressionFrameInput| Ok(track);
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = executor.pump(&[track], &mut backend, |_, _| -> bool {
@@ -852,7 +798,6 @@ mod tests {
             });
         }));
         assert!(panic.is_err());
-        assert!(!executor.state().unwrap().running);
         executor.reset(0).unwrap();
     }
 
@@ -868,7 +813,7 @@ mod tests {
             implicit_emotion: &[0.0],
             input_strength: 1.0,
         };
-        let executor = RegressionExecutor::new(contract(), 1).unwrap();
+        let executor = RegressionScheduler::new(contract(), 1).unwrap();
         let mut calls = 0;
         let mut backend = |_, _: &RegressionFrameInput| -> Result<()> {
             calls += 1;
@@ -893,7 +838,7 @@ mod tests {
                 input_strength: 1.0,
             })
             .collect();
-        let executor = RegressionExecutor::new(contract(), MAX_REGRESSION_TRACKS).unwrap();
+        let executor = RegressionScheduler::new(contract(), MAX_REGRESSION_TRACKS).unwrap();
         let mut callbacks = 0;
         let mut backend = |_, _: &RegressionFrameInput| -> Result<()> { Ok(()) };
         assert_eq!(

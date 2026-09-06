@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
 use crate::animation::{
     DiffusionPostprocessor, DiffusionResultLayout, EyesAnimator, EyesAnimatorParams, JawParameters,
     JawTransform, PcaReconstruction, RegressionPostprocessor, SkinAnimator, SkinAnimatorParams,
@@ -52,7 +54,7 @@ impl GeometryModelData {
         Ok(data)
     }
 
-    pub fn regression_postprocessor(
+    pub(crate) fn regression_postprocessor(
         &self,
         config: &GeometryConfig,
         skin_shape_count: usize,
@@ -81,7 +83,7 @@ impl GeometryModelData {
         ))
     }
 
-    pub fn diffusion_postprocessor(
+    pub(crate) fn diffusion_postprocessor(
         &self,
         config: &GeometryConfig,
         layout: DiffusionResultLayout,

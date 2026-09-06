@@ -200,8 +200,7 @@ impl PostProcessor {
 ///
 /// Corresponds to `nva2e::IPostProcessModel::EmotionExecutor` and implements
 /// `nva2e::IEmotionExecutor` from
-/// `audio2emotion-sdk/include/audio2emotion/executor.h`. It is the SDK-facing
-/// completed replacement for `crate::emotion::PostProcessEmotionExecutor`.
+/// `audio2emotion-sdk/include/audio2emotion/executor.h`.
 #[cfg(feature = "cuda")]
 pub struct PostProcessEmotionExecutor {
     execution: crate::emotion::PostProcessEmotionExecutor,
@@ -218,9 +217,8 @@ pub struct PostProcessEmotionExecutor {
 ///
 /// Corresponds to `nva2e::IPostProcessModel::EmotionInteractiveExecutor` and
 /// `nva2e::IEmotionInteractiveExecutor` from
-/// `audio2emotion-sdk/include/audio2emotion/interactive_executor.h`. It replaces
-/// `crate::emotion::InteractivePostProcessEmotionExecutor` at the facade
-/// boundary.
+/// `audio2emotion-sdk/include/audio2emotion/interactive_executor.h`. The
+/// implementation details remain private at the facade boundary.
 #[cfg(feature = "cuda")]
 pub struct PostProcessEmotionInteractiveExecutor {
     inner: crate::emotion::InteractivePostProcessEmotionExecutor,
@@ -562,7 +560,7 @@ impl PostProcessEmotionInteractiveExecutor {
              ),
     ) -> crate::Result<crate::emotion::InteractiveEmotionStatus> {
         let interrupt = self.interrupt.clone();
-        let legacy_interrupt = self.inner.interrupt_handle();
+        let core_interrupt = self.inner.interrupt_handle();
         let output = &mut self.output;
         let stream = &self.stream;
         let preferred = self.preferred_emotions.as_deref();
@@ -571,7 +569,7 @@ impl PostProcessEmotionInteractiveExecutor {
             self.inner
                 .compute_frame(frame, &self.audio, preferred, |metadata, values| {
                     if interrupt.is_interrupted_since(generation) {
-                        legacy_interrupt.interrupt();
+                        core_interrupt.interrupt();
                         return false;
                     }
                     if let Err(error) = output.copy_from(values, stream) {

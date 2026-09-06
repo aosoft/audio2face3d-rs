@@ -1,6 +1,10 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
+#[cfg(test)]
+use crate::animation::SkinAnimatorParams;
 use crate::animation::{
-    EyesAnimator, EyesAnimatorParams, EyesRotation, JawParameters, JawTransform,
-    RegressionGeometry, SkinAnimator, SkinAnimatorParams, TongueAnimator, TongueAnimatorParams,
+    EyesAnimator, EyesRotation, JawParameters, JawTransform, RegressionGeometry, SkinAnimator,
+    TongueAnimator,
 };
 use crate::common::{
     Binding, BindingSchema, DiffusionAudioParameters, DiffusionParameters, Dimension, ElementType,
@@ -472,7 +476,7 @@ fn philox4x32_10(counter: u64, subsequence: u64, seed: u64) -> [u32; 4] {
 }
 
 #[derive(Debug, Clone)]
-pub struct DiffusionPostprocessor {
+pub(crate) struct DiffusionPostprocessor {
     layout: DiffusionResultLayout,
     skin: SkinAnimator,
     tongue: TongueAnimator,
@@ -515,38 +519,14 @@ impl crate::animation::LayeredGeometryPostprocessor for DiffusionPostprocessor {
         self.reset()
     }
 
+    #[cfg(test)]
     fn skin_parameters(&self) -> SkinAnimatorParams {
         self.skin.parameters()
     }
 
+    #[cfg(test)]
     fn set_skin_parameters(&mut self, parameters: SkinAnimatorParams) -> Result<()> {
         self.skin.set_parameters(parameters)
-    }
-
-    fn tongue_parameters(&self) -> TongueAnimatorParams {
-        self.tongue.parameters()
-    }
-
-    fn set_tongue_parameters(&mut self, parameters: TongueAnimatorParams) -> Result<()> {
-        self.tongue.set_parameters(parameters)
-    }
-
-    fn teeth_parameters(&self) -> JawParameters {
-        self.jaw_parameters
-    }
-
-    fn set_teeth_parameters(&mut self, parameters: JawParameters) -> Result<()> {
-        parameters.validate()?;
-        self.jaw_parameters = parameters;
-        Ok(())
-    }
-
-    fn eyes_parameters(&self) -> EyesAnimatorParams {
-        self.eyes.parameters()
-    }
-
-    fn set_eyes_parameters(&mut self, parameters: EyesAnimatorParams) -> Result<()> {
-        self.eyes.set_parameters(parameters)
     }
 }
 

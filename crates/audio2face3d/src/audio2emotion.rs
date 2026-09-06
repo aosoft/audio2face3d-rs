@@ -4,16 +4,6 @@
 //! `audio2emotion-sdk/include/audio2emotion/executor.h` and
 //! `audio2emotion-sdk/include/audio2emotion/interactive_executor.h`.
 //!
-//! # Migration map
-//!
-//! | Existing Rust API | SDK-facing declaration |
-//! |---|---|
-//! | `emotion::EmotionExecutor<B>` | `classifier::ClassifierEmotionExecutor` |
-//! | `emotion::InteractiveEmotionExecutor<B>` | `classifier::ClassifierEmotionInteractiveExecutor` |
-//! | `emotion::PostProcessEmotionExecutor` | `post_process::PostProcessEmotionExecutor` |
-//! | `emotion::InteractivePostProcessEmotionExecutor` | `post_process::PostProcessEmotionInteractiveExecutor` |
-//! | `emotion::EmotionPostProcessor` | [`post_process::PostProcessor`] |
-//!
 //! Completed executor declarations are feature-gated and remain in their
 //! classifier or post-process child module. Backend types are not part of this
 //! facade.
@@ -50,7 +40,7 @@ pub use post_process::{PostProcessData, PostProcessParams};
 pub fn create_emotion_binder<'a>(
     accumulators: Vec<&'a EmotionAccumulator>,
     emotion_length: usize,
-) -> Result<crate::emotion::EmotionBinder<'a>> {
+) -> Result<EmotionBinder<'a>> {
     EmotionBinder::new(accumulators, emotion_length)
 }
 

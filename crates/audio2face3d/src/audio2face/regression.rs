@@ -20,8 +20,8 @@ use crate::audio2x::FrameRate;
 
 #[cfg(feature = "tensorrt")]
 use crate::animation::{
-    GeometryModelData, InteractiveRegressionExecutor, RegressionCallbackMetadata,
-    RegressionContract, RegressionExecutor, RegressionGeometry, RegressionPostprocessor,
+    GeometryModelData, RegressionCallbackMetadata, RegressionContract, RegressionGeometry,
+    RegressionGeometryInteractiveExecution, RegressionPostprocessor, RegressionScheduler,
     RegressionTrack, TensorRtRegressionBackend,
 };
 #[cfg(feature = "tensorrt")]
@@ -119,16 +119,14 @@ impl RegressionGeometryInteractiveExecutorFactory {
 ///
 /// Corresponds to `nva2f::IRegressionModel::GeometryExecutor` in the model
 /// namespace and implements the `nva2f::IGeometryExecutor` contract from
-/// `audio2face-sdk/include/audio2face/executor.h`. This is the completed-facade
-/// replacement for the current `crate::animation::RegressionExecutor`; its
-/// backend and post-processor type parameters remain private implementation
-/// details.
+/// `audio2face-sdk/include/audio2face/executor.h`. Backend and post-processor
+/// types remain private implementation details.
 #[cfg(feature = "tensorrt")]
 pub struct RegressionGeometryExecutor {
     /// The execution object owns the TensorRT backend and post-process state.
     /// It is deliberately concrete here; no backend type appears in the public
     /// signature or constructor.
-    execution: RegressionExecutor,
+    execution: RegressionScheduler,
     backend: TensorRtRegressionBackend,
     postprocessors: Vec<RegressionPostprocessor>,
     gpu_postprocessor: crate::animation::GpuRegressionPcaPostprocessor,
@@ -153,11 +151,11 @@ pub struct RegressionGeometryExecutor {
 ///
 /// Corresponds to `nva2f::IRegressionModel::GeometryInteractiveExecutor` and
 /// the `nva2f::IGeometryInteractiveExecutor` contract in
-/// `audio2face-sdk/include/audio2face/interactive_executor.h`. It replaces the
-/// current generic `crate::animation::InteractiveRegressionExecutor<B, P>`.
+/// `audio2face-sdk/include/audio2face/interactive_executor.h`.
 #[cfg(feature = "tensorrt")]
 pub struct RegressionGeometryInteractiveExecutor {
-    execution: InteractiveRegressionExecutor<TensorRtRegressionBackend, RegressionPostprocessor>,
+    execution:
+        RegressionGeometryInteractiveExecution<TensorRtRegressionBackend, RegressionPostprocessor>,
     contract: RegressionContract,
     audio: Arc<crate::audio2x::AudioAccumulator>,
     emotions: Arc<crate::audio2x::EmotionAccumulator>,
@@ -286,7 +284,7 @@ impl RegressionGeometryInteractiveExecutor {
         )?;
         let audio = Arc::clone(&parameters.common.audio);
         let emotions = Arc::clone(&parameters.common.emotions);
-        let execution = InteractiveRegressionExecutor::new_shared(
+        let execution = RegressionGeometryInteractiveExecution::new(
             backend,
             contract.clone(),
             processor,
@@ -865,7 +863,7 @@ impl RegressionGeometryExecutor {
             dt,
             owned_contract.result_layout,
         )?;
-        let execution = RegressionExecutor::new(contract, track_count)?;
+        let execution = RegressionScheduler::new(contract, track_count)?;
         let skin_output =
             device.allocate(owned_contract.result_skin_size.saturating_mul(track_count))?;
         let tongue_output = device.allocate(
@@ -942,7 +940,7 @@ impl RegressionGeometryExecutor {
     /// Executes the owned internal scheduler and exposes its host geometry
     /// output to the native adapter. The device-view callback is attached by
     /// the CUDA facade once the result buffer/fence is available.
-    pub fn execute_host<C>(
+    pub(crate) fn execute_host<C>(
         &mut self,
         mut callback: C,
     ) -> crate::Result<crate::animation::PumpStatus>

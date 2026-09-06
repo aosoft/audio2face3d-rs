@@ -166,6 +166,112 @@ fn symbol_ledger_is_well_formed_and_internally_consistent() {
 }
 
 #[test]
+fn removed_public_paths_stay_out_of_facade_reexports() {
+    // Keep this denylist fully qualified.  In particular, do not match the
+    // leaf name `EmotionExecutor`: `audio2face3d::audio2emotion::EmotionExecutor`
+    // is a current facade trait and is intentionally not removed.
+    const REMOVED_PUBLIC_PATHS: &[(&str, &str)] = &[
+        (
+            "animation.rs",
+            "audio2face3d::animation::RegressionExecutor",
+        ),
+        ("animation.rs", "audio2face3d::animation::DiffusionExecutor"),
+        (
+            "animation.rs",
+            "audio2face3d::animation::InteractiveRegressionExecutor",
+        ),
+        (
+            "animation.rs",
+            "audio2face3d::animation::InteractiveDiffusionExecutor",
+        ),
+        ("animation.rs", "audio2face3d::animation::RegressionBackend"),
+        ("animation.rs", "audio2face3d::animation::DiffusionBackend"),
+        (
+            "animation.rs",
+            "audio2face3d::animation::LayeredGeometryPostprocessor",
+        ),
+        (
+            "animation.rs",
+            "audio2face3d::animation::GpuRegressionPostprocessor",
+        ),
+        (
+            "animation.rs",
+            "audio2face3d::animation::CpuBlendshapeJobRunner",
+        ),
+        ("animation.rs", "audio2face3d::animation::SkinAnimator"),
+        (
+            "animation.rs",
+            "audio2face3d::animation::SkinAnimatorParams",
+        ),
+        ("animation.rs", "audio2face3d::animation::TongueAnimator"),
+        (
+            "animation.rs",
+            "audio2face3d::animation::TongueAnimatorParams",
+        ),
+        ("animation.rs", "audio2face3d::animation::EyesAnimator"),
+        (
+            "animation.rs",
+            "audio2face3d::animation::EyesAnimatorParams",
+        ),
+        ("animation.rs", "audio2face3d::animation::PcaReconstruction"),
+        ("animation.rs", "audio2face3d::animation::JawTransform"),
+        ("animation.rs", "audio2face3d::animation::TeethAnimator"),
+        (
+            "animation.rs",
+            "audio2face3d::animation::TeethAnimatorParameters",
+        ),
+        ("lib.rs", "audio2face3d::BlendshapeExecutorBundle"),
+        (
+            "lib.rs",
+            "audio2face3d::InteractiveBlendshapeExecutorBundle",
+        ),
+        (
+            "lib.rs",
+            "audio2face3d::InteractiveGpuBlendshapeExecutorBundle",
+        ),
+    ];
+    assert!(
+        !REMOVED_PUBLIC_PATHS
+            .iter()
+            .any(|(_, path)| *path == "audio2face3d::audio2emotion::EmotionExecutor")
+    );
+
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let crate_root =
+        std::fs::read_to_string(source_root.join("lib.rs")).expect("failed to read the crate root");
+    assert!(
+        !crate_root
+            .lines()
+            .any(|line| line.trim() == "pub mod emotion;"),
+        "removed public module is still exported: audio2face3d::emotion"
+    );
+    for (file, path) in REMOVED_PUBLIC_PATHS {
+        let public_surface = std::fs::read_to_string(source_root.join(file))
+            .unwrap_or_else(|error| panic!("failed to read {file}: {error}"));
+        let leaf = path
+            .rsplit("::")
+            .next()
+            .expect("fully qualified path has a leaf");
+        assert!(
+            !public_surface.split(';').any(|statement| {
+                (statement
+                    .lines()
+                    .any(|line| line.trim().starts_with("pub use "))
+                    && statement
+                        .split(|character: char| {
+                            !character.is_ascii_alphanumeric() && character != '_'
+                        })
+                        .any(|identifier| identifier == leaf))
+                    || statement
+                        .lines()
+                        .any(|line| line.trim() == format!("pub mod {leaf}"))
+            }),
+            "removed public path is still re-exported: {path}"
+        );
+    }
+}
+
+#[test]
 fn borrowed_cuda_contracts_follow_the_audited_thread_safety_matrix() {
     assert_send_sync::<DeviceView<'static, f32>>();
     assert_send_sync::<CudaStreamRef<'static>>();

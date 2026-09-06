@@ -24,8 +24,7 @@ use crate::common::NetworkDocument;
 use crate::cuda::GpuDevice;
 #[cfg(feature = "tensorrt")]
 use crate::emotion::{
-    ClassifierContract, EmotionCallbackMetadata, EmotionExecutor, EmotionTrack,
-    TensorRtClassifierBackend,
+    ClassifierContract, ClassifierScheduler, EmotionTrack, TensorRtClassifierBackend,
 };
 #[cfg(feature = "tensorrt")]
 use crate::{Model, ModelKind, ModelParameters};
@@ -131,12 +130,11 @@ pub fn create_classifier_emotion_interactive_executor(
 ///
 /// Corresponds to `nva2e::IClassifierModel::EmotionExecutor` and implements
 /// `nva2e::IEmotionExecutor` from
-/// `audio2emotion-sdk/include/audio2emotion/executor.h`. It replaces the current
-/// generic `crate::emotion::EmotionExecutor<B>` with an owning facade whose
-/// classifier backend is private.
+/// `audio2emotion-sdk/include/audio2emotion/executor.h`. The classifier backend
+/// is a private implementation detail.
 #[cfg(feature = "tensorrt")]
 pub struct ClassifierEmotionExecutor {
-    execution: EmotionExecutor,
+    execution: ClassifierScheduler,
     backend: TensorRtClassifierBackend,
     contract: ClassifierContract,
     tracks: Vec<crate::audio2emotion::EmotionTrackResources>,
@@ -152,11 +150,10 @@ pub struct ClassifierEmotionExecutor {
 ///
 /// Corresponds to `nva2e::IClassifierModel::EmotionInteractiveExecutor` and
 /// `nva2e::IEmotionInteractiveExecutor` from
-/// `audio2emotion-sdk/include/audio2emotion/interactive_executor.h`. It replaces
-/// the current generic `crate::emotion::InteractiveEmotionExecutor<B>`.
+/// `audio2emotion-sdk/include/audio2emotion/interactive_executor.h`.
 #[cfg(feature = "tensorrt")]
 pub struct ClassifierEmotionInteractiveExecutor {
-    inner: crate::emotion::InteractiveEmotionExecutor<TensorRtClassifierBackend>,
+    inner: crate::emotion::ClassifierInteractiveExecution<TensorRtClassifierBackend>,
     contract: ClassifierContract,
     audio: Arc<crate::audio2x::AudioAccumulator>,
     preferred_emotions: Option<Arc<EmotionAccumulator>>,
@@ -226,7 +223,7 @@ impl ClassifierEmotionExecutor {
             data.clone(),
             &gpu_parameters,
         )?;
-        let execution = EmotionExecutor::new(
+        let execution = ClassifierScheduler::new(
             contract.clone(),
             data,
             model_parameters,
@@ -308,32 +305,6 @@ impl ClassifierEmotionExecutor {
         self.execution.output_emotion_length()
     }
 
-    /// Runs the owned classifier scheduler and invokes a host callback with
-    /// post-processed emotion values. The native device callback adapter is
-    /// intentionally separate from this host convenience path.
-    pub fn execute_host<C>(
-        &mut self,
-        mut callback: C,
-    ) -> crate::Result<crate::emotion::EmotionExecutionStatus>
-    where
-        C: FnMut(EmotionCallbackMetadata, &[f32]) -> ControlFlow<()>,
-    {
-        let tracks = self
-            .tracks
-            .iter()
-            .enumerate()
-            .map(|(index, track)| EmotionTrack {
-                audio: &track.audio,
-                preferred_emotions: self.preferred_emotions.get(index).map(Arc::as_ref),
-                input_strength: self.input_strength,
-            })
-            .collect::<Vec<_>>();
-        self.execution
-            .execute(&tracks, &mut self.backend, |metadata, output| {
-                matches!(callback(metadata, output), ControlFlow::Continue(()))
-            })
-    }
-
     pub fn reset_track(&mut self, track: usize) -> crate::Result<()> {
         <Self as crate::audio2x::Executor>::reset_track(self, track)
     }
@@ -405,7 +376,7 @@ impl ClassifierEmotionInteractiveExecutor {
                 ),
             });
         }
-        let mut inner = crate::emotion::InteractiveEmotionExecutor::new(
+        let mut inner = crate::emotion::ClassifierInteractiveExecution::new(
             backend,
             contract.clone(),
             data.clone(),

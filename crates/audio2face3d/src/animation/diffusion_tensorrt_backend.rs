@@ -9,7 +9,7 @@ use crate::tensorrt::TensorRtSession;
 use std::path::Path;
 use std::sync::Arc;
 
-pub struct TensorRtDiffusionBackend {
+pub(crate) struct TensorRtDiffusionBackend {
     contract: DiffusionContract,
     device: Arc<GpuDevice>,
     session: TensorRtSession,
@@ -39,18 +39,6 @@ impl TensorRtDiffusionBackend {
             session,
             stream,
         })
-    }
-
-    pub fn contract(&self) -> &DiffusionContract {
-        &self.contract
-    }
-
-    pub fn device(&self) -> &GpuDevice {
-        &self.device
-    }
-
-    pub fn session(&self) -> &TensorRtSession {
-        &self.session
     }
 
     pub fn stream(&self) -> &CudaStream {

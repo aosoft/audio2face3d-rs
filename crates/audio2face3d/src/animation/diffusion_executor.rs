@@ -1,12 +1,14 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
 use crate::animation::{
     DiffusionContract, DiffusionFrameInput, DiffusionInferenceOutput, DiffusionState, PhiloxNoise,
 };
 use crate::common::{AudioAccumulator, EmotionAccumulator, Error, Result};
-use std::sync::{Condvar, Mutex};
+use std::sync::Mutex;
 
 pub const MAX_DIFFUSION_TRACKS: usize = 32;
 
-pub trait DiffusionBackend {
+pub(crate) trait DiffusionBackend {
     fn infer_batch(
         &mut self,
         inputs: &[(usize, DiffusionFrameInput)],
@@ -25,7 +27,7 @@ where
     }
 }
 
-pub struct DiffusionTrack<'a> {
+pub(crate) struct DiffusionTrack<'a> {
     pub audio: &'a AudioAccumulator,
     pub emotions: &'a EmotionAccumulator,
     pub identity_index: usize,
@@ -61,7 +63,6 @@ struct DiffusionExecutionState {
     recurrent: Mutex<DiffusionState>,
     noise: Mutex<PhiloxNoise>,
     state: Mutex<DiffusionSchedulerState>,
-    idle: Condvar,
 }
 
 struct DiffusionRunningGuard<'a> {
@@ -72,7 +73,6 @@ impl Drop for DiffusionRunningGuard<'_> {
     fn drop(&mut self) {
         if let Ok(mut state) = self.execution.state.lock() {
             state.running = false;
-            self.execution.idle.notify_all();
         }
     }
 }
@@ -94,7 +94,6 @@ impl DiffusionExecutionState {
                 running: false,
                 inferences: vec![0; track_count],
             }),
-            idle: Condvar::new(),
         })
     }
 
@@ -598,20 +597,12 @@ impl DiffusionExecutionState {
             .copied()
             .ok_or_else(|| invalid("diffusion track is out of range"))
     }
-
-    fn wait(&self) -> Result<()> {
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
-        while state.running {
-            state = self.idle.wait(state).map_err(|_| poisoned())?;
-        }
-        Ok(())
-    }
 }
 
 /// Internal static-dispatch Diffusion execution.
 ///
 /// The concrete backend and post-processor stay behind the non-generic
-/// facade. The legacy [`DiffusionExecutor`] alias is retained until Step 7.
+/// facade.
 #[derive(Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct DiffusionGeometryExecution<B, P> {
@@ -622,11 +613,11 @@ pub(crate) struct DiffusionGeometryExecution<B, P> {
 
 /// Legacy low-level scheduler retained until the Step 7 API removal.
 #[derive(Debug)]
-pub struct DiffusionExecutor {
+pub(crate) struct DiffusionScheduler {
     inner: DiffusionGeometryExecution<(), ()>,
 }
 
-impl DiffusionExecutor {
+impl DiffusionScheduler {
     pub fn new(contract: DiffusionContract, track_count: usize, seed: u64) -> Result<Self> {
         Ok(Self {
             inner: DiffusionGeometryExecution::with_dependencies(
@@ -692,10 +683,6 @@ impl DiffusionExecutor {
         self.inner.reset(track)
     }
 
-    pub fn wait(&self) -> Result<()> {
-        self.inner.wait()
-    }
-
     #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
     pub(crate) fn next_inference_index(&self, track: usize) -> Result<usize> {
         self.inner.state.next_inference_index(track)
@@ -720,10 +707,6 @@ impl<B, P> DiffusionGeometryExecution<B, P> {
 
     pub(crate) fn reset(&self, track: usize) -> Result<()> {
         self.state.reset(track)
-    }
-
-    pub(crate) fn wait(&self) -> Result<()> {
-        self.state.wait()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -903,7 +886,6 @@ mod tests {
             .unwrap();
         assert_eq!(seen.iter().filter(|item| item.track == 0).count(), 1);
         assert!(seen.iter().filter(|item| item.track == 1).count() > 1);
-        execution.wait().unwrap();
         execution.reset(0).unwrap();
     }
 
@@ -919,7 +901,7 @@ mod tests {
             identity_index: 0,
             input_strength: 1.0,
         };
-        let executor = DiffusionExecutor::new(contract.clone(), 1, 1).unwrap();
+        let executor = DiffusionScheduler::new(contract.clone(), 1, 1).unwrap();
         let result_size = contract.result_layout.total().unwrap();
         let total_frames = contract.total_frames();
         let mut backend = move |inputs: &[(usize, DiffusionFrameInput)]| {
@@ -991,7 +973,7 @@ mod tests {
             },
         ];
         let mut backend = FixedBatchTrace::new(&contract);
-        let executor = DiffusionExecutor::new(contract.clone(), 4, 17).unwrap();
+        let executor = DiffusionScheduler::new(contract.clone(), 4, 17).unwrap();
 
         for _ in 0..16 {
             let status = executor
@@ -1029,7 +1011,7 @@ mod tests {
             })
             .collect();
         let mut control_backend = FixedBatchTrace::new(&contract);
-        let control = DiffusionExecutor::new(contract, 4, 17).unwrap();
+        let control = DiffusionScheduler::new(contract, 4, 17).unwrap();
         control
             .execute(&control_tracks, &mut control_backend, |_, _| true)
             .unwrap();
@@ -1087,7 +1069,7 @@ mod tests {
                 })
                 .collect())
         };
-        let executor = DiffusionExecutor::new(contract, 1, 7).unwrap();
+        let executor = DiffusionScheduler::new(contract, 1, 7).unwrap();
         let tracks = [track];
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for _ in 0..8 {

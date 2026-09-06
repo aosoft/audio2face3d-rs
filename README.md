@@ -17,8 +17,8 @@ The Rust modules correspond to the original SDK as follows:
 | `audio2x-common` schemas and accumulators | `audio2face3d::common` |
 | `audio2x-common` CUDA support | `audio2face3d::cuda` |
 | `audio2x-common` TensorRT support | `audio2face3d::tensorrt` |
-| `audio2face-sdk` | `audio2face3d::animation` |
-| `audio2emotion-sdk` | `audio2face3d::emotion` |
+| `audio2face-sdk` | `audio2face3d::audio2face` |
+| `audio2emotion-sdk` | `audio2face3d::audio2emotion` |
 
 ## Release support contract
 

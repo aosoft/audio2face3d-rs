@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
 use crate::animation::{
     EyesAnimatorParams, JawParameters, RegressionResultLayout, SkinAnimatorParams,
     TongueAnimatorParams,
@@ -22,7 +24,7 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 /// Host-side geometry shared by every track in one regression model.
-pub struct GpuRegressionModel<'a> {
+pub(crate) struct GpuRegressionModel<'a> {
     pub skin_neutral_pose: &'a [f32],
     pub skin_lip_open_delta: &'a [f32],
     pub skin_eye_close_delta: &'a [f32],
@@ -33,7 +35,7 @@ pub struct GpuRegressionModel<'a> {
 
 /// Per-track animator controls uploaded once and retained on the device.
 #[derive(Clone, Copy)]
-pub struct GpuRegressionTrackParams {
+pub(crate) struct GpuRegressionTrackParams {
     pub skin: SkinAnimatorParams,
     pub tongue: TongueAnimatorParams,
     pub jaw: JawParameters,
@@ -41,7 +43,7 @@ pub struct GpuRegressionTrackParams {
 }
 
 /// Device output allocations. Each allocation uses track-major layout.
-pub struct GpuRegressionOutputs<'a> {
+pub(crate) struct GpuRegressionOutputs<'a> {
     pub skin: &'a mut DeviceBuffer<f32>,
     pub tongue: &'a mut DeviceBuffer<f32>,
     pub jaw_transforms: &'a mut DeviceBuffer<f32>,
@@ -49,7 +51,7 @@ pub struct GpuRegressionOutputs<'a> {
 }
 
 /// Owns immutable model data and persistent per-track animation state.
-pub struct GpuRegressionPostprocessor {
+pub(crate) struct GpuRegressionPostprocessor {
     module: CudaModule,
     jaw_module: CudaModule,
     skin_animator_data: DeviceBuffer<f32>,
@@ -339,17 +341,6 @@ impl GpuRegressionPostprocessor {
         })
     }
 
-    pub const fn track_count(&self) -> usize {
-        self.track_count
-    }
-
-    /// Resets IIR initialization and eye time for every track.
-    pub fn reset(&mut self, stream: &CudaStream) -> Result<()> {
-        zero_buffer(&mut self.initialized_tracks, stream)?;
-        zero_buffer(&mut self.skin_interp, stream)?;
-        zero_buffer(&mut self.eyes_live_time, stream)
-    }
-
     pub(crate) fn reset_track(&mut self, track: usize, stream: &CudaStream) -> Result<()> {
         if track >= self.track_count {
             return Err(invalid("GPU postprocessor reset track is out of range"));
@@ -371,6 +362,7 @@ impl GpuRegressionPostprocessor {
     ///
     /// The returned fence borrows all input/output/state allocations until the
     /// recorded completion event has synchronized.
+    #[cfg(test)]
     pub fn enqueue<'a>(
         &'a mut self,
         network_result: &'a DeviceBuffer<f32>,
@@ -620,7 +612,7 @@ impl GpuRegressionPostprocessor {
     }
 }
 
-pub struct GpuRegressionPostprocessFence<'a> {
+pub(crate) struct GpuRegressionPostprocessFence<'a> {
     event: CudaEvent,
     _resources: PhantomData<(
         &'a mut GpuRegressionPostprocessor,

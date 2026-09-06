@@ -36,10 +36,6 @@ impl PcaReconstruction {
     pub const fn shape_count(&self) -> usize {
         self.shape_count
     }
-    pub fn shapes(&self) -> &[f32] {
-        &self.shapes
-    }
-
     /// CPU parity oracle for the cuBLAS column-major SGEMV/SGEMM path.
     pub fn reconstruct(&self, coefficients: &[f32], batch_size: usize) -> Result<Vec<f32>> {
         let coefficient_count =

@@ -35,7 +35,23 @@ use audio2face3d::common::{
     BlendshapeConfig, GeometryParameters, NetworkDocument, load_blendshape_config,
 };
 use audio2face3d::cuda::GpuDevice;
-use audio2face3d::{CallbackMetadata, GeometryFrame, Model, ModelKind, ModelParameters};
+use audio2face3d::{Model, ModelKind, ModelParameters};
+
+#[derive(Clone, Copy)]
+struct CallbackMetadata {
+    track: usize,
+    inference: Option<usize>,
+    frame: usize,
+    timestamp: i64,
+    next_timestamp: i64,
+}
+
+struct GeometryFrame {
+    skin: Vec<f32>,
+    tongue: Vec<f32>,
+    jaw_transform: [f32; 16],
+    eyes_rotation: audio2face3d::animation::EyesRotation,
+}
 use audio2face3d_cli::reference::{
     ArtifactWriter, Case, FileProvenance, Producer, RecordMetadata, load_fixture, sha256_file,
 };
@@ -362,7 +378,6 @@ fn capture_standard_emotion(
                     "postprocess",
                     "emotion",
                     CallbackMetadata {
-                        kind: ModelKind::Emotion,
                         track: results.metadata.track_index,
                         inference: None,
                         frame,
@@ -521,13 +536,12 @@ fn execute_facade_geometry(
     _callback_frames: &mut [usize],
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        let kind = geometry.kind();
         let mut callback_error = None;
         let mut callback = |results: GeometryResults<'_>| {
             if callback_error.is_some() {
                 return ControlFlow::Break(());
             }
-            if let Err(error) = write_facade_geometry_result(writer, layer, kind, results) {
+            if let Err(error) = write_facade_geometry_result(writer, layer, results) {
                 callback_error = Some(error);
                 ControlFlow::Break(())
             } else {
@@ -570,7 +584,6 @@ fn execute_facade_geometry(
 fn write_facade_geometry_result(
     writer: &mut ArtifactWriter,
     layer: &str,
-    kind: ModelKind,
     results: GeometryResults<'_>,
 ) -> io::Result<()> {
     let metadata = results.metadata;
@@ -579,7 +592,6 @@ fn write_facade_geometry_result(
         writer,
         layer,
         CallbackMetadata {
-            kind,
             track: metadata.track_index,
             inference: None,
             frame: metadata.frame_index,
@@ -694,7 +706,7 @@ fn capture_blendshape(
                 executor.audio_accumulator(track)?.accumulate(samples)?;
                 executor.audio_accumulator(track)?.close()?;
             }
-            capture_host_blendshape(&mut executor, model.kind(), writer)?;
+            capture_host_blendshape(&mut executor, writer)?;
         }
         BlendshapeSolverKind::Gpu => {
             let mut executor = geometry
@@ -706,7 +718,7 @@ fn capture_blendshape(
                 executor.audio_accumulator(track)?.accumulate(samples)?;
                 executor.audio_accumulator(track)?.close()?;
             }
-            capture_device_blendshape(&mut executor, model.kind(), writer)?;
+            capture_device_blendshape(&mut executor, writer)?;
         }
     }
     Ok(())
@@ -764,7 +776,6 @@ fn load_reference_blendshape_component(
 
 fn capture_host_blendshape(
     executor: &mut audio2face3d::audio2face::HostBlendshapeSolveExecutor,
-    kind: ModelKind,
     writer: &mut ArtifactWriter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::{Arc, Mutex};
@@ -790,12 +801,7 @@ fn capture_host_blendshape(
         });
         for event in captured.drain(..) {
             let (metadata, weights) = event?;
-            push_blendshape(
-                writer,
-                facade_callback_metadata(kind, metadata),
-                &weights,
-                &[],
-            )?;
+            push_blendshape(writer, facade_callback_metadata(metadata), &weights, &[])?;
         }
         match report.state {
             ExecutionState::Complete => return Ok(()),
@@ -809,7 +815,6 @@ fn capture_host_blendshape(
 
 fn capture_device_blendshape(
     executor: &mut audio2face3d::audio2face::DeviceBlendshapeSolveExecutor,
-    kind: ModelKind,
     writer: &mut ArtifactWriter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
@@ -823,7 +828,7 @@ fn capture_device_blendshape(
                 .and_then(|_| {
                     push_blendshape(
                         writer,
-                        facade_callback_metadata(kind, result.metadata),
+                        facade_callback_metadata(result.metadata),
                         &weights,
                         &[],
                     )
@@ -849,12 +854,8 @@ fn capture_device_blendshape(
     }
 }
 
-fn facade_callback_metadata(
-    kind: ModelKind,
-    metadata: audio2face3d::audio2x::CallbackMetadata,
-) -> CallbackMetadata {
+fn facade_callback_metadata(metadata: audio2face3d::audio2x::CallbackMetadata) -> CallbackMetadata {
     CallbackMetadata {
-        kind,
         track: metadata.track_index,
         inference: None,
         frame: metadata.frame_index,
@@ -1014,16 +1015,12 @@ fn compute_interactive_geometry(
     layer: &str,
     writer: &mut ArtifactWriter,
 ) -> Result<InteractiveExecutionReport, Box<dyn std::error::Error>> {
-    let kind = match bundle {
-        FacadeInteractiveGeometryExecutorBundle::Regression(_) => ModelKind::Regression,
-        FacadeInteractiveGeometryExecutorBundle::Diffusion(_) => ModelKind::Diffusion,
-    };
     let mut callback_error = None;
     let mut callback = |results: GeometryResults<'_>| {
         if callback_error.is_some() {
             return ControlFlow::Break(());
         }
-        match write_facade_geometry_result(writer, layer, kind, results) {
+        match write_facade_geometry_result(writer, layer, results) {
             Ok(()) => ControlFlow::Continue(()),
             Err(error) => {
                 callback_error = Some(error);

@@ -3,8 +3,6 @@
 use crate::common::{BlendshapeConfig, Error, NpzArchive, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex, mpsc};
-use std::thread::{self, JoinHandle};
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidSchema(message.into())
@@ -642,116 +640,6 @@ fn validate_pairs(values: &[i32], name: &str) -> Result<()> {
     }
 }
 
-type SolveCallback = Box<dyn FnOnce(Result<Vec<f32>>) + Send + 'static>;
-
-enum SolverJob {
-    Solve(Vec<f32>, SolveCallback),
-    Reset,
-    Stop,
-}
-
-struct PendingJobs {
-    count: Mutex<usize>,
-    idle: Condvar,
-}
-
-/// Ordered, single-worker CPU Solve queue matching the SDK job-runner semantics.
-pub struct CpuBlendshapeJobRunner {
-    sender: mpsc::Sender<SolverJob>,
-    pending: Arc<PendingJobs>,
-    worker: Option<JoinHandle<()>>,
-}
-
-impl CpuBlendshapeJobRunner {
-    pub fn new(mut solver: CpuBlendshapeSolver) -> Self {
-        let (sender, receiver) = mpsc::channel();
-        let pending = Arc::new(PendingJobs {
-            count: Mutex::new(0),
-            idle: Condvar::new(),
-        });
-        let worker_pending = Arc::clone(&pending);
-        let worker = thread::spawn(move || {
-            while let Ok(job) = receiver.recv() {
-                match job {
-                    SolverJob::Solve(target, callback) => callback(solver.solve(&target)),
-                    SolverJob::Reset => solver.reset(),
-                    SolverJob::Stop => break,
-                }
-                let mut count = worker_pending
-                    .count
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                *count -= 1;
-                if *count == 0 {
-                    worker_pending.idle.notify_all();
-                }
-            }
-        });
-        Self {
-            sender,
-            pending,
-            worker: Some(worker),
-        }
-    }
-
-    pub fn solve_async(
-        &self,
-        target_pose: Vec<f32>,
-        callback: impl FnOnce(Result<Vec<f32>>) + Send + 'static,
-    ) -> Result<()> {
-        self.enqueue(SolverJob::Solve(target_pose, Box::new(callback)))
-    }
-
-    pub fn reset(&self) -> Result<()> {
-        self.enqueue(SolverJob::Reset)
-    }
-
-    fn enqueue(&self, job: SolverJob) -> Result<()> {
-        {
-            let mut count = self
-                .pending
-                .count
-                .lock()
-                .map_err(|_| invalid("blendshape job runner mutex poisoned"))?;
-            *count += 1;
-        }
-        if self.sender.send(job).is_err() {
-            let mut count = self
-                .pending
-                .count
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            *count -= 1;
-            return Err(invalid("blendshape job runner stopped"));
-        }
-        Ok(())
-    }
-
-    pub fn wait(&self) -> Result<()> {
-        let count = self
-            .pending
-            .count
-            .lock()
-            .map_err(|_| invalid("blendshape job runner mutex poisoned"))?;
-        let _count = self
-            .pending
-            .idle
-            .wait_while(count, |count| *count != 0)
-            .map_err(|_| invalid("blendshape job runner mutex poisoned"))?;
-        Ok(())
-    }
-}
-
-impl Drop for CpuBlendshapeJobRunner {
-    fn drop(&mut self) {
-        let _ = self.wait();
-        let _ = self.sender.send(SolverJob::Stop);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,26 +775,6 @@ mod tests {
         let weights = solver.solve(&target).unwrap();
         assert!(weights.iter().all(|value| value.is_finite()));
         assert!(weights.iter().all(|value| (0.0..=1.0).contains(value)));
-    }
-
-    #[test]
-    fn job_runner_preserves_callback_order() {
-        let runner = CpuBlendshapeJobRunner::new(unregularized_solver());
-        let order = Arc::new(Mutex::new(Vec::new()));
-        for index in 0..100 {
-            let order = Arc::clone(&order);
-            runner
-                .solve_async(
-                    data().evaluate_pose(&[0.2, 0.3, 0.4]).unwrap(),
-                    move |result| {
-                        result.unwrap();
-                        order.lock().unwrap().push(index);
-                    },
-                )
-                .unwrap();
-        }
-        runner.wait().unwrap();
-        assert_eq!(*order.lock().unwrap(), (0..100).collect::<Vec<_>>());
     }
 
     #[test]

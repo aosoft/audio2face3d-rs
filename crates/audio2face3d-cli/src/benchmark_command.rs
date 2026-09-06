@@ -1,24 +1,15 @@
 use crate::async_util::block_on;
 use audio2face3d::animation::{
-    BlendshapeData, DiffusionBackend, DiffusionContract, DiffusionFrameInput, GpuBlendshapeSolver,
-    InteractiveGpuBlendshapeLayer, RegressionBackend, RegressionContract, RegressionFrameInput,
-    RegressionGeometry, TensorRtDiffusionBackend, TensorRtRegressionBackend,
-};
-use audio2face3d::audio2emotion::post_process::{
-    PostProcessData, PostProcessParams, PostProcessor,
+    BlendshapeData, GpuBlendshapeSolver, InteractiveGpuBlendshapeLayer, RegressionGeometry,
 };
 use audio2face3d::audio2face::{
     BlendshapeSolveComponentParameters, BlendshapeSolverConfigView, BlendshapeSolverDataView,
     BlendshapeSolverParams, CpuBlendshapeSolver, DeviceBlendshapeSolveInteractiveExecutor,
     create_blendshape_solver,
 };
-use audio2face3d::common::{
-    Error, GeometryAudioParameters, GeometryParameters, NetworkDocument, Result,
-    load_blendshape_config,
-};
+use audio2face3d::common::{Error, Result, load_blendshape_config};
 use audio2face3d::cuda::{CudaStream, DeviceBuffer, GpuDevice};
-use audio2face3d::emotion::{ClassifierBackend, ClassifierContract, TensorRtClassifierBackend};
-use audio2face3d::{BenchmarkRunner, Model, ModelKind, ModelParameters};
+use audio2face3d::{BenchmarkRunner, Model, ModelKind, RawNetworkBenchmark};
 use audio2face3d_cli::reference::sha256_file;
 use std::cell::RefCell;
 use std::fs;
@@ -109,22 +100,7 @@ pub fn run(
 }
 
 enum Workload {
-    Regression {
-        backend: TensorRtRegressionBackend,
-        inputs: Vec<(usize, RegressionFrameInput)>,
-        outputs: Vec<Vec<f32>>,
-    },
-    Diffusion {
-        backend: TensorRtDiffusionBackend,
-        inputs: Vec<(usize, DiffusionFrameInput)>,
-        outputs: Vec<Vec<f32>>,
-    },
-    Emotion {
-        backend: TensorRtClassifierBackend,
-        inputs: Vec<(usize, Vec<f32>)>,
-        processors: Vec<PostProcessor>,
-        outputs: Vec<Vec<f32>>,
-    },
+    RawNetwork(RawNetworkBenchmark),
     CpuBlendshape {
         solver: Box<CpuBlendshapeSolver>,
         target: Vec<f32>,
@@ -146,133 +122,10 @@ enum Workload {
 
 impl Workload {
     fn load(model: &Model, engine: &Path, tracks: usize, scope: &str) -> Result<Self> {
-        if scope != "raw-network" {
-            return Self::load_blendshape(model, tracks, scope);
+        if scope == "raw-network" {
+            return RawNetworkBenchmark::load(model, engine, tracks).map(Self::RawNetwork);
         }
-        let device = GpuDevice::new(0)?;
-        match (model.kind(), model.network()) {
-            (ModelKind::Regression, NetworkDocument::Geometry(network)) => {
-                let GeometryParameters::Regression(parameters) = &network.params else {
-                    unreachable!()
-                };
-                let GeometryAudioParameters::Regression(audio) = &network.audio_params else {
-                    unreachable!()
-                };
-                let contract = RegressionContract::new(parameters, audio, 30, 1)?;
-                let inputs = (0..tracks)
-                    .map(|track| {
-                        (
-                            track,
-                            RegressionFrameInput {
-                                timestamp: 0,
-                                next_timestamp: 533,
-                                audio: vec![0.0; contract.audio_size],
-                                emotion: vec![0.0; contract.emotion_size],
-                            },
-                        )
-                    })
-                    .collect();
-                Ok(Self::Regression {
-                    backend: TensorRtRegressionBackend::load(device, engine, contract)?,
-                    inputs,
-                    outputs: Vec::new(),
-                })
-            }
-            (ModelKind::Diffusion, NetworkDocument::Geometry(network)) => {
-                let GeometryParameters::Diffusion(parameters) = &network.params else {
-                    unreachable!()
-                };
-                let GeometryAudioParameters::Diffusion(audio) = &network.audio_params else {
-                    unreachable!()
-                };
-                let contract = DiffusionContract::new(parameters, audio)?;
-                let inputs = (0..tracks)
-                    .map(|track| {
-                        (
-                            track,
-                            DiffusionFrameInput {
-                                audio: vec![0.0; contract.audio_size],
-                                emotions: vec![0.0; contract.center_frames * contract.emotion_size],
-                                identity: {
-                                    let mut value = vec![0.0; contract.identity_size];
-                                    value[track % contract.identity_size] = 1.0;
-                                    value
-                                },
-                                noise: vec![0.0; contract.noise_size().unwrap_or(0)],
-                                input_latents: vec![0.0; contract.state_size().unwrap_or(0)],
-                            },
-                        )
-                    })
-                    .collect();
-                Ok(Self::Diffusion {
-                    backend: TensorRtDiffusionBackend::load(device, engine, contract)?,
-                    inputs,
-                    outputs: Vec::new(),
-                })
-            }
-            (ModelKind::Emotion, NetworkDocument::Emotion(network)) => {
-                let ModelParameters::Emotion(config) = model.parameters(0)? else {
-                    unreachable!()
-                };
-                let data = PostProcessData {
-                    inference_emotion_length: network.emotions.len(),
-                    output_emotion_length: config.output_emotion_length,
-                    emotion_correspondence: network
-                        .emotions
-                        .iter()
-                        .map(|name| {
-                            config
-                                .emotion_correspondence
-                                .get(name)
-                                .copied()
-                                .ok_or_else(|| {
-                                    Error::InvalidSchema(format!(
-                                        "emotion correspondence is missing for {name}"
-                                    ))
-                                })
-                                .and_then(|value| {
-                                    i32::try_from(value).map_err(|_| {
-                                        Error::InvalidSchema(format!(
-                                            "emotion correspondence is out of range: {value}"
-                                        ))
-                                    })
-                                })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                };
-                let parameters = PostProcessParams {
-                    emotion_contrast: config.emotion_contrast,
-                    max_emotions: config.max_emotions,
-                    beginning_emotion: vec![0.0; config.output_emotion_length],
-                    preferred_emotion: config.preferred_emotion.clone(),
-                    live_blend_coefficient: config.live_blend_coef,
-                    enable_preferred_emotion: config.enable_preferred_emotion,
-                    preferred_emotion_strength: config.preferred_emotion_strength,
-                    live_transition_time: config.transition_smoothing,
-                    fixed_dt: config.fixed_dt,
-                    emotion_strength: config.emotion_strength,
-                };
-                let contract = ClassifierContract::new(
-                    60_000,
-                    network.audio_params.samplerate,
-                    network.emotions.len(),
-                    30,
-                    1,
-                    0,
-                )?;
-                Ok(Self::Emotion {
-                    backend: TensorRtClassifierBackend::load(device, engine, contract.clone())?,
-                    inputs: (0..tracks)
-                        .map(|track| (track, vec![0.0; contract.buffer_length]))
-                        .collect(),
-                    processors: (0..tracks)
-                        .map(|_| PostProcessor::new(data.clone(), parameters.clone()))
-                        .collect::<Result<Vec<_>>>()?,
-                    outputs: Vec::new(),
-                })
-            }
-            _ => unreachable!(),
-        }
+        Self::load_blendshape(model, tracks, scope)
     }
 
     fn load_blendshape(model: &Model, tracks: usize, scope: &str) -> Result<Self> {
@@ -382,28 +235,7 @@ impl Workload {
 
     fn infer(&mut self) -> Result<()> {
         match self {
-            Self::Regression {
-                backend,
-                inputs,
-                outputs,
-            } => *outputs = backend.infer_batch(inputs)?,
-            Self::Diffusion {
-                backend,
-                inputs,
-                outputs,
-            } => {
-                *outputs = backend
-                    .infer_batch(inputs)?
-                    .into_iter()
-                    .map(|value| value.prediction)
-                    .collect()
-            }
-            Self::Emotion {
-                backend,
-                inputs,
-                outputs,
-                ..
-            } => *outputs = backend.infer_batch(inputs)?,
+            Self::RawNetwork(workload) => workload.infer()?,
             Self::CpuBlendshape {
                 solver,
                 target,
@@ -425,18 +257,7 @@ impl Workload {
 
     fn post_process(&mut self) -> Result<()> {
         match self {
-            Self::Emotion {
-                processors,
-                outputs,
-                ..
-            } => {
-                for (processor, output) in processors.iter_mut().zip(outputs.iter()) {
-                    processor.process(output)?;
-                }
-            }
-            Self::Regression { outputs, .. } | Self::Diffusion { outputs, .. } => {
-                let _: f32 = outputs.iter().flatten().copied().sum();
-            }
+            Self::RawNetwork(workload) => workload.post_process()?,
             Self::CpuBlendshape { output, .. } => {
                 std::hint::black_box(output.iter().copied().sum::<f32>());
             }

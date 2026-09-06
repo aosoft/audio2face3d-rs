@@ -2,6 +2,24 @@ use crate::common::Result;
 use serde_json::{Value, json};
 use std::time::Instant;
 
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+use crate::animation::{
+    DiffusionBackend, DiffusionContract, DiffusionFrameInput, RegressionBackend,
+    RegressionContract, RegressionFrameInput, TensorRtDiffusionBackend, TensorRtRegressionBackend,
+};
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+use crate::audio2emotion::post_process::{PostProcessData, PostProcessParams, PostProcessor};
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+use crate::common::{Error, GeometryAudioParameters, GeometryParameters, NetworkDocument};
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+use crate::cuda::GpuDevice;
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+use crate::emotion::{ClassifierBackend, ClassifierContract, TensorRtClassifierBackend};
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+use crate::{Model, ModelKind, ModelParameters};
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+use std::path::Path;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Percentiles {
     pub p50_ns: u64,
@@ -116,6 +134,216 @@ impl BenchmarkRunner {
             phases: vec![build, cache, warmup, steady, post, e2e],
             peak_memory_mib: peak,
         })
+    }
+}
+
+/// Opaque raw TensorRT workload used by the companion CLI benchmark.
+///
+/// This type keeps implementation-only Backend/Postprocessor SPI inside the
+/// library while preserving separate inference and post-processing timing
+/// phases. It is not an executor construction or extension point.
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+pub struct RawNetworkBenchmark {
+    inner: RawNetworkBenchmarkInner,
+}
+
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+enum RawNetworkBenchmarkInner {
+    Regression {
+        backend: TensorRtRegressionBackend,
+        inputs: Vec<(usize, RegressionFrameInput)>,
+        outputs: Vec<Vec<f32>>,
+    },
+    Diffusion {
+        backend: TensorRtDiffusionBackend,
+        inputs: Vec<(usize, DiffusionFrameInput)>,
+        outputs: Vec<Vec<f32>>,
+    },
+    Emotion {
+        backend: TensorRtClassifierBackend,
+        inputs: Vec<(usize, Vec<f32>)>,
+        processors: Vec<PostProcessor>,
+        outputs: Vec<Vec<f32>>,
+    },
+}
+
+#[cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
+impl RawNetworkBenchmark {
+    pub fn load(model: &Model, engine: &Path, tracks: usize) -> Result<Self> {
+        let device = GpuDevice::new(0)?;
+        let inner = match (model.kind(), model.network()) {
+            (ModelKind::Regression, NetworkDocument::Geometry(network)) => {
+                let GeometryParameters::Regression(parameters) = &network.params else {
+                    unreachable!()
+                };
+                let GeometryAudioParameters::Regression(audio) = &network.audio_params else {
+                    unreachable!()
+                };
+                let contract = RegressionContract::new(parameters, audio, 30, 1)?;
+                let inputs = (0..tracks)
+                    .map(|track| {
+                        (
+                            track,
+                            RegressionFrameInput {
+                                timestamp: 0,
+                                next_timestamp: 533,
+                                audio: vec![0.0; contract.audio_size],
+                                emotion: vec![0.0; contract.emotion_size],
+                            },
+                        )
+                    })
+                    .collect();
+                RawNetworkBenchmarkInner::Regression {
+                    backend: TensorRtRegressionBackend::load(device, engine, contract)?,
+                    inputs,
+                    outputs: Vec::new(),
+                }
+            }
+            (ModelKind::Diffusion, NetworkDocument::Geometry(network)) => {
+                let GeometryParameters::Diffusion(parameters) = &network.params else {
+                    unreachable!()
+                };
+                let GeometryAudioParameters::Diffusion(audio) = &network.audio_params else {
+                    unreachable!()
+                };
+                let contract = DiffusionContract::new(parameters, audio)?;
+                let noise_size = contract.noise_size()?;
+                let state_size = contract.state_size()?;
+                let inputs = (0..tracks)
+                    .map(|track| {
+                        (
+                            track,
+                            DiffusionFrameInput {
+                                audio: vec![0.0; contract.audio_size],
+                                emotions: vec![0.0; contract.center_frames * contract.emotion_size],
+                                identity: {
+                                    let mut value = vec![0.0; contract.identity_size];
+                                    value[track % contract.identity_size] = 1.0;
+                                    value
+                                },
+                                noise: vec![0.0; noise_size],
+                                input_latents: vec![0.0; state_size],
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                RawNetworkBenchmarkInner::Diffusion {
+                    backend: TensorRtDiffusionBackend::load(device, engine, contract)?,
+                    inputs,
+                    outputs: Vec::new(),
+                }
+            }
+            (ModelKind::Emotion, NetworkDocument::Emotion(network)) => {
+                let ModelParameters::Emotion(config) = model.parameters(0)? else {
+                    unreachable!()
+                };
+                let data = PostProcessData {
+                    inference_emotion_length: network.emotions.len(),
+                    output_emotion_length: config.output_emotion_length,
+                    emotion_correspondence: network
+                        .emotions
+                        .iter()
+                        .map(|name| {
+                            config
+                                .emotion_correspondence
+                                .get(name)
+                                .copied()
+                                .ok_or_else(|| {
+                                    Error::InvalidSchema(format!(
+                                        "emotion correspondence is missing for {name}"
+                                    ))
+                                })
+                                .and_then(|value| {
+                                    i32::try_from(value).map_err(|_| {
+                                        Error::InvalidSchema(format!(
+                                            "emotion correspondence is out of range: {value}"
+                                        ))
+                                    })
+                                })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                };
+                let parameters = PostProcessParams {
+                    emotion_contrast: config.emotion_contrast,
+                    max_emotions: config.max_emotions,
+                    beginning_emotion: vec![0.0; config.output_emotion_length],
+                    preferred_emotion: config.preferred_emotion.clone(),
+                    live_blend_coefficient: config.live_blend_coef,
+                    enable_preferred_emotion: config.enable_preferred_emotion,
+                    preferred_emotion_strength: config.preferred_emotion_strength,
+                    live_transition_time: config.transition_smoothing,
+                    fixed_dt: config.fixed_dt,
+                    emotion_strength: config.emotion_strength,
+                };
+                let contract = ClassifierContract::new(
+                    60_000,
+                    network.audio_params.samplerate,
+                    network.emotions.len(),
+                    30,
+                    1,
+                    0,
+                )?;
+                RawNetworkBenchmarkInner::Emotion {
+                    backend: TensorRtClassifierBackend::load(device, engine, contract.clone())?,
+                    inputs: (0..tracks)
+                        .map(|track| (track, vec![0.0; contract.buffer_length]))
+                        .collect(),
+                    processors: (0..tracks)
+                        .map(|_| PostProcessor::new(data.clone(), parameters.clone()))
+                        .collect::<Result<Vec<_>>>()?,
+                    outputs: Vec::new(),
+                }
+            }
+            _ => unreachable!(),
+        };
+        Ok(Self { inner })
+    }
+
+    pub fn infer(&mut self) -> Result<()> {
+        match &mut self.inner {
+            RawNetworkBenchmarkInner::Regression {
+                backend,
+                inputs,
+                outputs,
+            } => *outputs = backend.infer_batch(inputs)?,
+            RawNetworkBenchmarkInner::Diffusion {
+                backend,
+                inputs,
+                outputs,
+            } => {
+                *outputs = backend
+                    .infer_batch(inputs)?
+                    .into_iter()
+                    .map(|value| value.prediction)
+                    .collect();
+            }
+            RawNetworkBenchmarkInner::Emotion {
+                backend,
+                inputs,
+                outputs,
+                ..
+            } => *outputs = backend.infer_batch(inputs)?,
+        }
+        Ok(())
+    }
+
+    pub fn post_process(&mut self) -> Result<()> {
+        match &mut self.inner {
+            RawNetworkBenchmarkInner::Emotion {
+                processors,
+                outputs,
+                ..
+            } => {
+                for (processor, output) in processors.iter_mut().zip(outputs.iter()) {
+                    processor.process(output)?;
+                }
+            }
+            RawNetworkBenchmarkInner::Regression { outputs, .. }
+            | RawNetworkBenchmarkInner::Diffusion { outputs, .. } => {
+                std::hint::black_box(outputs.iter().flatten().copied().sum::<f32>());
+            }
+        }
+        Ok(())
     }
 }
 

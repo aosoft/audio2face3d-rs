@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
 use crate::common::{AudioAccumulator, EmotionAccumulator, Error, Result};
 use crate::emotion::{
     ClassifierBackend, ClassifierContract, EmotionCallbackMetadata, EmotionPostProcessData,
@@ -25,84 +27,6 @@ pub(crate) struct ClassifierInteractiveExecution<B> {
     input_strength: f32,
     cached_audio_length: Option<usize>,
     batch_size: usize,
-}
-
-/// Legacy generic executor retained until the Step 7 API removal.
-pub struct InteractiveEmotionExecutor<B> {
-    inner: ClassifierInteractiveExecution<B>,
-}
-
-impl<B: ClassifierBackend> InteractiveEmotionExecutor<B> {
-    pub fn new(
-        backend: B,
-        contract: ClassifierContract,
-        data: EmotionPostProcessData,
-        parameters: EmotionPostProcessParameters,
-    ) -> Result<Self> {
-        Ok(Self {
-            inner: ClassifierInteractiveExecution::new(backend, contract, data, parameters)?,
-        })
-    }
-
-    pub fn inference_cache_is_valid(&self) -> bool {
-        self.inner.inference_cache_is_valid()
-    }
-
-    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
-    pub(crate) fn emotion_count(&self) -> usize {
-        self.inner.data.output_emotion_length
-    }
-
-    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
-    pub(crate) fn frame_count(&self, audio: &AudioAccumulator) -> Result<usize> {
-        self.inner.frame_count(audio)
-    }
-
-    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
-    pub(crate) fn set_batch_size(&mut self, batch_size: usize) -> Result<()> {
-        self.inner.set_batch_size(batch_size)
-    }
-
-    pub fn invalidate_audio(&mut self) {
-        self.inner.invalidate_audio();
-    }
-
-    pub fn set_input_strength(&mut self, strength: f32) -> Result<()> {
-        self.inner.set_input_strength(strength)
-    }
-
-    pub fn set_inferences_to_skip(&mut self, skip: usize) -> Result<()> {
-        self.inner.set_inferences_to_skip(skip)
-    }
-
-    pub fn set_parameters(&mut self, parameters: EmotionPostProcessParameters) -> Result<()> {
-        self.inner.set_parameters(parameters)
-    }
-
-    pub fn compute_all<C>(
-        &mut self,
-        audio: &AudioAccumulator,
-        preferred: Option<&EmotionAccumulator>,
-        callback: C,
-    ) -> Result<InteractiveEmotionStatus>
-    where
-        C: FnMut(EmotionCallbackMetadata, &[f32]) -> bool,
-    {
-        self.inner.compute_all(audio, preferred, callback)
-    }
-
-    pub fn compute_frame<C>(
-        &mut self,
-        frame: usize,
-        audio: &AudioAccumulator,
-        preferred: Option<&EmotionAccumulator>,
-        callback: C,
-    ) -> Result<InteractiveEmotionStatus>
-    where
-        C: FnMut(EmotionCallbackMetadata, &[f32]) -> bool,
-    {
-        self.inner.compute_frame(frame, audio, preferred, callback)
-    }
 }
 
 impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
@@ -151,7 +75,7 @@ impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
         Ok(())
     }
 
-    fn set_batch_size(&mut self, batch_size: usize) -> Result<()> {
+    pub(crate) fn set_batch_size(&mut self, batch_size: usize) -> Result<()> {
         if batch_size == 0 {
             return Err(invalid(
                 "interactive classifier batch size must be non-zero",
@@ -173,28 +97,15 @@ impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
         Ok(())
     }
 
-    pub fn set_inferences_to_skip(&mut self, skip: usize) -> Result<()> {
-        if self.contract.inferences_to_skip != skip {
-            self.contract = ClassifierContract::new(
-                self.contract.buffer_length,
-                self.contract.sample_rate,
-                self.contract.emotion_length,
-                self.contract.frame_rate_numerator,
-                self.contract.frame_rate_denominator,
-                skip,
-            )?;
-            self.invalidate_audio();
-        }
-        Ok(())
-    }
-
     /// Changes only the replay stage; cached classifier outputs remain valid.
+    #[cfg(test)]
     pub fn set_parameters(&mut self, parameters: EmotionPostProcessParameters) -> Result<()> {
         EmotionPostProcessor::new(self.data.clone(), parameters.clone())?;
         self.parameters = parameters;
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn compute_all<C>(
         &mut self,
         audio: &AudioAccumulator,
@@ -225,7 +136,11 @@ impl<B: ClassifierBackend> ClassifierInteractiveExecution<B> {
         self.compute_range(audio, preferred, frame + 1, Some(frame), callback)
     }
 
-    fn frame_count(&self, audio: &AudioAccumulator) -> Result<usize> {
+    pub(crate) fn emotion_count(&self) -> usize {
+        self.data.output_emotion_length
+    }
+
+    pub(crate) fn frame_count(&self, audio: &AudioAccumulator) -> Result<usize> {
         validate_closed_audio(audio)?;
         self.contract.frame_progress.available_windows(
             i64::try_from(audio.nb_accumulated_samples()).unwrap_or(i64::MAX),

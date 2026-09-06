@@ -20,9 +20,9 @@ use crate::audio2x::FrameRate;
 
 #[cfg(feature = "tensorrt")]
 use crate::animation::{
-    DiffusionCallbackMetadata, DiffusionContract, DiffusionExecutor, DiffusionPostprocessor,
-    DiffusionTrack, GeometryModelData, InteractiveDiffusionExecutor, RegressionGeometry,
-    TensorRtDiffusionBackend,
+    DiffusionCallbackMetadata, DiffusionContract, DiffusionGeometryInteractiveExecution,
+    DiffusionPostprocessor, DiffusionScheduler, DiffusionTrack, GeometryModelData,
+    RegressionGeometry, TensorRtDiffusionBackend,
 };
 #[cfg(feature = "tensorrt")]
 use crate::common::{GeometryAudioParameters, GeometryParameters, NetworkDocument};
@@ -125,12 +125,11 @@ impl DiffusionGeometryInteractiveExecutorFactory {
 ///
 /// Corresponds to `nva2f::IDiffusionModel::GeometryExecutor` in the model
 /// namespace and implements the `nva2f::IGeometryExecutor` contract from
-/// `audio2face-sdk/include/audio2face/executor.h`. It replaces the current
-/// `crate::animation::DiffusionExecutor` without exposing backend or
-/// post-processor type parameters.
+/// `audio2face-sdk/include/audio2face/executor.h` without exposing backend or
+/// post-processor types.
 #[cfg(feature = "tensorrt")]
 pub struct DiffusionGeometryExecutor {
-    execution: DiffusionExecutor,
+    execution: DiffusionScheduler,
     backend: TensorRtDiffusionBackend,
     postprocessors: Vec<DiffusionPostprocessor>,
     gpu_postprocessor: crate::animation::GpuRegressionPostprocessor,
@@ -155,11 +154,11 @@ pub struct DiffusionGeometryExecutor {
 ///
 /// Corresponds to `nva2f::IDiffusionModel::GeometryInteractiveExecutor` and
 /// the `nva2f::IGeometryInteractiveExecutor` contract in
-/// `audio2face-sdk/include/audio2face/interactive_executor.h`. It replaces the
-/// current generic `crate::animation::InteractiveDiffusionExecutor<B, P>`.
+/// `audio2face-sdk/include/audio2face/interactive_executor.h`.
 #[cfg(feature = "tensorrt")]
 pub struct DiffusionGeometryInteractiveExecutor {
-    execution: InteractiveDiffusionExecutor<TensorRtDiffusionBackend, DiffusionPostprocessor>,
+    execution:
+        DiffusionGeometryInteractiveExecution<TensorRtDiffusionBackend, DiffusionPostprocessor>,
     contract: DiffusionContract,
     audio: Arc<crate::audio2x::AudioAccumulator>,
     emotions: Arc<crate::audio2x::EmotionAccumulator>,
@@ -280,7 +279,7 @@ impl DiffusionGeometryInteractiveExecutor {
         let processor = model_data.diffusion_postprocessor(config, contract.result_layout)?;
         let audio = Arc::clone(&parameters.common.audio);
         let emotions = Arc::clone(&parameters.common.emotions);
-        let execution = InteractiveDiffusionExecutor::new_shared(
+        let execution = DiffusionGeometryInteractiveExecution::new(
             backend,
             contract.clone(),
             processor,
@@ -841,7 +840,7 @@ impl DiffusionGeometryExecutor {
             parameters.frame_rate.denominator() as f32 / parameters.frame_rate.numerator() as f32;
         let gpu_postprocessor =
             model_data.gpu_postprocessor(&device, backend.stream(), config, track_count, dt)?;
-        let execution = DiffusionExecutor::new(contract, track_count, parameters.noise_seed)?;
+        let execution = DiffusionScheduler::new(contract, track_count, parameters.noise_seed)?;
         let skin_output = device.allocate(
             owned_contract
                 .result_layout
@@ -922,7 +921,7 @@ impl DiffusionGeometryExecutor {
 
     /// Executes one available internal inference and applies the owned
     /// post-processor before invoking the host adapter callback.
-    pub fn execute_host<C>(
+    pub(crate) fn execute_host<C>(
         &mut self,
         mut callback: C,
     ) -> crate::Result<crate::animation::DiffusionExecutionStatus>

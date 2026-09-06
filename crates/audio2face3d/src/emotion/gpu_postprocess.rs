@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
 use crate::common::{Error, Result};
 use crate::cuda::{
     CudaEvent, CudaModule, CudaStream, DeviceBuffer, DeviceView, GpuDevice,
@@ -22,13 +24,13 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GpuEmotionKernelPath {
+pub(crate) enum GpuEmotionKernelPath {
     Local,
     Generic,
 }
 
 /// Persistent, per-track CUDA implementation of Audio2Emotion post-processing.
-pub struct GpuEmotionPostProcessor {
+pub(crate) struct GpuEmotionPostProcessor {
     module: CudaModule,
     data: EmotionPostProcessData,
     host_parameters: Vec<EmotionPostProcessParameters>,
@@ -119,30 +121,6 @@ impl GpuEmotionPostProcessor {
         }
     }
 
-    pub fn set_parameters(
-        &mut self,
-        track: usize,
-        parameters: EmotionPostProcessParameters,
-        stream: &CudaStream,
-    ) -> Result<()> {
-        parameters.validate(&self.data)?;
-        let current = self
-            .host_parameters
-            .get_mut(track)
-            .ok_or_else(|| invalid("GPU emotion parameter track is out of range"))?;
-        *current = parameters;
-        self.parameters.copy_from(
-            &pack_parameters(&self.host_parameters, self.data.output_emotion_length),
-            stream,
-        )?;
-        let preferred = self
-            .host_parameters
-            .iter()
-            .flat_map(|value| value.preferred_emotion.iter().copied())
-            .collect::<Vec<_>>();
-        self.preferred.copy_from(&preferred, stream)
-    }
-
     pub fn set_preferred(
         &mut self,
         track: usize,
@@ -211,6 +189,7 @@ impl GpuEmotionPostProcessor {
     ///
     /// The returned fence borrows processor, input, output, and stream until
     /// completion, preventing mutation or destruction of asynchronous state.
+    #[cfg(test)]
     pub fn enqueue<'a>(
         &'a mut self,
         input: &'a DeviceBuffer<f32>,
@@ -320,14 +299,16 @@ impl GpuEmotionPostProcessor {
         event.record(stream)?;
         Ok(GpuEmotionPostProcessFence {
             event,
+            #[cfg(test)]
             path,
             _resources: PhantomData,
         })
     }
 }
 
-pub struct GpuEmotionPostProcessFence<'a> {
+pub(crate) struct GpuEmotionPostProcessFence<'a> {
     event: CudaEvent,
+    #[cfg(test)]
     path: GpuEmotionKernelPath,
     _resources: PhantomData<(
         &'a mut GpuEmotionPostProcessor,
@@ -338,6 +319,7 @@ pub struct GpuEmotionPostProcessFence<'a> {
 }
 
 impl GpuEmotionPostProcessFence<'_> {
+    #[cfg(test)]
     pub const fn path(&self) -> GpuEmotionKernelPath {
         self.path
     }

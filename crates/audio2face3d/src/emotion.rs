@@ -1,14 +1,8 @@
-//! Audio2Emotion pipeline components.
+#![cfg_attr(not(feature = "tensorrt"), allow(unused_imports))]
+
+//! Internal Audio2Emotion implementation components.
 //!
-//! Classifier-backed execution is provided by [`EmotionExecutor`] and
-//! [`InteractiveEmotionExecutor`]. For manual/preferred-emotion animation
-//! without inference, use [`PostProcessEmotionExecutor`] or the owning
-//! [`PostProcessEmotionExecutorBundle`]. Streaming executors return
-//! [`EmotionExecutionStatus::AwaitingInput`] until the audio duration and any
-//! enabled preferred-emotion data are available, then advance until
-//! [`EmotionExecutionStatus::Complete`]. Interactive execution requires
-//! closed, non-dropped accumulators and replays temporal post-process state
-//! from frame zero.
+//! The supported public API is exposed through [`crate::audio2emotion`].
 
 mod binder;
 mod executor;
@@ -17,29 +11,22 @@ mod gpu_postprocess;
 mod interactive;
 mod postprocess;
 mod postprocess_executor;
-mod postprocess_model;
 #[cfg(feature = "tensorrt")]
 mod tensorrt_backend;
 
 pub use binder::EmotionBinder;
-pub use executor::{
-    ClassifierBackend, ClassifierContract, EmotionCallbackMetadata, EmotionExecutionStatus,
-    EmotionExecutor, EmotionTrack,
-};
+pub(crate) use executor::{ClassifierBackend, ClassifierScheduler, EmotionTrack};
+pub use executor::{ClassifierContract, EmotionCallbackMetadata, EmotionExecutionStatus};
 #[cfg(feature = "cuda")]
-pub use gpu_postprocess::{
-    GpuEmotionKernelPath, GpuEmotionPostProcessFence, GpuEmotionPostProcessor,
+pub(crate) use gpu_postprocess::GpuEmotionPostProcessor;
+pub(crate) use interactive::ClassifierInteractiveExecution;
+pub use interactive::InteractiveEmotionStatus;
+pub(crate) use postprocess::{
+    EmotionPostProcessData, EmotionPostProcessParameters, EmotionPostProcessor,
 };
-pub use interactive::{InteractiveEmotionExecutor, InteractiveEmotionStatus};
-pub use postprocess::{EmotionPostProcessData, EmotionPostProcessParameters, EmotionPostProcessor};
-pub use postprocess_executor::{
+pub(crate) use postprocess_executor::{
     InteractivePostProcessEmotionExecutor, PostProcessEmotionContract, PostProcessEmotionExecutor,
-    PostProcessEmotionInterrupt, PostProcessEmotionLayer, PostProcessEmotionTrack,
-};
-pub use postprocess_model::{
-    PostProcessEmotionBundleOptions, PostProcessEmotionExecutorBundle, PostProcessEmotionModel,
+    PostProcessEmotionLayer, PostProcessEmotionTrack,
 };
 #[cfg(feature = "tensorrt")]
-pub use tensorrt_backend::TensorRtClassifierBackend;
-
-pub const PIPELINE_NAME: &str = "audio2emotion";
+pub(crate) use tensorrt_backend::TensorRtClassifierBackend;

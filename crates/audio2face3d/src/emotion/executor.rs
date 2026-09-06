@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
 use crate::common::{
     AudioAccumulator, EmotionAccumulator, Error, Result, WindowProgress, WindowProgressParameters,
 };
@@ -88,7 +90,7 @@ impl ClassifierContract {
     }
 }
 
-pub trait ClassifierBackend {
+pub(crate) trait ClassifierBackend {
     /// Maximum batch accepted by the backend, when it has a finite profile.
     fn max_batch_size(&self) -> Option<usize> {
         None
@@ -113,7 +115,7 @@ where
     }
 }
 
-pub struct EmotionTrack<'a> {
+pub(crate) struct EmotionTrack<'a> {
     pub audio: &'a AudioAccumulator,
     pub preferred_emotions: Option<&'a EmotionAccumulator>,
     pub input_strength: f32,
@@ -163,10 +165,6 @@ impl ClassifierExecutionState {
         })
     }
 
-    fn contract(&self) -> &ClassifierContract {
-        &self.contract
-    }
-
     fn output_emotion_length(&self) -> usize {
         self.processors[0].data().output_emotion_length
     }
@@ -193,22 +191,6 @@ impl ClassifierExecutionState {
         *index = 0;
         self.processors[track].reset();
         Ok(())
-    }
-
-    fn set_parameters(
-        &mut self,
-        track: usize,
-        parameters: EmotionPostProcessParameters,
-    ) -> Result<()> {
-        if self.has_execution_started(track) {
-            return Err(invalid(
-                "emotion parameters cannot change after execution starts",
-            ));
-        }
-        self.processors
-            .get_mut(track)
-            .ok_or_else(|| invalid("emotion parameter track is out of range"))?
-            .set_parameters(parameters)
     }
 
     fn execute<B, C>(
@@ -343,21 +325,18 @@ impl ClassifierExecutionState {
 
 /// Internal classifier execution with an owned backend.
 ///
-/// The concrete `B` remains an implementation detail. The legacy
-/// [`EmotionExecutor`] alias keeps the previous backend-as-argument API until
-/// Step 7, while Step 3 can instantiate this type with the TensorRT backend.
+/// The concrete `B` remains an implementation detail.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ClassifierExecution<B> {
     state: ClassifierExecutionState,
     backend: B,
 }
 
-/// Legacy low-level classifier scheduler retained until Step 7.
-pub struct EmotionExecutor {
+pub(crate) struct ClassifierScheduler {
     inner: ClassifierExecution<()>,
 }
 
-impl EmotionExecutor {
+impl ClassifierScheduler {
     pub fn new(
         contract: ClassifierContract,
         data: EmotionPostProcessData,
@@ -369,6 +348,7 @@ impl EmotionExecutor {
         })
     }
 
+    #[cfg(test)]
     pub fn execute<B, C>(
         &mut self,
         tracks: &[EmotionTrack<'_>],
@@ -522,10 +502,6 @@ impl EmotionExecutor {
         })
     }
 
-    pub fn contract(&self) -> &ClassifierContract {
-        self.inner.contract()
-    }
-
     pub fn output_emotion_length(&self) -> usize {
         self.inner.output_emotion_length()
     }
@@ -541,14 +517,6 @@ impl EmotionExecutor {
     #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
     pub(crate) fn next_inference_index(&self, track: usize) -> Result<usize> {
         self.inner.state.next_inference_index(track)
-    }
-
-    pub fn set_parameters(
-        &mut self,
-        track: usize,
-        parameters: EmotionPostProcessParameters,
-    ) -> Result<()> {
-        self.inner.set_parameters(track, parameters)
     }
 }
 
@@ -567,10 +535,6 @@ impl<B> ClassifierExecution<B> {
         })
     }
 
-    pub(crate) fn contract(&self) -> &ClassifierContract {
-        self.state.contract()
-    }
-
     pub(crate) fn output_emotion_length(&self) -> usize {
         self.state.output_emotion_length()
     }
@@ -581,14 +545,6 @@ impl<B> ClassifierExecution<B> {
 
     pub(crate) fn reset(&mut self, track: usize) -> Result<()> {
         self.state.reset(track)
-    }
-
-    pub(crate) fn set_parameters(
-        &mut self,
-        track: usize,
-        parameters: EmotionPostProcessParameters,
-    ) -> Result<()> {
-        self.state.set_parameters(track, parameters)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -667,8 +623,10 @@ mod tests {
     #[test]
     fn executor_track_count_is_not_artificially_capped() {
         let (data, parameters) = processor_data();
-        assert!(EmotionExecutor::new(contract(0), data.clone(), parameters.clone(), 0).is_err());
-        assert!(EmotionExecutor::new(contract(0), data, parameters, 128).is_ok());
+        assert!(
+            ClassifierScheduler::new(contract(0), data.clone(), parameters.clone(), 0).is_err()
+        );
+        assert!(ClassifierScheduler::new(contract(0), data, parameters, 128).is_ok());
     }
 
     #[test]
@@ -686,7 +644,7 @@ mod tests {
         }
 
         let (data, parameters) = processor_data();
-        let mut executor = EmotionExecutor::new(contract(0), data, parameters, 2).unwrap();
+        let mut executor = ClassifierScheduler::new(contract(0), data, parameters, 2).unwrap();
         let first = audio();
         let second = audio();
         let tracks = [
@@ -777,7 +735,7 @@ mod tests {
     #[test]
     fn callback_stop_is_track_local_to_one_execution() {
         let (data, parameters) = processor_data();
-        let mut executor = EmotionExecutor::new(contract(1), data, parameters, 2).unwrap();
+        let mut executor = ClassifierScheduler::new(contract(1), data, parameters, 2).unwrap();
         let first = audio();
         let second = audio();
         let tracks = [

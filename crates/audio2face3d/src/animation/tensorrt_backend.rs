@@ -8,7 +8,7 @@ use crate::tensorrt::TensorRtSession;
 use std::path::Path;
 use std::sync::Arc;
 
-pub struct TensorRtRegressionBackend {
+pub(crate) struct TensorRtRegressionBackend {
     contract: RegressionContract,
     device: Arc<GpuDevice>,
     session: TensorRtSession,
@@ -33,18 +33,6 @@ impl TensorRtRegressionBackend {
             session,
             stream,
         })
-    }
-
-    pub fn contract(&self) -> &RegressionContract {
-        &self.contract
-    }
-
-    pub fn device(&self) -> &GpuDevice {
-        &self.device
-    }
-
-    pub fn session(&self) -> &TensorRtSession {
-        &self.session
     }
 
     pub fn stream(&self) -> &CudaStream {
@@ -113,7 +101,7 @@ fn inference_error(error: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::animation::{PumpStatus, RegressionExecutor, RegressionTrack};
+    use crate::animation::{PumpStatus, RegressionScheduler, RegressionTrack};
     use crate::common::{
         GeometryAudioParameters, GeometryParameters, NetworkDocument, load_network,
     };
@@ -164,7 +152,7 @@ mod tests {
             .accumulate(0, &vec![0.0; explicit_size])
             .unwrap();
         emotion_accumulator.close().unwrap();
-        let executor = RegressionExecutor::new(contract, 1).unwrap();
+        let executor = RegressionScheduler::new(contract, 1).unwrap();
         let implicit = vec![0.0; parameters.implicit_emotion_len];
         let track = RegressionTrack {
             audio: &audio_accumulator,

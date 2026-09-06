@@ -1,7 +1,10 @@
+#![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+
+#[cfg(test)]
+use crate::animation::SkinAnimatorParams;
 use crate::animation::{
-    EyesAnimator, EyesAnimatorParams, EyesRotation, JawParameters, JawTransform, PcaReconstruction,
-    RegressionBackend, RegressionFrameInput, RegressionResultLayout, SkinAnimator,
-    SkinAnimatorParams, TongueAnimator, TongueAnimatorParams,
+    EyesAnimator, EyesRotation, JawParameters, JawTransform, PcaReconstruction,
+    RegressionResultLayout, SkinAnimator, TongueAnimator,
 };
 use crate::common::{Error, Result};
 
@@ -14,85 +17,21 @@ pub struct RegressionGeometry {
 }
 
 /// Component-wise post-processing used by interactive geometry executors.
-pub trait LayeredGeometryPostprocessor {
+pub(crate) trait LayeredGeometryPostprocessor {
     fn process_skin(&mut self, inference: &[f32], dt: f32, stateless: bool) -> Result<Vec<f32>>;
     fn process_tongue(&mut self, inference: &[f32]) -> Result<Vec<f32>>;
     fn process_teeth(&mut self, inference: &[f32]) -> Result<[f32; 16]>;
     fn process_eyes(&mut self, inference: &[f32], live_time: f32) -> Result<EyesRotation>;
     fn reset_layers(&mut self) -> Result<()>;
 
+    #[cfg(test)]
     fn skin_parameters(&self) -> SkinAnimatorParams;
+    #[cfg(test)]
     fn set_skin_parameters(&mut self, parameters: SkinAnimatorParams) -> Result<()>;
-    fn tongue_parameters(&self) -> TongueAnimatorParams;
-    fn set_tongue_parameters(&mut self, parameters: TongueAnimatorParams) -> Result<()>;
-    fn teeth_parameters(&self) -> JawParameters;
-    fn set_teeth_parameters(&mut self, parameters: JawParameters) -> Result<()>;
-    fn eyes_parameters(&self) -> EyesAnimatorParams;
-    fn set_eyes_parameters(&mut self, parameters: EyesAnimatorParams) -> Result<()>;
-}
-
-pub struct PostprocessedRegressionBackend<B> {
-    inference: B,
-    tracks: Vec<RegressionPostprocessor>,
-    dt: f32,
-}
-
-impl<B> PostprocessedRegressionBackend<B> {
-    pub fn new(inference: B, tracks: Vec<RegressionPostprocessor>, dt: f32) -> Result<Self> {
-        if tracks.is_empty() || !dt.is_finite() || dt <= 0.0 {
-            return Err(Error::InvalidSchema(
-                "postprocessed backend requires tracks and a positive finite dt".into(),
-            ));
-        }
-        Ok(Self {
-            inference,
-            tracks,
-            dt,
-        })
-    }
-}
-
-impl<B> RegressionBackend for PostprocessedRegressionBackend<B>
-where
-    B: RegressionBackend<Output = Vec<f32>>,
-{
-    type Output = RegressionGeometry;
-
-    fn infer(&mut self, track: usize, input: &RegressionFrameInput) -> Result<Self::Output> {
-        let result = self.inference.infer(track, input)?;
-        self.tracks
-            .get_mut(track)
-            .ok_or_else(|| {
-                Error::InvalidSchema(format!("postprocess track {track} is out of range"))
-            })?
-            .process(&result, self.dt)
-    }
-
-    fn infer_batch(
-        &mut self,
-        inputs: &[(usize, RegressionFrameInput)],
-    ) -> Result<Vec<Self::Output>> {
-        let results = self.inference.infer_batch(inputs)?;
-        if results.len() != inputs.len() {
-            return Err(Error::InvalidSchema("inference batch size mismatch".into()));
-        }
-        inputs
-            .iter()
-            .zip(results)
-            .map(|((track, _), result)| {
-                self.tracks
-                    .get_mut(*track)
-                    .ok_or_else(|| {
-                        Error::InvalidSchema(format!("postprocess track {track} is out of range"))
-                    })?
-                    .process(&result, self.dt)
-            })
-            .collect()
-    }
 }
 
 #[derive(Debug, Clone)]
-pub struct RegressionPostprocessor {
+pub(crate) struct RegressionPostprocessor {
     skin_pca: PcaReconstruction,
     tongue_pca: PcaReconstruction,
     skin: SkinAnimator,
@@ -190,38 +129,14 @@ impl LayeredGeometryPostprocessor for RegressionPostprocessor {
         self.reset()
     }
 
+    #[cfg(test)]
     fn skin_parameters(&self) -> SkinAnimatorParams {
         self.skin.parameters()
     }
 
+    #[cfg(test)]
     fn set_skin_parameters(&mut self, parameters: SkinAnimatorParams) -> Result<()> {
         self.skin.set_parameters(parameters)
-    }
-
-    fn tongue_parameters(&self) -> TongueAnimatorParams {
-        self.tongue.parameters()
-    }
-
-    fn set_tongue_parameters(&mut self, parameters: TongueAnimatorParams) -> Result<()> {
-        self.tongue.set_parameters(parameters)
-    }
-
-    fn teeth_parameters(&self) -> JawParameters {
-        self.jaw_parameters
-    }
-
-    fn set_teeth_parameters(&mut self, parameters: JawParameters) -> Result<()> {
-        parameters.validate()?;
-        self.jaw_parameters = parameters;
-        Ok(())
-    }
-
-    fn eyes_parameters(&self) -> EyesAnimatorParams {
-        self.eyes.parameters()
-    }
-
-    fn set_eyes_parameters(&mut self, parameters: EyesAnimatorParams) -> Result<()> {
-        self.eyes.set_parameters(parameters)
     }
 }
 

@@ -1,9 +1,7 @@
 //! Closed, non-generic owning bundles for completed geometry facades.
 //!
-//! The legacy root-level `GeometryExecutorBundle` owns the generic pipeline
-//! implementation. This module is the SDK-facing Step 5 facade: its public
-//! surface only exposes the completed model-specific executors and never a
-//! backend or post-processor type.
+//! The public surface exposes only completed model-specific executors and
+//! never a backend or post-processor type.
 
 use std::sync::Arc;
 

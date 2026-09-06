@@ -5,7 +5,7 @@ use crate::tensorrt::{BindingBuffer, DeviceBindings, TensorRtSession};
 use std::path::Path;
 use std::sync::Arc;
 
-pub struct TensorRtClassifierBackend {
+pub(crate) struct TensorRtClassifierBackend {
     contract: ClassifierContract,
     max_batch_size: usize,
     device: Arc<GpuDevice>,
@@ -86,9 +86,8 @@ impl TensorRtClassifierBackend {
 
     /// Runs a packed classifier batch and retains its logits on the device.
     ///
-    /// This is the primary path used by the owning facade. The legacy
-    /// `ClassifierBackend` adapter copies this buffer to the host only for
-    /// callers that explicitly use the old host-output scheduler.
+    /// This is the primary path used by the owning facade. The internal
+    /// scheduler copies this buffer to the host only for its host-output path.
     pub(crate) fn run_device_batch(
         &mut self,
         inputs: &[(usize, Vec<f32>)],

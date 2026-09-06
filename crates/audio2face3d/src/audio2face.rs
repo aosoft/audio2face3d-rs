@@ -4,20 +4,6 @@
 //! `audio2face-sdk/include/audio2face/executor.h` and
 //! `audio2face-sdk/include/audio2face/interactive_executor.h`.
 //!
-//! # Migration map
-//!
-//! | Existing Rust API | SDK-facing declaration |
-//! |---|---|
-//! | `animation::RegressionExecutor` | `regression::RegressionGeometryExecutor` |
-//! | `animation::DiffusionExecutor` | `diffusion::DiffusionGeometryExecutor` |
-//! | `animation::InteractiveRegressionExecutor<B, P>` | `regression::RegressionGeometryInteractiveExecutor` |
-//! | `animation::InteractiveDiffusionExecutor<B, P>` | `diffusion::DiffusionGeometryInteractiveExecutor` |
-//! | `animation::SkinAnimatorParams` | [`AnimatorSkinParams`] |
-//! | `animation::TongueAnimatorParams` | [`AnimatorTongueParams`] |
-//! | `animation::JawParameters` | [`AnimatorTeethParams`] |
-//! | `animation::EyesAnimatorParams` | [`AnimatorEyesParams`] |
-//! | `animation::BlendshapeSolverParameters` | [`BlendshapeSolverParams`] |
-//!
 //! Model-specific completed executors remain in their child modules so the
 //! model family stays visible at call sites. Their backend and post-processor
 //! implementation types are not part of this facade.
@@ -361,8 +347,7 @@ pub trait BlendshapeInteractiveExecutor: InteractiveExecutor {
 /// Parameters for skin animation/post-processing.
 ///
 /// Corresponds to `nva2f::AnimatorSkinParams` in
-/// `audio2face-sdk/include/audio2face/animator.h` and replaces
-/// `crate::animation::SkinAnimatorParams`.
+/// `audio2face-sdk/include/audio2face/animator.h`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimatorSkinParams {
     pub lower_face_smoothing: f32,
@@ -381,8 +366,7 @@ pub struct AnimatorSkinParams {
 /// Parameters for tongue animation/post-processing.
 ///
 /// Corresponds to `nva2f::AnimatorTongueParams` in
-/// `audio2face-sdk/include/audio2face/animator.h` and replaces
-/// `crate::animation::TongueAnimatorParams`.
+/// `audio2face-sdk/include/audio2face/animator.h`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimatorTongueParams {
     pub tongue_strength: f32,
@@ -405,8 +389,7 @@ pub struct AnimatorTeethParams {
 /// Parameters for eye animation/post-processing.
 ///
 /// Corresponds to `nva2f::AnimatorEyesParams` in
-/// `audio2face-sdk/include/audio2face/animator.h` and replaces
-/// `crate::animation::EyesAnimatorParams`.
+/// `audio2face-sdk/include/audio2face/animator.h`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimatorEyesParams {
     pub eyeballs_strength: f32,

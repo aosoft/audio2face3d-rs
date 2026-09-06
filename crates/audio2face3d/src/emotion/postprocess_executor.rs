@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "cuda"), allow(dead_code))]
+
 use crate::common::{
     AudioAccumulator, EmotionAccumulator, Error, Result, WindowProgress, WindowProgressParameters,
 };
@@ -18,7 +20,7 @@ fn invalid(message: impl Into<String>) -> Error {
 /// generated every `sample_rate * frame_rate_denominator / frame_rate_numerator`
 /// samples and the post-process input is an all-zero emotion vector.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PostProcessEmotionContract {
+pub(crate) struct PostProcessEmotionContract {
     pub sample_rate: usize,
     pub frame_rate_numerator: usize,
     pub frame_rate_denominator: usize,
@@ -86,7 +88,7 @@ const fn gcd(mut left: usize, mut right: usize) -> usize {
 }
 
 /// Inputs for one post-process-only track.
-pub struct PostProcessEmotionTrack<'a> {
+pub(crate) struct PostProcessEmotionTrack<'a> {
     /// Audio is used only for availability and duration; its samples are never read.
     pub audio: &'a AudioAccumulator,
     /// Optional time-varying preferred emotion values.
@@ -99,7 +101,7 @@ pub struct PostProcessEmotionTrack<'a> {
 /// [`execute`](Self::execute). It feeds an all-zero inference vector into the
 /// existing post-processor and therefore supports manual/preferred-emotion
 /// animation without a TensorRT engine.
-pub struct PostProcessEmotionExecutor {
+pub(crate) struct PostProcessEmotionExecutor {
     contract: PostProcessEmotionContract,
     processors: Vec<EmotionPostProcessor>,
     frame_indices: Vec<usize>,
@@ -129,24 +131,8 @@ impl PostProcessEmotionExecutor {
         })
     }
 
-    pub fn contract(&self) -> &PostProcessEmotionContract {
-        &self.contract
-    }
-
-    pub fn track_count(&self) -> usize {
-        self.processors.len()
-    }
-
     pub fn output_emotion_length(&self) -> usize {
         self.processors[0].data().output_emotion_length
-    }
-
-    /// Compatibility property retained from the original executor.
-    ///
-    /// Post-process-only execution never reads audio samples, so this value
-    /// does not affect results.
-    pub fn input_strength(&self) -> f32 {
-        self.input_strength
     }
 
     pub fn set_input_strength(&mut self, input_strength: f32) -> Result<()> {
@@ -176,6 +162,7 @@ impl PostProcessEmotionExecutor {
             .ok_or_else(|| invalid("post-process frame track is out of range"))
     }
 
+    #[cfg(test)]
     pub fn parameters(&self, track: usize) -> Result<&EmotionPostProcessParameters> {
         self.processors
             .get(track)
@@ -183,6 +170,7 @@ impl PostProcessEmotionExecutor {
             .ok_or_else(|| invalid("post-process parameter track is out of range"))
     }
 
+    #[cfg(test)]
     pub fn set_parameters(
         &mut self,
         track: usize,
@@ -292,21 +280,16 @@ impl PostProcessEmotionExecutor {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PostProcessEmotionLayer {
+pub(crate) enum PostProcessEmotionLayer {
     None,
     Inference,
     PostProcessing,
     All,
 }
 
-impl PostProcessEmotionLayer {
-    pub const AUDIO_ACCUMULATOR: Self = Self::Inference;
-    pub const PREFERRED_EMOTION_ACCUMULATOR: Self = Self::PostProcessing;
-}
-
 /// Cloneable interrupt signal for an interactive computation.
 #[derive(Clone, Debug)]
-pub struct PostProcessEmotionInterrupt {
+pub(crate) struct PostProcessEmotionInterrupt {
     requested: Arc<AtomicBool>,
 }
 
@@ -321,7 +304,7 @@ impl PostProcessEmotionInterrupt {
 /// There is no neural inference cache: the inference layer represents a
 /// deterministic all-zero input. Frame replay still starts at frame zero so
 /// temporal smoothing state exactly matches sequential execution.
-pub struct InteractivePostProcessEmotionExecutor {
+pub(crate) struct InteractivePostProcessEmotionExecutor {
     contract: PostProcessEmotionContract,
     data: EmotionPostProcessData,
     parameters: EmotionPostProcessParameters,
@@ -352,10 +335,7 @@ impl InteractivePostProcessEmotionExecutor {
         })
     }
 
-    pub fn contract(&self) -> &PostProcessEmotionContract {
-        &self.contract
-    }
-
+    #[cfg(test)]
     pub fn parameters(&self) -> &EmotionPostProcessParameters {
         &self.parameters
     }
@@ -365,6 +345,7 @@ impl InteractivePostProcessEmotionExecutor {
         self.data.output_emotion_length
     }
 
+    #[cfg(test)]
     pub fn set_parameters(&mut self, parameters: EmotionPostProcessParameters) -> Result<()> {
         EmotionPostProcessor::new(self.data.clone(), parameters.clone())?;
         if self.parameters != parameters {
@@ -406,15 +387,12 @@ impl InteractivePostProcessEmotionExecutor {
         self.interrupt.clone()
     }
 
-    pub fn interrupt(&self) {
-        self.interrupt.interrupt();
-    }
-
     pub fn frame_count(&self, audio: &AudioAccumulator) -> Result<usize> {
         validate_interactive_audio(audio)?;
         self.contract.frame_count(audio)
     }
 
+    #[cfg(test)]
     pub fn compute_all<C>(
         &mut self,
         audio: &AudioAccumulator,

@@ -1,3 +1,8 @@
+#![cfg_attr(
+    any(not(feature = "cuda"), not(feature = "tensorrt")),
+    allow(dead_code)
+)]
+
 use crate::common::{EmotionNetwork, EmotionPostProcessingConfig};
 use crate::common::{Error, Result};
 
@@ -127,7 +132,7 @@ impl EmotionPostProcessParameters {
 }
 
 #[derive(Clone, Debug)]
-pub struct EmotionPostProcessor {
+pub(crate) struct EmotionPostProcessor {
     data: EmotionPostProcessData,
     parameters: EmotionPostProcessParameters,
     first_frame: bool,
