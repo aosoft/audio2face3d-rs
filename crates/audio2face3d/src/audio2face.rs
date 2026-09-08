@@ -2248,4 +2248,76 @@ mod interactive_blendshape_tests {
             }))
         ));
     }
+
+    #[test]
+    fn external_runner_survives_executor_drop_and_finishes_detached_work() {
+        let runner = Arc::new(HoldingRunner::default());
+        let mut executor = executor(Arc::clone(&runner));
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callbacks_for_call = Arc::clone(&callbacks);
+        let frame = geometry();
+        let mut future = executor.compute_frame(0, 1, &frame, move |_| {
+            callbacks_for_call.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        drop(future);
+        drop(executor);
+
+        runner.run_one();
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+
+        let (execution, completion) = Execution::pending(1);
+        completion.add_task(0).unwrap();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let runs_for_task = Arc::clone(&runs);
+        runner
+            .enqueue(JobRunnerTask::new(completion.clone(), 0, move || {
+                runs_for_task.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }))
+            .unwrap();
+        completion.finish_schedule(crate::audio2x::ExecutionReport {
+            state: crate::audio2x::ExecutionState::Progress,
+            executed_tracks: 1,
+            emitted_frames: 1,
+        });
+        runner.run_one();
+        drop(execution);
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn host_executor_moves_to_another_thread_for_sequential_calls() {
+        let runner = Arc::new(HoldingRunner::default());
+        let executor = executor(Arc::clone(&runner));
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callbacks_for_thread = Arc::clone(&callbacks);
+
+        let executor = std::thread::spawn(move || {
+            let mut executor = executor;
+            for frame_index in 0..2 {
+                let frame = geometry();
+                let callbacks = Arc::clone(&callbacks_for_thread);
+                let mut future = executor.compute_frame(frame_index, 2, &frame, move |_| {
+                    callbacks.fetch_add(1, Ordering::SeqCst);
+                    true
+                });
+                let mut context = Context::from_waker(Waker::noop());
+                assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+                runner.run_one();
+                assert!(matches!(
+                    future.as_mut().poll(&mut context),
+                    Poll::Ready(Ok(_))
+                ));
+            }
+            executor
+        })
+        .join()
+        .unwrap();
+
+        assert_eq!(callbacks.load(Ordering::SeqCst), 2);
+        assert!(executor.is_fully_valid());
+    }
 }

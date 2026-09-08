@@ -59,6 +59,12 @@ jobs:
     runs-on: [self-hosted, windows, x64, tensorrt-10-16, sm-86]
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+      - name: Install pinned public API tooling
+        shell: powershell
+        run: ./ci/install-api-tools.ps1
       - name: Audit packages and release contracts
         shell: powershell
         run: ./ci/run-tier.ps1 release

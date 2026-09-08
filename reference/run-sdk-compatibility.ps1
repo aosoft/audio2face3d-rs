@@ -56,7 +56,16 @@ $outputRoot = Join-Path (Join-Path $testRoot "results") $caseName
 $cppArtifact = Join-Path $outputRoot "cpp"
 $rustArtifact = Join-Path $outputRoot "rust"
 $report = Join-Path $outputRoot "comparison.json"
-$cppRunner = & (Join-Path $PSScriptRoot "build-cpp-runner.ps1")
+$previousInclude = $env:INCLUDE
+$previousLib = $env:LIB
+try {
+    $cppRunner = & (Join-Path $PSScriptRoot "build-cpp-runner.ps1")
+} finally {
+    # The standalone SDK compiler setup must not leak into Cargo's C compiler
+    # discovery (notably aws-lc-sys, which may select another installed MSVC).
+    $env:INCLUDE = $previousInclude
+    $env:LIB = $previousLib
+}
 
 $env:PATH = @(
     (Join-Path $SdkRoot "_build/release/audio2x-sdk/bin")
@@ -80,7 +89,7 @@ if ($env:AUDIO2FACE3D_REFERENCE_WAV_SHA256) {
 & cargo @fixtureArguments
 if ($LASTEXITCODE -ne 0) { throw "fixture preparation failed" }
 
-cargo run -p audio2face3d-cli --features runtime -- reference capture `
+cargo run --release -p audio2face3d-cli --features runtime -- reference capture `
     $Model $fixture $rustArtifact --execution $Execution --precision $Precision `
     --tracks $Tracks --seed $Seed
 if ($LASTEXITCODE -ne 0) { throw "Rust reference capture failed" }

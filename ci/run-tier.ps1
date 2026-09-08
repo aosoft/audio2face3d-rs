@@ -80,6 +80,7 @@ switch ($Tier) {
         # Optimized test binaries avoid a known MSVC 14.51 debug-linker LNK1000
         # when the large TensorRT import libraries are present.
         Invoke-Checked @("cargo", "test", "--release", "--workspace", "--all-features")
+        Invoke-Checked @("cargo", "test", "--release", "-p", "audio2face3d", "--all-features", "--test", "native_facade", "--", "--ignored", "--exact", "acquired_models_execute_through_completed_facades", "--test-threads=1")
         $previousRustdocFlags = $env:RUSTDOCFLAGS
         try {
             $env:RUSTDOCFLAGS = "-D warnings"
@@ -95,8 +96,20 @@ switch ($Tier) {
     }
     "release" {
         Require-Environment @("CUDA_PATH", "TENSORRT_ROOT_DIR")
+        $env:PATH = "$(Join-Path $env:CUDA_PATH 'bin');$(Join-Path $env:TENSORRT_ROOT_DIR 'bin');$env:PATH"
+        & (Join-Path $PSScriptRoot "check-public-api.ps1") -Tier tensorrt
+        $previousRustdocFlags = $env:RUSTDOCFLAGS
+        try {
+            $env:RUSTDOCFLAGS = "-D warnings"
+            Invoke-Checked @("cargo", "doc", "--workspace", "--all-features", "--no-deps", "--locked")
+        } finally {
+            $env:RUSTDOCFLAGS = $previousRustdocFlags
+        }
         Invoke-Checked @("cargo", "run", "-p", "audio2face3d-cli", "--", "release", "audit", "--report", "target/release-audit.json")
-        Invoke-Checked @("cargo", "package", "--workspace", "--allow-dirty", "--no-verify", "--exclude-lockfile")
+        & (Join-Path $PSScriptRoot "test-release-packages.ps1")
+        if ($LASTEXITCODE -ne 0) {
+            throw "release package checks failed ($LASTEXITCODE)"
+        }
     }
 }
 

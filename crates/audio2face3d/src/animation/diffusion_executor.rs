@@ -552,9 +552,12 @@ impl DiffusionExecutionState {
 
     fn drop_consumed(&self, track: &DiffusionTrack<'_>, next_inference: usize) -> Result<()> {
         let next = self.contract.progress.window(next_inference)?;
-        track
-            .audio
-            .drop_samples_before(usize::try_from(next.start.max(0)).unwrap_or(usize::MAX))?;
+        // A final padded inference can advance the next window beyond the
+        // closed input. Release only samples that were actually accumulated.
+        let watermark = usize::try_from(next.start.max(0))
+            .unwrap_or(usize::MAX)
+            .min(track.audio.nb_accumulated_samples());
+        track.audio.drop_samples_before(watermark)?;
         let previous_frame = next_inference
             .checked_mul(self.contract.center_frames)
             .and_then(|value| value.checked_sub(1));
@@ -798,6 +801,24 @@ mod tests {
         (audio, emotions)
     }
 
+    #[test]
+    fn final_padded_window_never_drops_future_audio_samples() {
+        let state = DiffusionExecutionState::new(contract(), 1, 0).unwrap();
+        let (audio, emotions) = accumulators();
+        let track = DiffusionTrack {
+            audio: &audio,
+            emotions: &emotions,
+            identity_index: 0,
+            input_strength: 1.0,
+        };
+        let mut next = 0;
+        while state.contract.progress.window(next).unwrap().start <= 12 {
+            next += 1;
+        }
+        state.drop_consumed(&track, next).unwrap();
+        assert_eq!(audio.nb_dropped_samples(), audio.nb_accumulated_samples());
+    }
+
     struct FixedBatchTrace {
         total_frames: usize,
         result_size: usize,
@@ -887,6 +908,49 @@ mod tests {
         assert_eq!(seen.iter().filter(|item| item.track == 0).count(), 1);
         assert!(seen.iter().filter(|item| item.track == 1).count() > 1);
         execution.reset(0).unwrap();
+    }
+
+    #[test]
+    fn callbacks_are_frame_major_with_stable_track_and_timestamp_order() {
+        let contract = contract();
+        let inputs = [accumulators(), accumulators()];
+        let tracks = inputs
+            .iter()
+            .map(|(audio, emotions)| DiffusionTrack {
+                audio,
+                emotions,
+                identity_index: 0,
+                input_strength: 1.0,
+            })
+            .collect::<Vec<_>>();
+        let mut backend = FixedBatchTrace::new(&contract);
+        let executor = DiffusionScheduler::new(contract, 2, 17).unwrap();
+        let mut callbacks = Vec::new();
+
+        assert_eq!(
+            executor
+                .execute(&tracks, &mut backend, |metadata, _| {
+                    callbacks.push((
+                        metadata.track,
+                        metadata.inference,
+                        metadata.frame,
+                        metadata.timestamp,
+                        metadata.next_timestamp,
+                    ));
+                    true
+                })
+                .unwrap(),
+            DiffusionExecutionStatus::Executed { tracks: 2 }
+        );
+        assert_eq!(
+            callbacks,
+            [
+                (0, 0, 0, 0, 2),
+                (1, 0, 0, 0, 2),
+                (0, 0, 1, 2, 4),
+                (1, 0, 1, 2, 4),
+            ]
+        );
     }
 
     #[test]

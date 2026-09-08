@@ -705,6 +705,49 @@ mod tests {
     }
 
     #[test]
+    fn callbacks_are_frame_major_with_stable_track_and_timestamp_order() {
+        let inputs = [input(), input()];
+        let tracks = inputs
+            .iter()
+            .map(|(audio, emotions)| RegressionTrack {
+                audio,
+                emotions,
+                implicit_emotion: &[0.5],
+                input_strength: 1.0,
+            })
+            .collect::<Vec<_>>();
+        let executor = RegressionScheduler::new(contract(), 2).unwrap();
+        let mut backend = |track, _: &RegressionFrameInput| Ok(track);
+        let mut callbacks = Vec::new();
+
+        assert_eq!(
+            executor
+                .pump(&tracks, &mut backend, |metadata, _| {
+                    callbacks.push((
+                        metadata.track,
+                        metadata.frame,
+                        metadata.timestamp,
+                        metadata.next_timestamp,
+                    ));
+                    true
+                })
+                .unwrap(),
+            PumpStatus::Complete
+        );
+        assert_eq!(
+            callbacks,
+            [
+                (0, 0, 0, 1),
+                (1, 0, 0, 1),
+                (0, 1, 1, 2),
+                (1, 1, 1, 2),
+                (0, 2, 2, 3),
+                (1, 2, 2, 3),
+            ]
+        );
+    }
+
+    #[test]
     fn fixed_batch_keeps_inactive_track_slots_without_advancing_them() {
         let (audio0, emotion0) = input();
         let audio1 = AudioAccumulator::new(1, 0).unwrap();

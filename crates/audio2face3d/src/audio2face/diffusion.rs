@@ -1044,10 +1044,16 @@ impl crate::audio2x::Executor for DiffusionGeometryExecutor {
         if !audio.is_closed() {
             return Ok(None);
         }
-        Ok(Some(self.contract.frame_progress.available_windows(
-            i64::try_from(audio.nb_accumulated_samples()).unwrap_or(i64::MAX),
-            true,
-        )?))
+        let padding = self.contract.frame_progress.available_windows(0, true)?;
+        Ok(Some(
+            self.contract
+                .frame_progress
+                .available_windows(
+                    i64::try_from(audio.nb_accumulated_samples()).unwrap_or(i64::MAX),
+                    true,
+                )?
+                .saturating_sub(padding),
+        ))
     }
 
     fn sample_rate(&self) -> usize {
@@ -1057,7 +1063,15 @@ impl crate::audio2x::Executor for DiffusionGeometryExecutor {
         self.frame_rate
     }
     fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
-        Ok(self.contract.frame_progress.window(frame)?.target)
+        // Scheduler frames include negative-time context. Public frames, like
+        // the interactive facade, start at the first nonnegative timestamp.
+        let internal = self
+            .contract
+            .frame_progress
+            .available_windows(0, true)?
+            .checked_add(frame)
+            .ok_or_else(|| crate::Error::InvalidSchema("diffusion frame index overflow".into()))?;
+        Ok(self.contract.frame_progress.window(internal)?.target)
     }
 }
 
@@ -1131,6 +1145,7 @@ impl crate::audio2face::GeometryExecutor for DiffusionGeometryExecutor {
         let source_tracks = &self.tracks;
         let mut emitted_frames = 0;
         let mut callback_error = None;
+        let padding = self.contract.frame_progress.available_windows(0, true)?;
         let status = self.execution.execute_device(
             &tracks,
             &mut self.backend,
@@ -1145,7 +1160,7 @@ impl crate::audio2face::GeometryExecutor for DiffusionGeometryExecutor {
                 }
                 let public_metadata = crate::audio2x::CallbackMetadata {
                     track_index: metadata.track,
-                    frame_index: metadata.frame,
+                    frame_index: metadata.frame - padding,
                     timestamp: metadata.timestamp,
                     next_timestamp: metadata.next_timestamp,
                 };
