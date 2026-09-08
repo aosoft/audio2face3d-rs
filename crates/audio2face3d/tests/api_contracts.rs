@@ -44,6 +44,7 @@ fn wait_for_all(execution: Execution) -> ExecutorFuture<'static, ExecutionReport
 #[test]
 fn portable_contract_types_and_dyn_roots_are_available() {
     assert_completion::<Execution>();
+    assert_not_impl!(Execution, Sync);
     assert_send::<ExecutorFuture<'_, InteractiveExecutionReport>>();
     assert_send_sync::<InteractiveInterruptHandle>();
     assert_send_sync::<AudioAccumulator>();
@@ -99,7 +100,7 @@ fn boxed_send_future_can_be_polled_without_a_runtime() {
 #[test]
 fn symbol_ledger_is_well_formed_and_internally_consistent() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/api-compatibility-symbols.json");
+        .join("../../api/api-compatibility-symbols.json");
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(document["schema_version"], 1);
@@ -463,6 +464,8 @@ mod face {
         assert_not_impl!(DiffusionGeometryExecutor, Clone);
         assert_send::<GeometryExecutorBundle>();
         assert_send::<BlendshapeExecutorBundle>();
+        assert_not_impl!(GeometryExecutorBundle, Sync);
+        assert_not_impl!(BlendshapeExecutorBundle, Sync);
         assert_not_impl!(GeometryExecutorBundle, Clone);
 
         use audio2face3d::audio2face::{
@@ -471,6 +474,7 @@ mod face {
             InteractiveGeometryExecutorRef,
         };
         assert_send::<InteractiveGeometryExecutorBundle>();
+        assert_not_impl!(InteractiveGeometryExecutorBundle, Sync);
         assert_not_impl!(InteractiveGeometryExecutorBundle, Clone);
 
         fn interactive_bundle_accessors(bundle: &InteractiveGeometryExecutorBundle) {
@@ -510,6 +514,8 @@ mod face {
         assert_send::<DeviceBlendshapeSolveInteractiveExecutor>();
         assert_not_impl!(HostBlendshapeSolveExecutor, Sync);
         assert_not_impl!(DeviceBlendshapeSolveExecutor, Sync);
+        assert_not_impl!(HostBlendshapeSolveInteractiveExecutor, Sync);
+        assert_not_impl!(DeviceBlendshapeSolveInteractiveExecutor, Sync);
         assert_not_impl!(HostBlendshapeSolveExecutor, Clone);
         assert_not_impl!(DeviceBlendshapeSolveExecutor, Clone);
     }
@@ -601,6 +607,7 @@ mod emotion {
         assert_not_impl!(PostProcessEmotionInteractiveExecutor, Sync);
         assert_not_impl!(PostProcessEmotionExecutor, Clone);
         assert_send::<EmotionExecutorBundle>();
+        assert_not_impl!(EmotionExecutorBundle, Sync);
         let _ = PostProcessEmotionExecutorFactory::load;
         let _ = PostProcessEmotionInteractiveExecutorFactory::load;
         let _ = EmotionExecutorBundleFactory::post_process;

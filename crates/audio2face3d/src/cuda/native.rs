@@ -93,7 +93,7 @@ impl GpuDevice {
         CurrentContextGuard::enter(self.context)
     }
 
-    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    #[cfg(all(feature = "animation", feature = "tensorrt"))]
     pub(crate) fn synchronize_borrowed_stream(&self, stream: CudaStreamRef<'_>) -> Result<()> {
         ensure_same_device(self.id(), stream.device_id())?;
         let _context = self.make_current()?;

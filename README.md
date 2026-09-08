@@ -283,8 +283,10 @@ For geometry models, the isolated post-process phase currently measures the devi
 
 ## Safety, errors, and versioning
 
-CUDA streams, events, buffers, GPU solvers, and TensorRT sessions are
-thread-affine (`!Send`/`!Sync`). Device views borrow their allocations, and
+Completed executors and TensorRT sessions are `Send` but not `Sync`;
+operations and destruction restore the appropriate CUDA context. Shared device,
+stream, buffer, and borrowed-view capabilities follow the type-specific
+auto-trait assertions in the API contract tests. Device views borrow their allocations, and
 asynchronous fences retain all borrowed resources until queued CUDA work is
 observed complete. Device identity is checked before composition. Interactive
 cache eviction, invalidation, and destruction synchronize before releasing
@@ -295,12 +297,19 @@ Every TensorRT C++ shim entry catches C++ exceptions before returning through
 the C ABI. Public operations report malformed input, schema, device, CUDA, and
 TensorRT failures through `audio2face3d::Result`; panics are not part of the
 public error contract. Compile-fail tests fix the view/fence lifetime and
-thread-affinity rules, while `release_stress` covers long input, maximum track
+auto-trait rules, while `release_stress` covers long input, maximum track
 limits, reset/replay, queued work, and drop behavior.
 
 This project follows SemVer 2.0.0. Before 1.0, minor releases may change the
 public API; patch releases remain compatible. Removing a public feature is a
 breaking change, and every release requires a public-API and feature review.
+
+## API compatibility checks
+
+The [API verification guide](api/README.md) describes the pinned snapshot tool,
+feature matrix, symbol ledger, and local CI tiers. GitHub Actions runs only the
+portable tier. CUDA/TensorRT validation requires a native SDK installation;
+passing portable checks does not imply model-runtime validation.
 
 ## License
 

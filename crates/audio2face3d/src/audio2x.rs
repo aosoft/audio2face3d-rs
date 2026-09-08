@@ -18,9 +18,25 @@
 //! | Separate scheduler query methods | [`Executor`] | `audio2x/executor.h` |
 //! | Separate interactive query methods | [`InteractiveExecutor`] | `audio2x/interactive_executor.h` |
 //!
-//! The accumulator re-exports preserve existing behavior during Step 1. Typed
-//! poison/error mapping and scheduler state changes belong to later steps.
-//! See the symbol ledger in `docs/api-compatibility-symbols.json` for full paths.
+//! Accumulators are shared inputs; completed executors uniquely own their state.
+//! See `api/api-compatibility-symbols.json` in the repository for SDK header
+//! correspondence, and `api/snapshots/` for the feature-specific public surface.
+//!
+//! Completion can be awaited on any runtime. The trait remains dyn-compatible:
+//!
+//! ```
+//! use audio2face3d::audio2x::{Execution, Executor, ExecutionReport, Result};
+//!
+//! fn track_count(executor: &dyn Executor) -> usize {
+//!     executor.track_count()
+//! }
+//!
+//! async fn finish(mut execution: Execution) -> Result<ExecutionReport> {
+//!     // Host completion for track zero, not a CUDA device synchronization.
+//!     execution.wait_track(0).await?;
+//!     execution.await
+//! }
+//! ```
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -809,6 +825,50 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn tokio_spawn_waits_for_execution_completed_by_std_thread() {
+        let (execution, completion) = Execution::pending(1);
+        completion.add_task(0).unwrap();
+        completion.finish_schedule(report());
+        let (release, released) = std::sync::mpsc::channel();
+        let completion_for_thread = Arc::clone(&completion);
+        let worker = std::thread::spawn(move || {
+            released.recv().unwrap();
+            completion_for_thread.complete_task(0, Ok(()));
+        });
+
+        let task = tokio::spawn(execution);
+        tokio::task::yield_now().await;
+        release.send(()).unwrap();
+        let completed = tokio::select! {
+            result = task => result.expect("execution task panicked").unwrap(),
+            _ = std::future::pending::<()>() => unreachable!(),
+        };
+        worker.join().unwrap();
+        assert_eq!(completed, report());
+    }
+
+    #[tokio::test]
+    async fn tokio_select_can_drop_observer_without_cancelling_completion() {
+        let (mut execution, completion) = Execution::pending(1);
+        completion.add_task(0).unwrap();
+        completion.finish_schedule(report());
+
+        tokio::select! {
+            biased;
+            _ = std::future::ready(()) => {}
+            result = &mut execution => panic!("pending execution unexpectedly completed: {result:?}"),
+        }
+        drop(execution);
+        assert!(completion.state.lock().unwrap().detached);
+
+        let completion_for_thread = Arc::clone(&completion);
+        std::thread::spawn(move || completion_for_thread.complete_task(0, Ok(())))
+            .join()
+            .unwrap();
+        assert!(!completion.track_pending(0).unwrap());
+    }
+
     #[test]
     fn worker_error_is_retained_for_both_track_and_all_waits() {
         let (mut execution, completion) = Execution::pending(1);
@@ -884,6 +944,24 @@ mod tests {
         }
         assert!(wake_count.load(Ordering::SeqCst) > 0);
         assert_eq!(wait_for_factory(&mut future).unwrap(), 17);
+    }
+
+    #[tokio::test]
+    async fn tokio_spawn_and_select_wait_for_factory_worker() {
+        let (release, released) = std::sync::mpsc::channel();
+        let factory = spawn_blocking_factory(move || {
+            released.recv().unwrap();
+            Ok(23)
+        });
+        let task = tokio::spawn(factory);
+        tokio::task::yield_now().await;
+        release.send(()).unwrap();
+
+        let value = tokio::select! {
+            result = task => result.expect("factory task panicked").unwrap(),
+            _ = std::future::pending::<()>() => unreachable!(),
+        };
+        assert_eq!(value, 23);
     }
 
     #[test]

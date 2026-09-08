@@ -35,6 +35,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2
 cc = "1.2"
 
 [dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt"] }
 trybuild = "1.0"
 
 [lints]

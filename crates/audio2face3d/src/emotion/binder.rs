@@ -1,6 +1,10 @@
+use crate::audio2x::CallbackMetadata;
 use crate::common::{EmotionAccumulator, Error, Result};
-use crate::emotion::EmotionCallbackMetadata;
 
+/// Copies callback emotions into caller-owned accumulators by track and timestamp.
+///
+/// Corresponds to `nva2e::IEmotionBinder` in
+/// `audio2emotion-sdk/include/audio2emotion/executor.h`.
 pub struct EmotionBinder<'a> {
     accumulators: Vec<&'a EmotionAccumulator>,
     emotion_length: usize,
@@ -24,14 +28,14 @@ impl<'a> EmotionBinder<'a> {
         })
     }
 
-    pub fn accumulate(&self, metadata: EmotionCallbackMetadata, emotions: &[f32]) -> Result<bool> {
+    pub fn accumulate(&self, metadata: CallbackMetadata, emotions: &[f32]) -> Result<bool> {
         if emotions.len() != self.emotion_length {
             return Err(Error::InvalidSchema(
                 "emotion binder callback dimensions do not match".into(),
             ));
         }
         self.accumulators
-            .get(metadata.track)
+            .get(metadata.track_index)
             .ok_or_else(|| Error::InvalidSchema("emotion binder track is out of range".into()))?
             .accumulate(metadata.timestamp, emotions)
             .map_err(|error| {
@@ -52,9 +56,9 @@ mod tests {
         let binder = EmotionBinder::new(vec![&first, &second], 2).unwrap();
         binder
             .accumulate(
-                EmotionCallbackMetadata {
-                    track: 1,
-                    frame: 0,
+                CallbackMetadata {
+                    track_index: 1,
+                    frame_index: 0,
                     timestamp: 7,
                     next_timestamp: 8,
                 },
@@ -69,9 +73,9 @@ mod tests {
     fn propagates_accumulator_order_and_backpressure_errors() {
         let output = EmotionAccumulator::new(2, 1).unwrap();
         let binder = EmotionBinder::new(vec![&output], 2).unwrap();
-        let metadata = |timestamp| EmotionCallbackMetadata {
-            track: 0,
-            frame: timestamp as usize,
+        let metadata = |timestamp| CallbackMetadata {
+            track_index: 0,
+            frame_index: timestamp as usize,
             timestamp,
             next_timestamp: timestamp + 1,
         };

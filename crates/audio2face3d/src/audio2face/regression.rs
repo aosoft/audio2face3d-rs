@@ -65,6 +65,27 @@ pub struct RegressionGeometryExecutorCreationParameters {
 }
 
 /// Canonical asynchronous factory for standard Regression geometry.
+///
+/// Corresponds to `nva2f::CreateRegressionGeometryExecutor` in
+/// `audio2face-sdk/include/audio2face/audio2face.h`.
+///
+/// ```no_run
+/// # async fn example(parameters: audio2face3d::audio2face::regression::RegressionGeometryExecutorCreationParameters) -> audio2face3d::Result<()> {
+/// use audio2face3d::audio2face::{GeometryCallbacks, GeometryExecutor, GeometryResults};
+/// use audio2face3d::audio2face::regression::{RegressionGeometryExecutor, RegressionGeometryExecutorFactory};
+/// use std::ops::ControlFlow;
+///
+/// let mut executor: RegressionGeometryExecutor =
+///     RegressionGeometryExecutorFactory::load(parameters).await?;
+/// let mut frames = 0;
+/// let mut callback = |_: GeometryResults<'_>| {
+///     frames += 1; // A synchronous callback may borrow stack state.
+///     ControlFlow::Continue(())
+/// };
+/// executor.execute(GeometryCallbacks { results: &mut callback, emotions: None })?.await?;
+/// # Ok(())
+/// # }
+/// ```
 #[cfg(feature = "tensorrt")]
 pub struct RegressionGeometryExecutorFactory;
 

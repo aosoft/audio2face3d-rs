@@ -30,6 +30,8 @@ function Require-Environment {
 
 switch ($Tier) {
     "portable" {
+        & (Join-Path $PSScriptRoot "test-public-api-policy.ps1")
+        & (Join-Path $PSScriptRoot "check-public-api.ps1") -Tier portable
         Invoke-Checked @("cargo", "fmt", "--all", "--", "--check")
         Invoke-Checked @("cargo", "check", "--workspace")
         Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features")
@@ -37,28 +39,54 @@ switch ($Tier) {
         Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features", "--features", "emotion")
         Invoke-Checked @("cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
         Invoke-Checked @("cargo", "test", "--workspace")
+        foreach ($features in @("", "animation", "emotion")) {
+            $arguments = @("cargo", "test", "-p", "audio2face3d", "--no-default-features")
+            if ($features) { $arguments += @("--features", $features) }
+            Invoke-Checked $arguments
+        }
         $previousRustdocFlags = $env:RUSTDOCFLAGS
         try {
             $env:RUSTDOCFLAGS = "-D warnings"
             Invoke-Checked @("cargo", "doc", "--workspace", "--no-deps")
+            foreach ($features in @("", "animation", "emotion")) {
+                $arguments = @("cargo", "doc", "-p", "audio2face3d", "--no-deps", "--no-default-features")
+                if ($features) { $arguments += @("--features", $features) }
+                Invoke-Checked $arguments
+            }
         } finally {
             $env:RUSTDOCFLAGS = $previousRustdocFlags
         }
     }
     "cuda-lifetime" {
         Require-Environment @("CUDA_PATH", "AUDIO2FACE3D_CUDA_ARCHS")
+        & (Join-Path $PSScriptRoot "check-public-api.ps1") -Tier cuda
         Invoke-Checked @("cargo", "clippy", "-p", "audio2face3d", "--features", "animation,cuda", "--all-targets", "--", "-D", "warnings")
         Invoke-Checked @("cargo", "test", "-p", "audio2face3d", "--features", "animation,cuda")
         Invoke-Checked @("cargo", "test", "-p", "audio2face3d", "--features", "animation,cuda", "--test", "compile_fail")
+        foreach ($features in @("cuda", "emotion,cuda")) {
+            Invoke-Checked @("cargo", "test", "-p", "audio2face3d", "--no-default-features", "--features", $features)
+        }
     }
     "tensorrt-model" {
         Require-Environment @("CUDA_PATH", "TENSORRT_ROOT_DIR", "AUDIO2FACE3D_TEST_FACADE_MODELS")
         $env:PATH = "$(Join-Path $env:CUDA_PATH 'bin');$(Join-Path $env:TENSORRT_ROOT_DIR 'bin');$env:PATH"
+        & (Join-Path $PSScriptRoot "check-public-api.ps1") -Tier tensorrt
+        foreach ($features in @("tensorrt", "animation,tensorrt", "emotion,tensorrt")) {
+            Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features", "--features", $features, "--all-targets")
+            Invoke-Checked @("cargo", "test", "--release", "-p", "audio2face3d", "--no-default-features", "--features", $features, "--test", "compile_fail", "--test", "api_contracts", "--test", "tokio_runtime")
+        }
         Invoke-Checked @("cargo", "check", "--workspace", "--all-features")
         Invoke-Checked @("cargo", "clippy", "--workspace", "--all-features", "--all-targets", "--", "-D", "warnings")
         # Optimized test binaries avoid a known MSVC 14.51 debug-linker LNK1000
         # when the large TensorRT import libraries are present.
         Invoke-Checked @("cargo", "test", "--release", "--workspace", "--all-features")
+        $previousRustdocFlags = $env:RUSTDOCFLAGS
+        try {
+            $env:RUSTDOCFLAGS = "-D warnings"
+            Invoke-Checked @("cargo", "doc", "--workspace", "--all-features", "--no-deps")
+        } finally {
+            $env:RUSTDOCFLAGS = $previousRustdocFlags
+        }
     }
     "reference-parity" {
         Require-Environment @("AUDIO2FACE_SDK_ROOT", "CUDA_PATH", "TENSORRT_ROOT_DIR", "AUDIO2FACE3D_REFERENCE_WAV_LICENSE")
