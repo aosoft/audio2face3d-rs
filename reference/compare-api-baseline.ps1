@@ -15,9 +15,15 @@ foreach ($path in @($baseline, $reportRoot)) {
 }
 $summary = Get-Content -Raw -Encoding UTF8 (Join-Path $reportRoot "summary.json") | ConvertFrom-Json
 foreach ($case in $summary.cases) {
+    $case.structural_differences = @($case.structural_differences | Where-Object { $null -ne $_ })
     if ($case.classification -ne "unexplained-difference" -or !$case.baseline_inputs_match) { continue }
     $comparison = Join-Path $reportRoot "$($case.case).baseline.json"
-    & cargo run -p audio2face3d-cli -- reference compare (Join-Path $baseline "results/$($case.case)/rust") (Join-Path $captureRoot "results/$($case.case)/rust") --tolerances reference/tolerances.json --report $comparison
+    $actual = Join-Path $reportRoot "results/$($case.case)/rust"
+    if (!(Test-Path -LiteralPath (Join-Path $actual "artifact.json"))) {
+        throw "Report has no preserved capture for $($case.case); recapture with run-api-regression.ps1"
+    }
+    if (Test-Path -LiteralPath $comparison) { throw "Baseline comparison already exists; preserve it and use a new report directory" }
+    & cargo run -p audio2face3d-cli -- reference compare (Join-Path $baseline "results/$($case.case)/rust") $actual --tolerances reference/tolerances.json --report $comparison
     $exitCode = $LASTEXITCODE
     if (!(Test-Path -LiteralPath $comparison)) { throw "Baseline comparison did not produce a report" }
     $result = Get-Content -Raw -Encoding UTF8 $comparison | ConvertFrom-Json

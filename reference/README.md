@@ -166,3 +166,32 @@ interactive GPU BlendShape random/all-frame execution, and
 CPU/GPU BlendShape and standalone Teeth capture use the same artifact contract.
 The older ignored TensorRT fixture test remains the low-level binding/inference
 check.
+
+## API regression assessment
+
+Before changing execution behavior, preserve the local `results` directory
+under a new ignored `reference/compatible_test/<baseline>/results` directory.
+Record the source revision and capture conditions separately: a copied local
+capture is not proof of a pre-migration revision.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File reference/run-api-regression.ps1 `
+  -BaselineDirectory reference/compatible_test/baseline `
+  -ReportDirectory reference/compatible_test/api-report
+powershell -NoProfile -ExecutionPolicy Bypass -File reference/compare-api-baseline.ps1 `
+  -BaselineDirectory reference/compatible_test/baseline `
+  -ReportDirectory reference/compatible_test/api-report
+```
+
+Use a new report directory for each run. The first command executes 19 FP32,
+seed-zero cases, preserves their captures alongside the report, and records
+structural failures separately from numerical differences. It fails when any
+case is unclassified or did not run. The optional second command assesses
+numerical stability against matching baseline inputs using the unchanged
+tolerances. Its assessment does not turn an SDK comparison failure into a pass.
+Maximum errors cover only the records visited before comparison stops;
+zero values compared is not evidence of numerical agreement.
+
+The strict `reference-parity` tier still gates only Emotion standard (one
+track) and standalone Teeth (two tracks). Emotion interactive C++ captures
+are not implemented by this harness; native facade tests are separate evidence.

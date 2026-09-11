@@ -927,28 +927,34 @@ mod tests {
         let executor = DiffusionScheduler::new(contract, 2, 17).unwrap();
         let mut callbacks = Vec::new();
 
-        assert_eq!(
-            executor
-                .execute(&tracks, &mut backend, |metadata, _| {
-                    callbacks.push((
-                        metadata.track,
-                        metadata.inference,
-                        metadata.frame,
-                        metadata.timestamp,
-                        metadata.next_timestamp,
-                    ));
-                    true
-                })
-                .unwrap(),
-            DiffusionExecutionStatus::Executed { tracks: 2 }
-        );
+        // Cross both fully and partly padded windows. Internal frame indices
+        // include the negative-time context, unlike facade indices.
+        for _ in 0..3 {
+            assert_eq!(
+                executor
+                    .execute(&tracks, &mut backend, |metadata, _| {
+                        callbacks.push((
+                            metadata.track,
+                            metadata.inference,
+                            metadata.frame,
+                            metadata.timestamp,
+                            metadata.next_timestamp,
+                        ));
+                        true
+                    })
+                    .unwrap(),
+                DiffusionExecutionStatus::Executed { tracks: 2 }
+            );
+        }
         assert_eq!(
             callbacks,
             [
-                (0, 0, 0, 0, 2),
-                (1, 0, 0, 0, 2),
-                (0, 0, 1, 2, 4),
-                (1, 0, 1, 2, 4),
+                (0, 1, 3, 0, 2),
+                (1, 1, 3, 0, 2),
+                (0, 2, 4, 2, 4),
+                (1, 2, 4, 2, 4),
+                (0, 2, 5, 4, 6),
+                (1, 2, 5, 4, 6),
             ]
         );
     }

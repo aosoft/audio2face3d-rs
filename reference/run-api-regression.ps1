@@ -18,6 +18,12 @@ foreach ($path in @($baseline, $reportRoot)) {
 if (!(Test-Path -LiteralPath (Join-Path $baseline "results"))) { throw "Preserved baseline results are required" }
 if (Test-Path -LiteralPath $reportRoot) { throw "Report directory already exists; choose a new directory" }
 [IO.Directory]::CreateDirectory($reportRoot) | Out-Null
+$baselineProvenance = $null
+$provenancePath = Join-Path $baseline "capture-summary.json"
+if (Test-Path -LiteralPath $provenancePath) {
+    $baselineProvenance = Get-Content -Raw -Encoding UTF8 $provenancePath | ConvertFrom-Json
+    Copy-Item -LiteralPath $provenancePath -Destination (Join-Path $reportRoot "baseline-provenance.json")
+}
 
 function Same-Inputs($Expected, $Actual) {
     if (($Expected.case | ConvertTo-Json -Compress) -cne ($Actual.case | ConvertTo-Json -Compress)) { return $false }
@@ -59,26 +65,45 @@ foreach ($case in $cases) {
     } finally {
         $ErrorActionPreference = $previousErrorAction
     }
-    $entry = [ordered]@{ case = $name; exit_code = $exitCode; classification = "not-run"; maximum_absolute_error = $null; baseline_identical = $null; baseline_inputs_match = $null; first_difference = $null }
+    $entry = [ordered]@{ case = $name; exit_code = $exitCode; classification = "not-run"; maximum_absolute_error = $null; baseline_identical = $null; baseline_inputs_match = $null; baseline_records_identical = $null; baseline_values_identical = $null; sdk_metadata_identical = $null; first_difference = $null; structural_differences = @(); records_compared = 0; values_compared = 0 }
     if ((Test-Path -LiteralPath $comparison) -and (Get-Item -LiteralPath $comparison).LastWriteTimeUtc -ge $started) {
         $value = Get-Content -Raw -Encoding UTF8 $comparison | ConvertFrom-Json
         $entry.maximum_absolute_error = $value.maximum_absolute_error
         $entry.first_difference = $value.first_difference
+        $entry.structural_differences = @($value.structural_differences | Where-Object { $null -ne $_ })
+        $entry.records_compared = $value.records_compared
+        $entry.values_compared = $value.values_compared
+        $actual = Get-Content -Raw -Encoding UTF8 (Join-Path $output "rust/artifact.json") | ConvertFrom-Json
+        $sdk = Get-Content -Raw -Encoding UTF8 (Join-Path $output "cpp/artifact.json") | ConvertFrom-Json
+        # Match same_record_identity in the existing comparator, but inspect
+        # all records even when numerical comparison stops on an earlier one.
+        $identityFields = @("layer", "component", "track", "frame", "inference", "timestamp", "next_timestamp", "dtype", "shape")
+        $sdkIdentity = ConvertTo-Json -InputObject @($sdk.records | Select-Object -Property $identityFields) -Depth 12 -Compress
+        $rustIdentity = ConvertTo-Json -InputObject @($actual.records | Select-Object -Property $identityFields) -Depth 12 -Compress
+        $entry.sdk_metadata_identical = $sdkIdentity -ceq $rustIdentity
+        # Keep each report tied to its own captures. Later harness runs replace
+        # results/<case>, and must not silently change baseline assessments.
+        $saved = Join-Path $reportRoot "results/$name"
+        [IO.Directory]::CreateDirectory($saved) | Out-Null
+        foreach ($producer in @("cpp", "rust")) {
+            Copy-Item -LiteralPath (Join-Path $output $producer) -Destination (Join-Path $saved $producer) -Recurse
+        }
+        Copy-Item -LiteralPath $comparison -Destination (Join-Path $saved "comparison.json")
         $entry.classification = if ($value.compatible) { "within-sdk-tolerance" } else { "unexplained-difference" }
         if (Test-Path -LiteralPath (Join-Path $old "rust/artifact.json")) {
             $expected = Get-Content -Raw -Encoding UTF8 (Join-Path $old "rust/artifact.json") | ConvertFrom-Json
-            $actual = Get-Content -Raw -Encoding UTF8 (Join-Path $output "rust/artifact.json") | ConvertFrom-Json
             $entry.baseline_inputs_match = Same-Inputs $expected $actual
-            $entry.baseline_identical = $entry.baseline_inputs_match -and
-                (($expected.records | ConvertTo-Json -Depth 20 -Compress) -ceq ($actual.records | ConvertTo-Json -Depth 20 -Compress)) -and
-                ((Get-FileHash (Join-Path $old "rust/values.f32le")).Hash -eq (Get-FileHash (Join-Path $output "rust/values.f32le")).Hash)
+            $entry.baseline_records_identical = ($expected.records | ConvertTo-Json -Depth 20 -Compress) -ceq ($actual.records | ConvertTo-Json -Depth 20 -Compress)
+            $entry.baseline_values_identical = (Get-FileHash (Join-Path $old "rust/values.f32le")).Hash -eq (Get-FileHash (Join-Path $output "rust/values.f32le")).Hash
+            $entry.baseline_identical = $entry.baseline_inputs_match -and $entry.baseline_records_identical -and $entry.baseline_values_identical
             if (!$value.compatible -and $entry.baseline_identical) { $entry.classification = "unchanged-local-baseline" }
         }
     }
     $results += [pscustomobject]$entry
     $report = [ordered]@{
         schema_version = 1
-        baseline_scope = "Local captures preserved before Step 9; not proof of a pre-Step-3 revision"
+        baseline_scope = "Preserved captures; source-revision claims require the accompanying baseline provenance"
+        baseline_provenance = $baselineProvenance
         precision = "fp32"
         seed = 0
         tolerance_sha256 = (Get-FileHash reference/tolerances.json).Hash

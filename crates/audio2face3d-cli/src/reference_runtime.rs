@@ -1076,13 +1076,19 @@ fn capture_interactive_blendshape(
     if frame >= total {
         return Err(format!("selected frame {frame} is outside {total} frames").into());
     }
-    let mut blendshape = create_interactive_device_blendshape(model)?;
+    let frame_rate = match &geometry {
+        FacadeInteractiveGeometryExecutorBundle::Regression(executor) => executor.frame_rate(),
+        FacadeInteractiveGeometryExecutorBundle::Diffusion(executor) => executor.frame_rate(),
+    };
+    let mut blendshape = create_interactive_device_blendshape(model, frame_rate)?;
     if all_frames {
-        let geometry_frames = collect_interactive_geometry(&mut geometry, None)?;
+        let mut frame_metadata = Vec::new();
+        let geometry_frames =
+            collect_interactive_geometry(&mut geometry, None, &mut frame_metadata)?;
         let mut callback_error = None;
         let mut callback_frame = 0_usize;
         let report = block_on(blendshape.compute_all_frames(&geometry_frames, |output| {
-            let metadata = interactive_geometry_metadata(model.sample_rate(), callback_frame);
+            let metadata = frame_metadata[callback_frame];
             callback_frame += 1;
             if let Err(error) = push_interactive_gpu_blendshape(
                 writer,
@@ -1122,15 +1128,17 @@ fn capture_interactive_blendshape(
                     .entry("invalidation.weights".into())
                     .or_default() += 1;
             }
-            let geometry_frame = collect_interactive_geometry(&mut geometry, Some(frame))?
-                .into_iter()
-                .next()
-                .ok_or("interactive geometry callback returned no frame")?;
+            let mut frame_metadata = Vec::new();
+            let geometry_frame =
+                collect_interactive_geometry(&mut geometry, Some(frame), &mut frame_metadata)?
+                    .into_iter()
+                    .next()
+                    .ok_or("interactive geometry callback returned no frame")?;
             let mut callback_error = None;
             let report =
                 block_on(
                     blendshape.compute_frame(frame, total, &geometry_frame, |output| {
-                        let metadata = interactive_geometry_metadata(model.sample_rate(), frame);
+                        let metadata = frame_metadata[0];
                         if let Err(error) =
                             push_interactive_gpu_blendshape(writer, layer, metadata, output)
                         {
@@ -1154,22 +1162,9 @@ fn capture_interactive_blendshape(
     Ok(())
 }
 
-fn interactive_geometry_metadata(
-    sample_rate: usize,
-    frame: usize,
-) -> audio2face3d::animation::InteractiveGeometryMetadata {
-    let timestamp = frame.saturating_mul(sample_rate) / 30;
-    let next_timestamp = frame.saturating_add(1).saturating_mul(sample_rate) / 30;
-    audio2face3d::animation::InteractiveGeometryMetadata {
-        frame,
-        inference: None,
-        timestamp: i64::try_from(timestamp).unwrap_or(i64::MAX),
-        next_timestamp: i64::try_from(next_timestamp).unwrap_or(i64::MAX),
-    }
-}
-
 fn create_interactive_device_blendshape(
     model: &Model,
+    frame_rate: FrameRate,
 ) -> Result<DeviceBlendshapeSolveInteractiveExecutor, Box<dyn std::error::Error>> {
     let device = GpuDevice::new(0)?;
     let stream = device.create_stream()?;
@@ -1192,29 +1187,41 @@ fn create_interactive_device_blendshape(
     Ok(DeviceBlendshapeSolveInteractiveExecutor::from_layer(
         layer,
         model.sample_rate(),
-        FrameRate::new(30, 1)?,
+        frame_rate,
     ))
 }
 
 fn collect_interactive_geometry(
     bundle: &mut FacadeInteractiveGeometryExecutorBundle,
     frame: Option<usize>,
+    metadata: &mut Vec<audio2face3d::animation::InteractiveGeometryMetadata>,
 ) -> Result<Vec<RegressionGeometry>, Box<dyn std::error::Error>> {
     let mut frames = Vec::new();
     let mut callback_error = None;
-    let mut callback = |results: GeometryResults<'_>| match copy_facade_geometry_result(results) {
-        Ok(frame) => {
-            frames.push(RegressionGeometry {
-                skin: frame.skin,
-                tongue: frame.tongue,
-                jaw_transform: frame.jaw_transform,
-                eyes_rotation: frame.eyes_rotation,
-            });
-            ControlFlow::Continue(())
-        }
-        Err(error) => {
-            callback_error = Some(error);
-            ControlFlow::Break(())
+    let mut callback = |results: GeometryResults<'_>| {
+        // Preserve the producer's timestamps: Diffusion uses its model frame
+        // rate, which need not be the Regression capture rate of 30 fps.
+        let frame_metadata = audio2face3d::animation::InteractiveGeometryMetadata {
+            frame: results.metadata.frame_index,
+            inference: None,
+            timestamp: results.metadata.timestamp,
+            next_timestamp: results.metadata.next_timestamp,
+        };
+        match copy_facade_geometry_result(results) {
+            Ok(frame) => {
+                metadata.push(frame_metadata);
+                frames.push(RegressionGeometry {
+                    skin: frame.skin,
+                    tongue: frame.tongue,
+                    jaw_transform: frame.jaw_transform,
+                    eyes_rotation: frame.eyes_rotation,
+                });
+                ControlFlow::Continue(())
+            }
+            Err(error) => {
+                callback_error = Some(error);
+                ControlFlow::Break(())
+            }
         }
     };
     let report = match bundle {

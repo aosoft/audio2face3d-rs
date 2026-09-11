@@ -471,11 +471,17 @@ fn acquired_models_execute_through_completed_facades() {
         .invalidate_emotion(EmotionInvalidationLayer::PostProcessing)
         .unwrap();
     assert!(!interactive.is_emotion_valid(EmotionInvalidationLayer::PostProcessing));
-    let mut one_frame = 0;
-    let mut callback = |_: audio2face3d::audio2emotion::EmotionResults<'_>| {
-        one_frame += 1;
-        ControlFlow::Continue(())
-    };
-    block_on(interactive.compute_frame(0, &mut callback)).unwrap();
-    assert_eq!(one_frame, 1);
+    let total = interactive.total_frame_count().unwrap();
+    for frame in [total / 2, total - 1, 0] {
+        let expected_timestamp = interactive.frame_timestamp(frame).unwrap();
+        let mut one_frame = 0;
+        let mut callback = |result: audio2face3d::audio2emotion::EmotionResults<'_>| {
+            assert_eq!(result.metadata.frame_index, frame);
+            assert_eq!(result.metadata.timestamp, expected_timestamp);
+            one_frame += 1;
+            ControlFlow::Continue(())
+        };
+        block_on(interactive.compute_frame(frame, &mut callback)).unwrap();
+        assert_eq!(one_frame, 1);
+    }
 }
