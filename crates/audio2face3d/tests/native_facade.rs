@@ -27,7 +27,8 @@ use audio2face3d::audio2face::{
     GeometryExecutorCreationParameters, GeometryTrackResources,
 };
 use audio2face3d::audio2x::{
-    AudioAccumulator, EmotionAccumulator, Executor, FrameRate, InteractiveExecutor,
+    AudioAccumulator, EmotionAccumulator, Executor, FrameRate, InteractiveExecutionStatus,
+    InteractiveExecutor,
 };
 use audio2face3d::common::{GeometryParameters, NetworkDocument};
 use audio2face3d::{Model, ModelKind, ModelParameters};
@@ -483,5 +484,61 @@ fn acquired_models_execute_through_completed_facades() {
         };
         block_on(interactive.compute_frame(frame, &mut callback)).unwrap();
         assert_eq!(one_frame, 1);
+    }
+
+    // Exercise the public facade's state transitions with actual inference,
+    // not only the mock scheduler. A new compute_all call replays all frames.
+    for layer in [
+        EmotionInvalidationLayer::PostProcessing,
+        EmotionInvalidationLayer::Inference,
+        EmotionInvalidationLayer::All,
+    ] {
+        interactive.invalidate_emotion(layer).unwrap();
+        assert!(!interactive.is_emotion_valid(layer));
+        assert!(!interactive.is_fully_valid());
+        let mut frames = Vec::new();
+        let mut callback = |result: audio2face3d::audio2emotion::EmotionResults<'_>| {
+            frames.push(result.metadata.frame_index);
+            ControlFlow::Continue(())
+        };
+        let report = block_on(interactive.compute_all_frames(&mut callback)).unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+        assert_eq!(report.emitted_frames, total);
+        assert_eq!(frames, interactive_frames);
+        assert!(interactive.is_fully_valid());
+    }
+    interactive
+        .invalidate_emotion(EmotionInvalidationLayer::None)
+        .unwrap();
+    assert!(interactive.is_fully_valid());
+
+    for use_interrupt_handle in [false, true] {
+        let interrupt = interactive.interrupt_handle();
+        let mut frames = Vec::new();
+        let mut callback = |result: audio2face3d::audio2emotion::EmotionResults<'_>| {
+            frames.push(result.metadata.frame_index);
+            if use_interrupt_handle {
+                interrupt.interrupt();
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        };
+        let report = block_on(interactive.compute_all_frames(&mut callback)).unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Interrupted);
+        assert_eq!(report.emitted_frames, 1);
+        assert_eq!(frames, vec![0]);
+        assert!(!interactive.is_fully_valid());
+
+        let mut replay = Vec::new();
+        let mut callback = |result: audio2face3d::audio2emotion::EmotionResults<'_>| {
+            replay.push(result.metadata.frame_index);
+            ControlFlow::Continue(())
+        };
+        let report = block_on(interactive.compute_all_frames(&mut callback)).unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+        assert_eq!(report.emitted_frames, total);
+        assert_eq!(replay, interactive_frames);
+        assert!(interactive.is_fully_valid());
     }
 }
