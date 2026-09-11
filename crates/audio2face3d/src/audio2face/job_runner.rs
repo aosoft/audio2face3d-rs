@@ -22,7 +22,7 @@ type JobAction = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
 /// pending forever when a custom runner rejects or silently drops work.
 pub struct JobRunnerTask {
     action: Option<JobAction>,
-    completion: Arc<ExecutionCompletion>,
+    completion: Option<Arc<ExecutionCompletion>>,
     track: usize,
 }
 
@@ -39,7 +39,9 @@ impl JobRunnerTask {
                 message: panic_message(payload),
             }),
         };
-        self.completion.complete_task(self.track, result);
+        if let Some(completion) = &self.completion {
+            completion.complete_task(self.track, result);
+        }
     }
 
     /// Creates a task for an owning executor. The public API intentionally
@@ -52,7 +54,7 @@ impl JobRunnerTask {
     {
         Self {
             action: Some(Box::new(action)),
-            completion,
+            completion: Some(completion),
             track,
         }
     }
@@ -60,8 +62,10 @@ impl JobRunnerTask {
 
 impl Drop for JobRunnerTask {
     fn drop(&mut self) {
-        if self.action.take().is_some() {
-            self.completion.complete_task(
+        if self.action.take().is_some()
+            && let Some(completion) = &self.completion
+        {
+            completion.complete_task(
                 self.track,
                 Err(Error::Worker {
                     track: self.track,
@@ -86,6 +90,96 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 pub trait JobRunner: Send + Sync + 'static {
     /// Takes ownership of a task for asynchronous execution.
     fn enqueue(&self, task: JobRunnerTask) -> Result<()>;
+}
+
+/// Preserves a track's temporal solver state even with an unordered runner.
+/// Only the drain task is scheduled; workers never wait on another worker.
+#[cfg(any(test, feature = "tensorrt"))]
+#[derive(Default)]
+pub(crate) struct SerialJobQueue {
+    state: Mutex<SerialQueueState>,
+}
+
+#[cfg(any(test, feature = "tensorrt"))]
+#[derive(Default)]
+struct SerialQueueState {
+    tasks: VecDeque<JobRunnerTask>,
+    scheduled: bool,
+}
+
+#[cfg(any(test, feature = "tensorrt"))]
+impl SerialJobQueue {
+    pub(crate) fn enqueue(
+        self: &Arc<Self>,
+        runner: &dyn JobRunner,
+        task: JobRunnerTask,
+    ) -> Result<()> {
+        let mut state = self.state.lock().map_err(|_| Error::Poisoned {
+            resource: "serial job queue",
+        })?;
+        state.tasks.push_back(task);
+        if state.scheduled {
+            return Ok(());
+        }
+        state.scheduled = true;
+        drop(state);
+        let guard = SerialDrainGuard {
+            queue: Arc::clone(self),
+            armed: true,
+        };
+        runner.enqueue(JobRunnerTask {
+            action: Some(Box::new(move || guard.run())),
+            completion: None,
+            track: 0,
+        })
+    }
+}
+
+#[cfg(any(test, feature = "tensorrt"))]
+struct SerialDrainGuard {
+    queue: Arc<SerialJobQueue>,
+    armed: bool,
+}
+
+#[cfg(any(test, feature = "tensorrt"))]
+impl SerialDrainGuard {
+    fn run(mut self) -> Result<()> {
+        loop {
+            let task = {
+                let mut state = self.queue.state.lock().map_err(|_| Error::Poisoned {
+                    resource: "serial job queue",
+                })?;
+                match state.tasks.pop_front() {
+                    Some(task) => task,
+                    None => {
+                        state.scheduled = false;
+                        self.armed = false;
+                        return Ok(());
+                    }
+                }
+            };
+            task.run();
+        }
+    }
+}
+
+#[cfg(any(test, feature = "tensorrt"))]
+impl Drop for SerialDrainGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let tasks = {
+                let mut state = self
+                    .queue
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                state.scheduled = false;
+                std::mem::take(&mut state.tasks)
+            };
+            // Cancellation wakes observers; never invoke them under the queue lock.
+            drop(tasks);
+        }
+    }
 }
 
 struct QueueState {
@@ -338,6 +432,164 @@ mod tests {
     }
 
     struct RejectingRunner;
+
+    #[derive(Default)]
+    struct HoldingRunner(Mutex<Vec<JobRunnerTask>>);
+
+    impl JobRunner for HoldingRunner {
+        fn enqueue(&self, task: JobRunnerTask) -> Result<()> {
+            self.0.lock().unwrap().push(task);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn serial_queues_preserve_track_order_across_calls_with_reverse_runner() {
+        let runner = HoldingRunner::default();
+        let queues = [
+            Arc::new(SerialJobQueue::default()),
+            Arc::new(SerialJobQueue::default()),
+        ];
+        let observed = Arc::new(Mutex::new([Vec::new(), Vec::new()]));
+        let mut executions = Vec::new();
+        for frame in 0..8 {
+            let (execution, completion) = Execution::pending(2);
+            for (track, queue) in queues.iter().enumerate() {
+                completion.add_task(track).unwrap();
+                let observed = Arc::clone(&observed);
+                queue
+                    .enqueue(
+                        &runner,
+                        JobRunnerTask::new(completion.clone(), track, move || {
+                            observed.lock().unwrap()[track].push(frame);
+                            Ok(())
+                        }),
+                    )
+                    .unwrap();
+            }
+            completion.finish_schedule(report());
+            executions.push(execution);
+        }
+        let mut dispatches = std::mem::take(&mut *runner.0.lock().unwrap());
+        assert_eq!(dispatches.len(), 2);
+        while let Some(task) = dispatches.pop() {
+            task.run();
+        }
+        assert_eq!(
+            *observed.lock().unwrap(),
+            [Vec::from_iter(0..8), Vec::from_iter(0..8)]
+        );
+        for execution in executions {
+            assert_ready(execution, false);
+        }
+    }
+
+    #[test]
+    fn serial_queue_cancels_dropped_and_rejected_dispatches_and_can_be_reused() {
+        let queue = Arc::new(SerialJobQueue::default());
+        let runner = HoldingRunner::default();
+        let (execution, completion) = Execution::pending(1);
+        for _ in 0..3 {
+            completion.add_task(0).unwrap();
+            queue
+                .enqueue(
+                    &runner,
+                    JobRunnerTask::new(completion.clone(), 0, || Ok(())),
+                )
+                .unwrap();
+        }
+        completion.finish_schedule(report());
+        drop(std::mem::take(&mut *runner.0.lock().unwrap()));
+        assert_ready(execution, true);
+
+        let (execution, completion) = Execution::pending(1);
+        completion.add_task(0).unwrap();
+        assert!(
+            queue
+                .enqueue(
+                    &RejectingRunner,
+                    JobRunnerTask::new(completion.clone(), 0, || Ok(()))
+                )
+                .is_err()
+        );
+        completion.finish_schedule(report());
+        assert_ready(execution, true);
+
+        let (execution, completion) = Execution::pending(1);
+        completion.add_task(0).unwrap();
+        queue
+            .enqueue(
+                &runner,
+                JobRunnerTask::new(completion.clone(), 0, || Ok(())),
+            )
+            .unwrap();
+        completion.finish_schedule(report());
+        runner.0.lock().unwrap().pop().unwrap().run();
+        assert_ready(execution, false);
+    }
+
+    #[test]
+    fn serial_queue_continues_after_task_panic() {
+        let queue = Arc::new(SerialJobQueue::default());
+        let runner = HoldingRunner::default();
+        let (failed, completion) = Execution::pending(1);
+        completion.add_task(0).unwrap();
+        queue
+            .enqueue(
+                &runner,
+                JobRunnerTask::new(completion.clone(), 0, || panic!("serial panic")),
+            )
+            .unwrap();
+        completion.finish_schedule(report());
+        let (succeeded, completion) = Execution::pending(1);
+        completion.add_task(0).unwrap();
+        queue
+            .enqueue(
+                &runner,
+                JobRunnerTask::new(completion.clone(), 0, || Ok(())),
+            )
+            .unwrap();
+        completion.finish_schedule(report());
+        runner.0.lock().unwrap().pop().unwrap().run();
+        assert_ready(failed, true);
+        assert_ready(succeeded, false);
+    }
+
+    #[test]
+    fn serial_queue_preserves_order_on_multi_worker_pool() {
+        let queue = Arc::new(SerialJobQueue::default());
+        let runner = ThreadPoolJobRunner::new(4).unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let (execution, completion) = Execution::pending(1);
+        for frame in 0..1_000 {
+            completion.add_task(0).unwrap();
+            let observed = Arc::clone(&observed);
+            queue
+                .enqueue(
+                    &runner,
+                    JobRunnerTask::new(completion.clone(), 0, move || {
+                        thread::yield_now();
+                        observed.lock().unwrap().push(frame);
+                        Ok(())
+                    }),
+                )
+                .unwrap();
+            thread::yield_now();
+        }
+        completion.finish_schedule(report());
+        drop(runner);
+        assert_ready(execution, false);
+        assert_eq!(*observed.lock().unwrap(), Vec::from_iter(0..1_000));
+    }
+
+    fn assert_ready(mut execution: Execution, worker_error: bool) {
+        let mut cx = Context::from_waker(Waker::noop());
+        match Pin::new(&mut execution).poll(&mut cx) {
+            Poll::Ready(Err(Error::Worker { .. })) if worker_error => {}
+            Poll::Ready(Ok(_)) if !worker_error => {}
+            result => panic!("unexpected completion: {result:?}"),
+        }
+    }
 
     impl JobRunner for RejectingRunner {
         fn enqueue(&self, task: JobRunnerTask) -> Result<()> {

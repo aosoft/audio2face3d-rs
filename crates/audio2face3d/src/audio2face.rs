@@ -1254,6 +1254,8 @@ pub struct HostBlendshapeSolveExecutor {
     #[cfg(feature = "tensorrt")]
     pending: Vec<Arc<crate::audio2x::ExecutionCompletion>>,
     #[cfg(feature = "tensorrt")]
+    track_jobs: Vec<Arc<job_runner::SerialJobQueue>>,
+    #[cfg(feature = "tensorrt")]
     weight_count: usize,
     #[cfg(not(feature = "tensorrt"))]
     _opaque: Infallible,
@@ -1666,6 +1668,9 @@ impl HostBlendshapeSolveExecutor {
                 .collect(),
             runner,
             pending: Vec::new(),
+            track_jobs: (0..track_count)
+                .map(|_| Arc::new(job_runner::SerialJobQueue::default()))
+                .collect(),
             weight_count,
             _not_sync: std::marker::PhantomData,
         })
@@ -1693,6 +1698,7 @@ impl HostBlendshapeSolveExecutor {
         let runner = Arc::clone(&self.runner);
         let skin_solvers = &self.skin_solvers;
         let tongue_solvers = &self.tongue_solvers;
+        let track_jobs = &self.track_jobs;
         let mut emitted_frames = 0;
         let run = self.source.execute_host(|metadata, geometry| {
             let skin = geometry.skin.clone();
@@ -1745,7 +1751,7 @@ impl HostBlendshapeSolveExecutor {
                     }
                 });
             emitted_frames += 1;
-            if let Err(error) = runner.enqueue(task) {
+            if let Err(error) = track_jobs[metadata.track_index].enqueue(runner.as_ref(), task) {
                 callback(Err(error));
             }
             ControlFlow::Continue(())
