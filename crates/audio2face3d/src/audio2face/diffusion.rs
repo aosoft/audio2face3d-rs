@@ -938,11 +938,14 @@ impl DiffusionGeometryExecutor {
                 input_strength: self.input_strength,
             })
             .collect::<Vec<_>>();
+        // Host BlendShape consumes this adapter too; expose the same zero-based
+        // frame index as the device Geometry facade, excluding pre-audio context.
+        let padding = self.contract.frame_progress.available_windows(0, true)?;
         let mut postprocessors = std::mem::take(&mut self.postprocessors);
         let dt = self.frame_rate.denominator() as f32 / self.frame_rate.numerator() as f32;
         let result = self
             .execution
-            .execute(&tracks, &mut self.backend, |metadata, output| {
+            .execute(&tracks, &mut self.backend, |mut metadata, output| {
                 let Some(processor) = postprocessors.get_mut(metadata.track) else {
                     return false;
                 };
@@ -950,6 +953,7 @@ impl DiffusionGeometryExecutor {
                     Ok(geometry) => geometry,
                     Err(_) => return false,
                 };
+                metadata.frame -= padding;
                 matches!(callback(metadata, &geometry), ControlFlow::Continue(()))
             });
         self.postprocessors = postprocessors;
