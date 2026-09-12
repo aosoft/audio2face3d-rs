@@ -398,6 +398,7 @@ fn acquired_models_execute_through_completed_facades() {
             _ => unreachable!(),
         };
         verify_geometry_transitions(interactive.as_mut());
+        verify_host_blendshape_transitions(&model, interactive.as_mut());
     }
 
     let emotion_model = Model::load(&manifest.emotion_model).unwrap();
@@ -646,5 +647,106 @@ fn verify_geometry_transitions(executor: &mut dyn GeometryInteractiveExecutor) {
         assert_eq!(report.emitted_frames, total);
         assert_eq!(replay, expected);
         assert!(executor.is_fully_valid());
+    }
+}
+
+fn verify_host_blendshape_transitions(
+    model: &Model,
+    geometry: &mut dyn GeometryInteractiveExecutor,
+) {
+    use audio2face3d::animation::{BlendshapeData, InteractiveBlendshapeLayer, RegressionGeometry};
+    use audio2face3d::audio2face::{
+        BlendshapeInteractiveExecutor, BlendshapeInvalidationLayer, CpuBlendshapeSolver,
+        HostBlendshapeSolveInteractiveExecutor,
+    };
+    let paths = model.blendshape_paths(0).unwrap();
+    let load = |name: &str| {
+        let paths = paths.get(name).expect("fixture must contain both solvers");
+        let data = BlendshapeData::load_npz(&paths.data).unwrap();
+        let config = audio2face3d::common::load_blendshape_config(&paths.config).unwrap();
+        CpuBlendshapeSolver::from_config(data, &config.blendshape_params).unwrap()
+    };
+    let mut frames = Vec::new();
+    for frame in 0..3 {
+        let mut callback = |result: audio2face3d::audio2face::GeometryResults<'_>| {
+            let copy = |component: Option<audio2face3d::audio2x::DeviceComponentResults<'_>>| {
+                let component = component.unwrap();
+                let mut values = vec![0.0; component.values.len()];
+                component.copy_to(&mut values).unwrap();
+                values
+            };
+            let eyes = copy(result.eyes);
+            assert_eq!(eyes.len(), 6);
+            frames.push(RegressionGeometry {
+                skin: copy(result.skin),
+                tongue: copy(result.tongue),
+                jaw_transform: copy(result.jaw).try_into().unwrap(),
+                eyes_rotation: audio2face3d::animation::EyesRotation {
+                    right: eyes[..3].try_into().unwrap(),
+                    left: eyes[3..].try_into().unwrap(),
+                },
+            });
+            ControlFlow::Continue(())
+        };
+        block_on(geometry.compute_frame(frame, &mut callback)).unwrap();
+    }
+    assert_eq!(frames.len(), 3);
+    let layer = InteractiveBlendshapeLayer::new(Some(load("skin")), Some(load("tongue")));
+    let mut executor = HostBlendshapeSolveInteractiveExecutor::from_layer(
+        layer,
+        model.sample_rate(),
+        geometry.frame_rate(),
+    )
+    .unwrap();
+    let mut baseline = Vec::new();
+    let report = block_on(executor.compute_all_frames(&frames, |weights| {
+        baseline.push(weights.clone());
+        true
+    }))
+    .unwrap();
+    assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+    assert_eq!(report.emitted_frames, frames.len());
+    for layer in [
+        BlendshapeInvalidationLayer::All,
+        BlendshapeInvalidationLayer::SkinSolverPrepare,
+        BlendshapeInvalidationLayer::TongueSolverPrepare,
+        BlendshapeInvalidationLayer::BlendshapeWeights,
+    ] {
+        executor.invalidate_blendshape(layer).unwrap();
+        assert!(!executor.is_blendshape_valid(layer));
+        let mut replay = Vec::new();
+        let report = block_on(executor.compute_all_frames(&frames, |weights| {
+            replay.push(weights.clone());
+            true
+        }))
+        .unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+        assert_eq!(report.emitted_frames, frames.len());
+        assert_eq!(replay, baseline);
+        assert!(executor.is_fully_valid());
+    }
+    for interrupt_requested in [false, true] {
+        let interrupt = executor.interrupt_handle();
+        let mut calls = 0;
+        let report = block_on(executor.compute_all_frames(&frames, |_| {
+            calls += 1;
+            if interrupt_requested {
+                interrupt.interrupt();
+            }
+            interrupt_requested
+        }))
+        .unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Interrupted);
+        assert_eq!(report.emitted_frames, 1);
+        assert_eq!(calls, 1);
+        let mut replay = Vec::new();
+        let report = block_on(executor.compute_all_frames(&frames, |weights| {
+            replay.push(weights.clone());
+            true
+        }))
+        .unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+        assert_eq!(report.emitted_frames, frames.len());
+        assert_eq!(replay, baseline);
     }
 }
