@@ -700,6 +700,31 @@ fn verify_host_blendshape_transitions(
         geometry.frame_rate(),
     )
     .unwrap();
+    let mut random_baseline = vec![None; frames.len()];
+    for (pass, order) in [[2, 0, 1], [1, 2, 0]].iter().enumerate() {
+        executor
+            .invalidate_blendshape(BlendshapeInvalidationLayer::All)
+            .unwrap();
+        for &frame in order {
+            let mut observed = Vec::new();
+            let report =
+                block_on(
+                    executor.compute_frame(frame, frames.len(), &frames[frame], |weights| {
+                        observed.push(weights.clone());
+                        true
+                    }),
+                )
+                .unwrap();
+            assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+            assert_eq!(report.emitted_frames, 1);
+            assert_eq!(observed.len(), 1);
+            if pass == 0 {
+                random_baseline[frame] = observed.pop();
+            } else {
+                assert_eq!(Some(&observed[0]), random_baseline[frame].as_ref());
+            }
+        }
+    }
     let mut baseline = Vec::new();
     let report = block_on(executor.compute_all_frames(&frames, |weights| {
         baseline.push(weights.clone());
@@ -708,6 +733,24 @@ fn verify_host_blendshape_transitions(
     .unwrap();
     assert_eq!(report.status, InteractiveExecutionStatus::Complete);
     assert_eq!(report.emitted_frames, frames.len());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    drop_after_first_callback(
+        executor.compute_all_frames(&frames, |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            true
+        }),
+        &calls,
+    );
+    let mut after_drop = Vec::new();
+    let report = block_on(executor.compute_all_frames(&frames, |weights| {
+        after_drop.push(weights.clone());
+        true
+    }))
+    .unwrap();
+    assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+    assert_eq!(report.emitted_frames, frames.len());
+    assert_eq!(after_drop, baseline);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     for layer in [
         BlendshapeInvalidationLayer::All,
         BlendshapeInvalidationLayer::SkinSolverPrepare,
@@ -751,6 +794,26 @@ fn verify_host_blendshape_transitions(
         assert_eq!(report.emitted_frames, frames.len());
         assert_eq!(replay, baseline);
     }
+}
+
+fn drop_after_first_callback<F: Future>(future: F, calls: &std::sync::atomic::AtomicUsize) {
+    let mut future = std::pin::pin!(future);
+    let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let started = std::time::Instant::now();
+    loop {
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        if calls.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "callback did not run"
+        );
+        std::thread::park_timeout(std::time::Duration::from_millis(1));
+    }
+    // Dropping the still-pending future must detach/cancel safely.
 }
 
 fn verify_device_blendshape_transitions(
@@ -801,6 +864,31 @@ fn verify_device_blendshape_transitions(
         assert!(weights.iter().all(|value: &f32| value.is_finite()));
         weights
     };
+    let mut random_baseline = vec![Vec::new(); frames.len()];
+    for (pass, order) in [[2, 0, 1], [1, 2, 0]].iter().enumerate() {
+        executor
+            .invalidate_blendshape(BlendshapeInvalidationLayer::All)
+            .unwrap();
+        for &frame in order {
+            let mut observed = Vec::new();
+            let report =
+                block_on(
+                    executor.compute_frame(frame, frames.len(), &frames[frame], |output| {
+                        observed.push(copy(output));
+                        true
+                    }),
+                )
+                .unwrap();
+            assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+            assert_eq!(report.emitted_frames, 1);
+            assert_eq!(observed.len(), 1);
+            if pass == 0 {
+                random_baseline[frame] = observed.pop().unwrap();
+            } else {
+                assert_eq!(observed[0], random_baseline[frame]);
+            }
+        }
+    }
     let mut baseline = Vec::new();
     let report = block_on(executor.compute_all_frames(frames, |output| {
         baseline.push(copy(output));
@@ -809,6 +897,24 @@ fn verify_device_blendshape_transitions(
     .unwrap();
     assert_eq!(report.status, InteractiveExecutionStatus::Complete);
     assert_eq!(report.emitted_frames, frames.len());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    drop_after_first_callback(
+        executor.compute_all_frames(frames, |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            true
+        }),
+        &calls,
+    );
+    let mut after_drop = Vec::new();
+    let report = block_on(executor.compute_all_frames(frames, |output| {
+        after_drop.push(copy(output));
+        true
+    }))
+    .unwrap();
+    assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+    assert_eq!(report.emitted_frames, frames.len());
+    assert_eq!(after_drop, baseline);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     for layer in [
         BlendshapeInvalidationLayer::All,
         BlendshapeInvalidationLayer::SkinSolverPrepare,
