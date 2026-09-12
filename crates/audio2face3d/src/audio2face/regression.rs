@@ -1,5 +1,149 @@
 //! Regression-model Audio2Face facade declarations.
 
+#[cfg(feature = "tensorrt")]
+fn load_implicit_emotion(
+    model: &crate::Model,
+    shot: Option<&str>,
+    frame: usize,
+    dimension: usize,
+) -> crate::Result<Vec<f32>> {
+    use crate::common::{Error, ModelDocument, NpzArchive, load_model};
+    let invalid = |message: &str| Error::InvalidSchema(message.into());
+    if dimension == 0 {
+        return Ok(Vec::new());
+    }
+    let crate::ModelParameters::Geometry(config) = model.parameters(0)? else {
+        return Err(invalid("regression geometry config is missing"));
+    };
+    let (shot, frame) = match shot {
+        Some(shot) => (shot, frame),
+        None => (
+            config
+                .source_shot
+                .as_deref()
+                .ok_or_else(|| invalid("regression source shot is missing"))?,
+            usize::try_from(
+                config
+                    .source_frame
+                    .ok_or_else(|| invalid("regression source frame is missing"))?,
+            )
+            .map_err(|_| invalid("regression source frame is negative"))?,
+        ),
+    };
+    let ModelDocument::Single(descriptor) = load_model(model.descriptor_path())? else {
+        return Err(invalid(
+            "regression emotion database requires a single model",
+        ));
+    };
+    let path = descriptor
+        .emotion_database_path
+        .ok_or_else(|| invalid("regression emotion database is missing"))?;
+    let mut archive = NpzArchive::open(&path)?;
+    let names = archive.strings("emo_spec_names")?;
+    let starts = archive.i32("emo_spec_start")?;
+    let sizes = archive.i32("emo_spec_size")?;
+    let shape = archive.shape("emo_db")?;
+    let values = archive.f32("emo_db")?;
+    select_implicit_emotion(
+        &names, &starts, &sizes, &shape, &values, shot, frame, dimension,
+    )
+}
+
+#[cfg(feature = "tensorrt")]
+#[allow(clippy::too_many_arguments)]
+fn select_implicit_emotion(
+    names: &[String],
+    starts: &[i32],
+    sizes: &[i32],
+    shape: &[usize],
+    values: &[f32],
+    shot: &str,
+    frame: usize,
+    dimension: usize,
+) -> crate::Result<Vec<f32>> {
+    let invalid = |message: &str| crate::Error::InvalidSchema(message.into());
+    if names.len() != starts.len()
+        || names.len() != sizes.len()
+        || shape.len() != 2
+        || shape[1] != dimension
+        || dimension == 0
+        || shape[0].checked_mul(dimension) != Some(values.len())
+    {
+        return Err(invalid("invalid implicit emotion database dimensions"));
+    }
+    let matches: Vec<_> = names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_str() == shot)
+        .map(|(i, _)| i)
+        .collect();
+    if matches.len() != 1 {
+        return Err(invalid("implicit emotion shot is missing or duplicated"));
+    }
+    let index = matches[0];
+    let start =
+        usize::try_from(starts[index]).map_err(|_| invalid("negative emotion shot start"))?;
+    let size = usize::try_from(sizes[index]).map_err(|_| invalid("negative emotion shot size"))?;
+    if frame >= size || start.checked_add(size).is_none_or(|end| end > shape[0]) {
+        return Err(invalid("implicit emotion frame or shot is out of bounds"));
+    }
+    let offset = (start + frame) * dimension;
+    let result = values[offset..offset + dimension].to_vec();
+    if !result.iter().all(|value| value.is_finite()) {
+        return Err(invalid("implicit emotion contains nonfinite values"));
+    }
+    Ok(result)
+}
+
+#[cfg(all(test, feature = "tensorrt"))]
+mod implicit_emotion_tests {
+    use super::select_implicit_emotion;
+    #[test]
+    fn selects_shot_relative_frame_and_rejects_invalid_database() {
+        let names = vec!["neutral".to_owned()];
+        let values = [9.0, 8.0, 1.0, 2.0, 3.0, 4.0];
+        let select = |starts: &[i32], sizes: &[i32], shape: &[usize], shot, frame| {
+            select_implicit_emotion(&names, starts, sizes, shape, &values, shot, frame, 2)
+        };
+        assert_eq!(
+            select(&[1], &[2], &[3, 2], "neutral", 1).unwrap(),
+            [3.0, 4.0]
+        );
+        assert!(select(&[1], &[2], &[3, 2], "missing", 0).is_err());
+        assert!(select(&[1], &[2], &[3, 2], "neutral", 2).is_err());
+        assert!(select(&[-1], &[2], &[3, 2], "neutral", 0).is_err());
+        assert!(select(&[2], &[2], &[3, 2], "neutral", 0).is_err());
+        assert!(select(&[1], &[2], &[2, 3], "neutral", 0).is_err());
+        assert!(select(&[], &[2], &[3, 2], "neutral", 0).is_err());
+        assert!(
+            select_implicit_emotion(
+                &["neutral".into(), "neutral".into()],
+                &[0, 1],
+                &[1, 1],
+                &[3, 2],
+                &values,
+                "neutral",
+                0,
+                2,
+            )
+            .is_err()
+        );
+        assert!(
+            select_implicit_emotion(
+                &names,
+                &[0],
+                &[1],
+                &[1, 2],
+                &[f32::NAN, 0.0],
+                "neutral",
+                0,
+                2,
+            )
+            .is_err()
+        );
+    }
+}
+
 use std::path::PathBuf;
 
 #[cfg(feature = "tensorrt")]
@@ -311,7 +455,12 @@ impl RegressionGeometryInteractiveExecutor {
             processor,
             Arc::clone(&audio),
             Arc::clone(&emotions),
-            vec![0.0; contract.implicit_emotion_size],
+            load_implicit_emotion(
+                &model,
+                parameters.source_emotion_shot.as_deref(),
+                parameters.source_emotion_frame,
+                contract.implicit_emotion_size,
+            )?,
             parameters.input_strength,
         )?;
         let stream = device.create_stream()?;
@@ -902,7 +1051,15 @@ impl RegressionGeometryExecutor {
             postprocessors: processors,
             gpu_postprocessor,
             contract: owned_contract,
-            implicit_emotions: vec![vec![0.0; model_parameters.implicit_emotion_len]; track_count],
+            implicit_emotions: vec![
+                load_implicit_emotion(
+                    &model,
+                    parameters.source_emotion_shot.as_deref(),
+                    parameters.source_emotion_frame,
+                    model_parameters.implicit_emotion_len
+                )?;
+                track_count
+            ],
             input_strength: parameters.input_strength,
             frame_rate: parameters.frame_rate,
             sample_rate,

@@ -83,6 +83,11 @@ impl NpzArchive {
         self.archive.by_name(&format!("{name}.npy")).is_ok()
     }
 
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn shape(&mut self, name: &str) -> Result<Vec<usize>> {
+        Ok(self.array(name)?.shape)
+    }
+
     fn array(&mut self, name: &str) -> Result<NpyArray> {
         let entry_name = format!("{name}.npy");
         let mut entry = self
@@ -98,6 +103,8 @@ impl NpzArchive {
 }
 
 struct NpyArray {
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    shape: Vec<usize>,
     descriptor: String,
     bytes: Vec<u8>,
 }
@@ -139,7 +146,7 @@ fn parse_npy(bytes: &[u8], name: &str) -> Result<NpyArray> {
     let descriptor = dictionary_string(header, "descr")?;
     let shape = dictionary_shape(header)?;
     let item_size = descriptor_item_size(&descriptor)?;
-    let elements = shape.into_iter().try_fold(1_usize, |total, value| {
+    let elements = shape.iter().try_fold(1_usize, |total, &value| {
         total
             .checked_mul(value)
             .ok_or_else(|| invalid("NPY element count overflow"))
@@ -157,6 +164,7 @@ fn parse_npy(bytes: &[u8], name: &str) -> Result<NpyArray> {
         )));
     }
     Ok(NpyArray {
+        shape,
         descriptor,
         bytes: data.to_vec(),
     })

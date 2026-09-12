@@ -510,15 +510,8 @@ fn create_facade_geometry(
     };
     let mut bundle = block_on(GeometryExecutorBundleFactory::load(parameters))?;
     match (&mut bundle, &network.params) {
-        (
-            FacadeGeometryExecutorBundle::Regression(executor),
-            GeometryParameters::Regression(parameters),
-        ) => {
+        (FacadeGeometryExecutorBundle::Regression(executor), GeometryParameters::Regression(_)) => {
             executor.set_input_strength(config.input_strength)?;
-            for track in 0..tracks {
-                executor
-                    .set_implicit_emotion(track, &vec![0.0; parameters.implicit_emotion_len])?;
-            }
         }
         (FacadeGeometryExecutorBundle::Diffusion(executor), GeometryParameters::Diffusion(_)) => {
             executor.set_input_strength(config.input_strength)?;
