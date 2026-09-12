@@ -398,7 +398,7 @@ fn acquired_models_execute_through_completed_facades() {
             _ => unreachable!(),
         };
         verify_geometry_transitions(interactive.as_mut());
-        verify_host_blendshape_transitions(&model, interactive.as_mut());
+        verify_host_blendshape_transitions(&model, interactive.as_mut(), manifest.device_ordinal);
     }
 
     let emotion_model = Model::load(&manifest.emotion_model).unwrap();
@@ -653,6 +653,7 @@ fn verify_geometry_transitions(executor: &mut dyn GeometryInteractiveExecutor) {
 fn verify_host_blendshape_transitions(
     model: &Model,
     geometry: &mut dyn GeometryInteractiveExecutor,
+    device_ordinal: i32,
 ) {
     use audio2face3d::animation::{BlendshapeData, InteractiveBlendshapeLayer, RegressionGeometry};
     use audio2face3d::audio2face::{
@@ -691,6 +692,7 @@ fn verify_host_blendshape_transitions(
         block_on(geometry.compute_frame(frame, &mut callback)).unwrap();
     }
     assert_eq!(frames.len(), 3);
+    verify_device_blendshape_transitions(model, &frames, geometry.frame_rate(), device_ordinal);
     let layer = InteractiveBlendshapeLayer::new(Some(load("skin")), Some(load("tongue")));
     let mut executor = HostBlendshapeSolveInteractiveExecutor::from_layer(
         layer,
@@ -742,6 +744,107 @@ fn verify_host_blendshape_transitions(
         let mut replay = Vec::new();
         let report = block_on(executor.compute_all_frames(&frames, |weights| {
             replay.push(weights.clone());
+            true
+        }))
+        .unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+        assert_eq!(report.emitted_frames, frames.len());
+        assert_eq!(replay, baseline);
+    }
+}
+
+fn verify_device_blendshape_transitions(
+    model: &Model,
+    frames: &[audio2face3d::animation::RegressionGeometry],
+    frame_rate: FrameRate,
+    device_ordinal: i32,
+) {
+    use audio2face3d::animation::{
+        BlendshapeData, GpuBlendshapeSolver, InteractiveGpuBlendshapeLayer,
+        InteractiveGpuBlendshapeOutput,
+    };
+    use audio2face3d::audio2face::{
+        BlendshapeInteractiveExecutor, BlendshapeInvalidationLayer,
+        DeviceBlendshapeSolveInteractiveExecutor,
+    };
+    let device = audio2face3d::cuda::GpuDevice::new(device_ordinal).unwrap();
+    let stream = device.create_stream().unwrap();
+    let paths = model.blendshape_paths(0).unwrap();
+    let load = |name: &str| {
+        let paths = paths.get(name).unwrap();
+        let data = BlendshapeData::load_npz(&paths.data).unwrap();
+        let config = audio2face3d::common::load_blendshape_config(&paths.config).unwrap();
+        GpuBlendshapeSolver::new(&device, &stream, data, &config.blendshape_params).unwrap()
+    };
+    let skin = load("skin");
+    let tongue = load("tongue");
+    let layer = InteractiveGpuBlendshapeLayer::with_default_cache(
+        Arc::clone(&device),
+        stream,
+        Some(skin),
+        Some(tongue),
+    )
+    .unwrap();
+    let mut executor = DeviceBlendshapeSolveInteractiveExecutor::from_layer(
+        layer,
+        model.sample_rate(),
+        frame_rate,
+    );
+    let copy = |output: InteractiveGpuBlendshapeOutput<'_>| {
+        let mut weights = Vec::new();
+        for view in [output.skin_weights, output.tongue_weights] {
+            let view = view.unwrap();
+            let mut values = vec![0.0; view.len()];
+            view.copy_to(&mut values, output.stream).unwrap();
+            weights.extend(values);
+        }
+        assert!(weights.iter().all(|value: &f32| value.is_finite()));
+        weights
+    };
+    let mut baseline = Vec::new();
+    let report = block_on(executor.compute_all_frames(frames, |output| {
+        baseline.push(copy(output));
+        true
+    }))
+    .unwrap();
+    assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+    assert_eq!(report.emitted_frames, frames.len());
+    for layer in [
+        BlendshapeInvalidationLayer::All,
+        BlendshapeInvalidationLayer::SkinSolverPrepare,
+        BlendshapeInvalidationLayer::TongueSolverPrepare,
+        BlendshapeInvalidationLayer::BlendshapeWeights,
+    ] {
+        executor.invalidate_blendshape(layer).unwrap();
+        assert!(!executor.is_blendshape_valid(layer));
+        let mut replay = Vec::new();
+        let report = block_on(executor.compute_all_frames(frames, |output| {
+            replay.push(copy(output));
+            true
+        }))
+        .unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+        assert_eq!(report.emitted_frames, frames.len());
+        assert_eq!(replay, baseline);
+        assert!(executor.is_fully_valid());
+    }
+    for interrupt_requested in [false, true] {
+        let interrupt = executor.interrupt_handle();
+        let mut calls = 0;
+        let report = block_on(executor.compute_all_frames(frames, |_| {
+            calls += 1;
+            if interrupt_requested {
+                interrupt.interrupt();
+            }
+            interrupt_requested
+        }))
+        .unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Interrupted);
+        assert_eq!(report.emitted_frames, 1);
+        assert_eq!(calls, 1);
+        let mut replay = Vec::new();
+        let report = block_on(executor.compute_all_frames(frames, |output| {
+            replay.push(copy(output));
             true
         }))
         .unwrap();
