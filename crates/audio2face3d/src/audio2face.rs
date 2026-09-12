@@ -1244,6 +1244,10 @@ impl BlendshapeInteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor 
 #[cfg(feature = "cuda")]
 pub struct HostBlendshapeSolveExecutor {
     #[cfg(feature = "tensorrt")]
+    skin_rhs: Option<Box<crate::animation::GpuRhs>>,
+    #[cfg(feature = "tensorrt")]
+    tongue_rhs: Option<Box<crate::animation::GpuRhs>>,
+    #[cfg(feature = "tensorrt")]
     source: GeometrySource,
     #[cfg(feature = "tensorrt")]
     skin_solvers: Vec<Option<Arc<std::sync::Mutex<crate::animation::CpuBlendshapeSolver>>>>,
@@ -1374,62 +1378,6 @@ impl GeometrySource {
         match self {
             Self::Regression(source) => source.tongue_geometry_size(),
             Self::Diffusion(source) => source.tongue_geometry_size(),
-        }
-    }
-
-    fn execute_host(
-        &mut self,
-        mut callback: impl FnMut(
-            CallbackMetadata,
-            &crate::animation::RegressionGeometry,
-        ) -> ControlFlow<()>,
-    ) -> Result<(ExecutionState, usize)> {
-        match self {
-            Self::Regression(source) => {
-                let mut active = vec![false; source.track_count()];
-                let status = source.execute_host(|metadata, geometry| {
-                    active[metadata.track] = true;
-                    callback(
-                        CallbackMetadata {
-                            track_index: metadata.track,
-                            frame_index: metadata.frame,
-                            timestamp: metadata.timestamp,
-                            next_timestamp: metadata.next_timestamp,
-                        },
-                        geometry,
-                    )
-                })?;
-                let state = match status {
-                    crate::animation::PumpStatus::AwaitingInput => ExecutionState::AwaitingInput,
-                    crate::animation::PumpStatus::Complete => ExecutionState::Complete,
-                    crate::animation::PumpStatus::Interrupted => ExecutionState::Progress,
-                };
-                Ok((state, active.iter().filter(|active| **active).count()))
-            }
-            Self::Diffusion(source) => {
-                let status = source.execute_host(|metadata, geometry| {
-                    callback(
-                        CallbackMetadata {
-                            track_index: metadata.track,
-                            frame_index: metadata.frame,
-                            timestamp: metadata.timestamp,
-                            next_timestamp: metadata.next_timestamp,
-                        },
-                        geometry,
-                    )
-                })?;
-                Ok(match status {
-                    crate::animation::DiffusionExecutionStatus::AwaitingInput => {
-                        (ExecutionState::AwaitingInput, 0)
-                    }
-                    crate::animation::DiffusionExecutionStatus::Complete => {
-                        (ExecutionState::Complete, 0)
-                    }
-                    crate::animation::DiffusionExecutionStatus::Executed { tracks } => {
-                        (ExecutionState::Progress, tracks)
-                    }
-                })
-            }
         }
     }
 
@@ -1635,7 +1583,7 @@ impl HostBlendshapeSolveExecutor {
     // The error must retain the unique owning geometry source for recovery.
     #[allow(clippy::result_large_err)]
     fn from_source(
-        source: GeometrySource,
+        mut source: GeometrySource,
         parameters: HostBlendshapeSolveExecutorCreationParameters<'_>,
     ) -> std::result::Result<Self, (Error, GeometrySource)> {
         let (skin, tongue, weight_count) = match create_solvers(&source, &parameters.components) {
@@ -1643,6 +1591,39 @@ impl HostBlendshapeSolveExecutor {
             Err(error) => return Err((error, source)),
         };
         let component_count = usize::from(skin.is_some()) + usize::from(tongue.is_some());
+        let rhs = (|| -> Result<_> {
+            let device = source.device();
+            let stream = Arc::new(device.create_stream()?);
+            let create = |solver: &crate::animation::CpuBlendshapeSolver| {
+                crate::animation::GpuRhs::new(
+                    solver.prepared.as_ref().ok_or_else(|| {
+                        Error::InvalidSchema("BlendShape preparation missing".into())
+                    })?,
+                    solver.data.neutral_pose.len(),
+                    &device,
+                    Arc::clone(&stream),
+                )
+                .map(Box::new)
+            };
+            Ok((
+                skin.as_ref().map(create).transpose()?,
+                tongue.as_ref().map(create).transpose()?,
+            ))
+        })();
+        let (skin_rhs, tongue_rhs) = match rhs {
+            Ok(rhs) => rhs,
+            Err(error) => return Err((error, source)),
+        };
+        let mut option = GeometryExecutionOption::NONE;
+        if skin.is_some() {
+            option |= GeometryExecutionOption::SKIN;
+        }
+        if tongue.is_some() {
+            option |= GeometryExecutionOption::TONGUE;
+        }
+        if let Err(error) = source.set_execution_option(option) {
+            return Err((error, source));
+        }
         let runner = match parameters.job_runner {
             Some(runner) => runner,
             None => match ThreadPoolJobRunner::for_components(component_count) {
@@ -1652,6 +1633,8 @@ impl HostBlendshapeSolveExecutor {
         };
         let track_count = source.track_count();
         Ok(Self {
+            skin_rhs,
+            tongue_rhs,
             source,
             skin_solvers: (0..track_count)
                 .map(|_| {
@@ -1699,63 +1682,103 @@ impl HostBlendshapeSolveExecutor {
         let skin_solvers = &self.skin_solvers;
         let tongue_solvers = &self.tongue_solvers;
         let track_jobs = &self.track_jobs;
+        let skin_rhs = &mut self.skin_rhs;
+        let tongue_rhs = &mut self.tongue_rhs;
+        let device = self.source.device();
+        let mut preparation_error = None;
         let mut emitted_frames = 0;
-        let run = self.source.execute_host(|metadata, geometry| {
-            let skin = geometry.skin.clone();
-            let tongue = geometry.tongue.clone();
-            let skin_solver = skin_solvers[metadata.track_index].clone();
-            let tongue_solver = tongue_solvers[metadata.track_index].clone();
-            let task_callback = Arc::clone(&callback);
-            if let Err(error) = completion.add_task(metadata.track_index) {
-                tracing::warn!(error = %error, "failed to register BlendShape task");
-                return ControlFlow::Break(());
-            }
-            let task =
-                JobRunnerTask::new(Arc::clone(&completion), metadata.track_index, move || {
-                    let solve = (|| -> Result<Vec<f32>> {
-                        let mut weights = Vec::new();
-                        if let Some(solver) = skin_solver {
-                            weights.extend(
-                                solver
-                                    .lock()
-                                    .map_err(|_| Error::Poisoned {
-                                        resource: "skin BlendShape solver",
-                                    })?
-                                    .solve(&skin)?,
-                            );
-                        }
-                        if let Some(solver) = tongue_solver {
-                            weights.extend(
-                                solver
-                                    .lock()
-                                    .map_err(|_| Error::Poisoned {
-                                        resource: "tongue BlendShape solver",
-                                    })?
-                                    .solve(&tongue)?,
-                            );
-                        }
-                        Ok(weights)
-                    })();
-                    match solve {
-                        Ok(weights) => {
-                            task_callback(Ok(BlendshapeHostResults {
-                                metadata,
-                                weights: &weights,
-                            }));
-                            Ok(())
-                        }
-                        Err(error) => {
-                            task_callback(Err(error.clone()));
-                            Err(error)
-                        }
+        let run = self
+            .source
+            .execute_device(&mut |geometry| {
+                let metadata = geometry.metadata;
+                let prepared = (|| -> Result<_> {
+                    let compute =
+                        |generator: &mut Option<Box<crate::animation::GpuRhs>>,
+                         component: Option<crate::audio2x::DeviceComponentResults<'_>>|
+                         -> Result<Vec<f32>> {
+                            let Some(generator) = generator else {
+                                return Ok(Vec::new());
+                            };
+                            let component = component.ok_or_else(|| {
+                                Error::InvalidSchema("missing BlendShape geometry component".into())
+                            })?;
+                            device.synchronize_borrowed_stream(component.stream)?;
+                            let mut atb = vec![0.0; generator.active_count()];
+                            generator.compute(component.values, &mut atb)?;
+                            Ok(atb)
+                        };
+                    Ok((
+                        compute(skin_rhs, geometry.skin)?,
+                        compute(tongue_rhs, geometry.tongue)?,
+                    ))
+                })();
+                let (skin, tongue) = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        callback(Err(error.clone()));
+                        preparation_error = Some(error);
+                        return ControlFlow::Break(());
                     }
-                });
-            emitted_frames += 1;
-            if let Err(error) = track_jobs[metadata.track_index].enqueue(runner.as_ref(), task) {
-                callback(Err(error));
-            }
-            ControlFlow::Continue(())
-        });
+                };
+                let skin_solver = skin_solvers[metadata.track_index].clone();
+                let tongue_solver = tongue_solvers[metadata.track_index].clone();
+                let task_callback = Arc::clone(&callback);
+                if let Err(error) = completion.add_task(metadata.track_index) {
+                    tracing::warn!(error = %error, "failed to register BlendShape task");
+                    return ControlFlow::Break(());
+                }
+                let task =
+                    JobRunnerTask::new(Arc::clone(&completion), metadata.track_index, move || {
+                        let solve = (|| -> Result<Vec<f32>> {
+                            let mut weights = Vec::new();
+                            if let Some(solver) = skin_solver {
+                                weights.extend(
+                                    solver
+                                        .lock()
+                                        .map_err(|_| Error::Poisoned {
+                                            resource: "skin BlendShape solver",
+                                        })?
+                                        .solve_from_atb(&skin)?,
+                                );
+                            }
+                            if let Some(solver) = tongue_solver {
+                                weights.extend(
+                                    solver
+                                        .lock()
+                                        .map_err(|_| Error::Poisoned {
+                                            resource: "tongue BlendShape solver",
+                                        })?
+                                        .solve_from_atb(&tongue)?,
+                                );
+                            }
+                            Ok(weights)
+                        })();
+                        match solve {
+                            Ok(weights) => {
+                                task_callback(Ok(BlendshapeHostResults {
+                                    metadata,
+                                    weights: &weights,
+                                }));
+                                Ok(())
+                            }
+                            Err(error) => {
+                                task_callback(Err(error.clone()));
+                                Err(error)
+                            }
+                        }
+                    });
+                emitted_frames += 1;
+                if let Err(error) = track_jobs[metadata.track_index].enqueue(runner.as_ref(), task)
+                {
+                    callback(Err(error));
+                }
+                ControlFlow::Continue(())
+            })
+            .and_then(Execution::into_ready_report)
+            .and_then(|report| match preparation_error {
+                Some(error) => Err(error),
+                None => Ok((report.state, report.executed_tracks)),
+            });
         let (state, executed_tracks) = match run {
             Ok(report) => report,
             Err(error) => {
@@ -1764,6 +1787,7 @@ impl HostBlendshapeSolveExecutor {
                     executed_tracks: 0,
                     emitted_frames,
                 });
+                self.pending.push(completion);
                 return Err(error);
             }
         };

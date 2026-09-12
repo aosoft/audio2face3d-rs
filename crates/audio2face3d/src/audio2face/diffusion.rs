@@ -20,9 +20,9 @@ use crate::audio2x::FrameRate;
 
 #[cfg(feature = "tensorrt")]
 use crate::animation::{
-    DiffusionCallbackMetadata, DiffusionContract, DiffusionGeometryInteractiveExecution,
-    DiffusionPostprocessor, DiffusionScheduler, DiffusionTrack, GeometryModelData,
-    RegressionGeometry, TensorRtDiffusionBackend,
+    DiffusionContract, DiffusionGeometryInteractiveExecution, DiffusionPostprocessor,
+    DiffusionScheduler, DiffusionTrack, GeometryModelData, RegressionGeometry,
+    TensorRtDiffusionBackend,
 };
 #[cfg(feature = "tensorrt")]
 use crate::common::{GeometryAudioParameters, GeometryParameters, NetworkDocument};
@@ -924,47 +924,6 @@ impl DiffusionGeometryExecutor {
                 index: track,
                 len: self.tracks.len(),
             })
-    }
-
-    /// Executes one available internal inference and applies the owned
-    /// post-processor before invoking the host adapter callback.
-    pub(crate) fn execute_host<C>(
-        &mut self,
-        mut callback: C,
-    ) -> crate::Result<crate::animation::DiffusionExecutionStatus>
-    where
-        C: FnMut(DiffusionCallbackMetadata, &RegressionGeometry) -> ControlFlow<()>,
-    {
-        let tracks = self
-            .tracks
-            .iter()
-            .map(|track| DiffusionTrack {
-                audio: &track.audio,
-                emotions: &track.emotions,
-                identity_index: self.identity_index,
-                input_strength: self.input_strength,
-            })
-            .collect::<Vec<_>>();
-        // Host BlendShape consumes this adapter too; expose the same zero-based
-        // frame index as the device Geometry facade, excluding pre-audio context.
-        let padding = self.contract.frame_progress.available_windows(0, true)?;
-        let mut postprocessors = std::mem::take(&mut self.postprocessors);
-        let dt = self.frame_rate.denominator() as f32 / self.frame_rate.numerator() as f32;
-        let result = self
-            .execution
-            .execute(&tracks, &mut self.backend, |mut metadata, output| {
-                let Some(processor) = postprocessors.get_mut(metadata.track) else {
-                    return false;
-                };
-                let geometry = match processor.process(output, dt) {
-                    Ok(geometry) => geometry,
-                    Err(_) => return false,
-                };
-                metadata.frame -= padding;
-                matches!(callback(metadata, &geometry), ControlFlow::Continue(()))
-            });
-        self.postprocessors = postprocessors;
-        result
     }
 
     pub fn reset_track(&mut self, track: usize) -> crate::Result<()> {

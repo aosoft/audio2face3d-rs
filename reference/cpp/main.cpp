@@ -12,6 +12,8 @@
 #include <bcrypt.h>
 
 #include <cstdint>
+#include <algorithm>
+#include <limits>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -160,6 +162,28 @@ public:
               const std::string& precision,
               std::uint64_t seed, std::size_t tracks, const fs::path& fixture,
               const fs::path& model) {
+    if (execution == "blendshape-cpu") {
+      // Host jobs on different tracks complete independently. Match the Rust
+      // capture's frame/track ordering, retaining arrival order separately.
+      std::ofstream arrival(root_ / "callback-order.csv", std::ios::trunc);
+      if (!arrival) throw std::runtime_error("cannot create callback order trace");
+      arrival << "sequence,track,frame,timestamp\n";
+      std::vector<std::size_t> next_frame(tracks, 0);
+      std::vector<std::int64_t> last_timestamp(tracks, std::numeric_limits<std::int64_t>::lowest());
+      for (const auto& record : records_) {
+        if (record.frame != next_frame.at(record.track)++ ||
+            record.timestamp <= last_timestamp.at(record.track)) {
+          throw std::runtime_error("host callback order regressed within a track");
+        }
+        last_timestamp[record.track] = record.timestamp;
+        arrival << record.sequence << ',' << record.track << ',' << record.frame
+                << ',' << record.timestamp << '\n';
+      }
+      std::stable_sort(records_.begin(), records_.end(), [](const auto& a, const auto& b) {
+        return a.frame < b.frame || (a.frame == b.frame && a.track < b.track);
+      });
+      for (std::size_t index = 0; index < records_.size(); ++index) records_[index].sequence = index;
+    }
     data_.flush();
     data_.close();
     const auto data_bytes = read_bytes(root_ / "values.f32le");
@@ -237,7 +261,8 @@ static bool geometry_callback(void* opaque, const nva2f::IGeometryExecutor::Resu
 static bool emotion_callback(void* opaque, const nva2e::IEmotionExecutor::Results& result) {
   auto& data = *static_cast<CallbackData*>(opaque);
   const std::scoped_lock lock(data.mutex);
-  const auto frame = data.frames.at(result.trackIndex)++;
+  const auto frame = data.fixed_frame == static_cast<std::size_t>(-1)
+      ? data.frames.at(result.trackIndex)++ : data.fixed_frame;
   data.writer->push(data.layer, "emotion", result.trackIndex, frame, result.timeStampCurrentFrame,
                     result.timeStampNextFrame, result.emotions);
   return true;
@@ -367,6 +392,45 @@ int main(int argc, char** argv) try {
   }
 
   if (pipeline == "emotion") {
+    if (execution == "interactive-random" || execution == "interactive-all") {
+      if (tracks != 1) throw std::runtime_error("interactive execution requires one track");
+      SdkPtr<nva2x::ICudaStream> stream(nva2x::CreateCudaStream());
+      SdkPtr<nva2x::IAudioAccumulator> audio(nva2x::CreateAudioAccumulator(60000, 0));
+      SdkPtr<nva2e::IClassifierModel::IEmotionModelInfo> info(
+          nva2e::ReadClassifierModelInfo(model.string().c_str()));
+      if (!stream || !audio || !info) throw std::runtime_error("emotion interactive resources failed");
+      const nva2x::IAudioAccumulator* audio_pointer = audio.get();
+      nva2e::EmotionExecutorCreationParameters parameters;
+      parameters.cudaStream = stream->Data();
+      parameters.nbTracks = 1;
+      parameters.sharedAudioAccumulators = &audio_pointer;
+      auto creation = info->GetExecutorCreationParameters(60000, 30, 1, 0);
+      SdkPtr<nva2e::IEmotionInteractiveExecutor> executor(
+          nva2e::CreateClassifierEmotionInteractiveExecutor(parameters, creation, 1));
+      if (!executor) throw std::runtime_error("emotion interactive executor creation failed");
+      check(audio->Accumulate(nva2x::HostTensorFloatConstView(samples.data(), samples.size()),
+                             stream->Data()), "audio Accumulate");
+      check(audio->Close(), "audio Close");
+      check(executor->SetResultsCallback(emotion_callback, &callback), "SetResultsCallback");
+      if (execution == "interactive-all") {
+        callback.layer = "interactive-all";
+        check(executor->ComputeAllFrames(), "ComputeAllFrames");
+      } else {
+        const auto frame = executor->GetTotalNbFrames() / 2;
+        callback.fixed_frame = frame;
+        callback.layer = "interactive-random";
+        check(executor->ComputeFrame(frame), "ComputeFrame random");
+        callback.layer = "interactive-replay";
+        check(executor->ComputeFrame(frame), "ComputeFrame replay");
+        check(executor->Invalidate(nva2e::IEmotionInteractiveExecutor::kLayerPostProcessing),
+              "Invalidate postprocess");
+        callback.layer = "interactive-invalidation";
+        check(executor->ComputeFrame(frame), "ComputeFrame invalidated");
+      }
+      check(stream->Synchronize(), "interactive Synchronize");
+      writer.finish(pipeline, execution, precision, seed, tracks, fixture, model);
+      return 0;
+    }
     if (execution != "standard") {
       throw std::runtime_error("emotion supports standard execution only");
     }

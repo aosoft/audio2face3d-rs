@@ -39,6 +39,15 @@ foreach ($package in $packages) {
     }
 }
 $cli = $packages | Where-Object name -eq "audio2face3d-cli"
+$library = $packages | Where-Object name -eq "audio2face3d"
+if ($library.license -ne 'MIT AND MPL-2.0') {
+    throw 'The library package must declare the Eigen-derived source license'
+}
+$mplText = [IO.File]::ReadAllText((Join-Path $repoRoot 'LICENSE-MPL-2.0')).Replace("`r`n", "`n").Trim()
+$packagedLicense = [IO.File]::ReadAllText((Join-Path $repoRoot 'crates/audio2face3d/LICENSE')).Replace("`r`n", "`n")
+if (-not $packagedLicense.Contains($mplText)) {
+    throw 'Packaged LICENSE must retain the full root MPL-2.0 text'
+}
 $libraryDependency = $cli.dependencies | Where-Object name -eq "audio2face3d"
 if ($null -eq $libraryDependency -or $libraryDependency.req -notin @("^0.1.0", "0.1.0")) {
     throw "audio2face3d-cli must depend on audio2face3d 0.1.0"
@@ -47,6 +56,10 @@ if ($null -eq $libraryDependency -or $libraryDependency.req -notin @("^0.1.0", "
 $forbiddenPath = '(?i)(^|/)(reference/compatible_test|models)(/|$)|\.audio2x-|\.(onnx(?:[._]data)?|trt|engine|plan|wav|pdb|dll|so|dylib|lib|exe|bin|npz|npy)$'
 foreach ($packageName in @("audio2face3d", "audio2face3d-cli")) {
     $files = @(Get-PackageFiles $packageName)
+    if ('LICENSE' -notin $files) { throw "$packageName is missing LICENSE" }
+    if ($packageName -eq 'audio2face3d' -and 'src/animation/blendshape/bvls/svd.rs' -notin $files) {
+        throw 'The library package must retain its MPL-covered SVD source'
+    }
     $invalid = @($files | ForEach-Object { $_ -replace '\\', '/' } | Where-Object { $_ -match $forbiddenPath })
     if ($invalid.Count -ne 0) {
         throw "$packageName contains forbidden local/native artifacts: $($invalid -join ', ')"

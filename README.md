@@ -319,7 +319,10 @@ passing portable checks does not imply model-runtime validation.
 
 ## License
 
-The source code in this repository is available under the [MIT License](LICENSE).
+The source code in this repository is available under the [MIT License](LICENSE),
+except the Eigen-derived CPU SVD implementation, which is licensed under
+[MPL-2.0](LICENSE-MPL-2.0). The library package declares `MIT AND MPL-2.0`.
+See [third-party notices](THIRD-PARTY-NOTICES.md) for the file scope and provenance.
 It includes work derived from the NVIDIA Audio2Face-3D SDK and retains the
 applicable NVIDIA copyright and license notice.
 

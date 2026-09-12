@@ -4,6 +4,8 @@
 
 mod animator;
 mod blendshape;
+#[cfg(feature = "tensorrt")]
+pub(crate) use blendshape::rhs::GpuRhs;
 #[cfg(feature = "cuda")]
 mod device_noise;
 #[cfg(feature = "cuda")]

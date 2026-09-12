@@ -71,6 +71,7 @@ impl RegressionPostprocessor {
         }
     }
 
+    #[cfg(test)]
     pub fn process(&mut self, network_result: &[f32], dt: f32) -> Result<RegressionGeometry> {
         let slices = self.layout().split(network_result)?;
         let skin_delta = self.skin_pca.reconstruct(slices.skin, 1)?;

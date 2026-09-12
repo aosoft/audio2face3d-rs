@@ -5,10 +5,13 @@ use audio2face3d::animation::{
 };
 use audio2face3d::audio2emotion::classifier::{
     ClassifierEmotionExecutorCreationParameters, ClassifierEmotionExecutorFactory,
+    ClassifierEmotionInteractiveExecutorCreationParameters,
+    ClassifierEmotionInteractiveExecutorFactory,
 };
 use audio2face3d::audio2emotion::{
-    EmotionExecutor, EmotionExecutorCreationParameters, EmotionTrackResources, PostProcessData,
-    PostProcessParams,
+    EmotionExecutor, EmotionExecutorCreationParameters, EmotionInteractiveExecutor,
+    EmotionInteractiveExecutorCreationParameters, EmotionInvalidationLayer, EmotionTrackResources,
+    PostProcessData, PostProcessParams,
 };
 use audio2face3d::audio2face::diffusion::DiffusionGeometryExecutorCreationParameters;
 use audio2face3d::audio2face::diffusion::DiffusionGeometryInteractiveExecutorCreationParameters;
@@ -96,6 +99,17 @@ pub fn capture(request: CaptureRequest<'_>) -> Result<(), Box<dyn std::error::Er
     if tracks == 0 {
         return Err("reference capture requires at least one track".into());
     }
+    if tracks != 1
+        && matches!(
+            execution,
+            Execution::InteractiveRandom
+                | Execution::InteractiveAll
+                | Execution::InteractiveBlendshapeRandom
+                | Execution::InteractiveBlendshapeAll
+        )
+    {
+        return Err("interactive reference capture requires exactly one track".into());
+    }
     if !matches!(precision, "fp32" | "fp16") {
         return Err("reference precision must be fp32 or fp16".into());
     }
@@ -120,8 +134,13 @@ pub fn capture(request: CaptureRequest<'_>) -> Result<(), Box<dyn std::error::Er
         Execution::BlendshapeGpu => "blendshape-gpu",
         Execution::TeethStandalone => "teeth-standalone",
     };
-    if model.kind() == ModelKind::Emotion && !matches!(execution, Execution::Standard) {
-        return Err("Audio2Emotion capture currently supports standard execution".into());
+    if model.kind() == ModelKind::Emotion
+        && !matches!(
+            execution,
+            Execution::Standard | Execution::InteractiveRandom | Execution::InteractiveAll
+        )
+    {
+        return Err("Audio2Emotion capture requires standard or interactive execution".into());
     }
     let fixture_path = fixture_root.join("samples.f32le");
     let mut writer = ArtifactWriter::create(
@@ -280,7 +299,7 @@ fn capture_standard(
     writer: &mut ArtifactWriter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if model.kind() == ModelKind::Emotion {
-        capture_standard_emotion(model, tracks, samples, writer)?;
+        capture_standard_emotion(model, tracks, samples, writer, None)?;
     } else {
         let mut geometry = create_facade_geometry(model, tracks, seed)?;
         for track in 0..tracks {
@@ -297,6 +316,7 @@ fn capture_standard_emotion(
     tracks: usize,
     samples: &[f32],
     writer: &mut ArtifactWriter,
+    interactive: Option<(bool, Option<usize>)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let audio_length = 60_000;
     let (network, config) = match (model.network(), model.parameters(0)?) {
@@ -335,6 +355,76 @@ fn capture_standard_emotion(
         fixed_dt: config.fixed_dt,
         emotion_strength: config.emotion_strength,
     };
+    if let Some((all_frames, selected_frame)) = interactive {
+        let audio = std::sync::Arc::new(AudioAccumulator::new(audio_length, 0)?);
+        audio.accumulate(samples)?;
+        audio.close()?;
+        let mut executor = block_on(ClassifierEmotionInteractiveExecutorFactory::load(
+            ClassifierEmotionInteractiveExecutorCreationParameters {
+                model_path: model.descriptor_path().to_owned(),
+                common: EmotionInteractiveExecutorCreationParameters {
+                    audio,
+                    preferred_emotions: None,
+                    device_ordinal: 0,
+                },
+                input_strength: 1.0,
+                frame_rate,
+                inferences_to_skip: 0,
+                batch_size: 1,
+                post_process_data,
+                post_process_params,
+            },
+        ))?;
+        let frame = selected_frame.unwrap_or(executor.total_frame_count()? / 2);
+        let layers: &[&str] = if all_frames {
+            &["interactive-all"]
+        } else {
+            &[
+                "interactive-random",
+                "interactive-replay",
+                "interactive-invalidation",
+            ]
+        };
+        for &layer in layers {
+            if layer == "interactive-invalidation" {
+                executor.invalidate_emotion(EmotionInvalidationLayer::PostProcessing)?;
+            }
+            let mut callback_error = None;
+            let mut callback = |result: audio2face3d::audio2emotion::EmotionResults<'_>| {
+                let mut values = vec![0.0; result.emotions.values.len()];
+                let write = result
+                    .emotions
+                    .copy_to(&mut values)
+                    .map_err(io::Error::other)
+                    .and_then(|()| {
+                        writer.push_f32(
+                            record(
+                                layer,
+                                "emotion",
+                                facade_callback_metadata(result.metadata),
+                                values.len(),
+                            ),
+                            &values,
+                        )
+                    });
+                if let Err(error) = write {
+                    callback_error = Some(error);
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
+            };
+            let report = if all_frames {
+                block_on(executor.compute_all_frames(&mut callback))?
+            } else {
+                block_on(executor.compute_frame(frame, &mut callback))?
+            };
+            if let Some(error) = callback_error {
+                return Err(error.into());
+            }
+            ensure_interactive_complete(report)?;
+        }
+        return Ok(());
+    }
     let resources = (0..tracks)
         .map(|_| {
             Ok(EmotionTrackResources {
@@ -773,6 +863,8 @@ fn capture_host_blendshape(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::{Arc, Mutex};
 
+    let mut arrival = Vec::new();
+    let mut last_by_track = std::collections::HashMap::new();
     loop {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let callback_results = Arc::clone(&captured);
@@ -786,6 +878,24 @@ fn capture_host_blendshape(
         let mut captured = captured
             .lock()
             .map_err(|_| "reference BlendShape callback mutex poisoned")?;
+        for event in captured.iter() {
+            let (metadata, _) = event.as_ref().map_err(|error| error.to_string())?;
+            if let Some((frame, timestamp)) = last_by_track.insert(
+                metadata.track_index,
+                (metadata.frame_index, metadata.timestamp),
+            ) {
+                if metadata.frame_index != frame + 1 || metadata.timestamp <= timestamp {
+                    return Err("host callback order regressed within a track".into());
+                }
+            } else if metadata.frame_index != 0 {
+                return Err("host callback sequence did not begin at frame zero".into());
+            }
+            arrival.push((
+                metadata.track_index,
+                metadata.frame_index,
+                metadata.timestamp,
+            ));
+        }
         captured.sort_by_key(|event| {
             event
                 .as_ref()
@@ -797,7 +907,10 @@ fn capture_host_blendshape(
             push_blendshape(writer, facade_callback_metadata(metadata), &weights, &[])?;
         }
         match report.state {
-            ExecutionState::Complete => return Ok(()),
+            ExecutionState::Complete => {
+                writer.write_callback_order(&arrival)?;
+                return Ok(());
+            }
             ExecutionState::Progress => {}
             ExecutionState::AwaitingInput => {
                 return Err("host BlendShape executor is awaiting input".into());
@@ -865,6 +978,15 @@ fn capture_interactive(
     all_frames: bool,
     writer: &mut ArtifactWriter,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if model.kind() == ModelKind::Emotion {
+        return capture_standard_emotion(
+            model,
+            1,
+            samples,
+            writer,
+            Some((all_frames, selected_frame)),
+        );
+    }
     let mut bundle = create_interactive_facade_geometry(model, seed, samples)?;
     let total = match &bundle {
         FacadeInteractiveGeometryExecutorBundle::Regression(executor) => {

@@ -114,6 +114,16 @@ pub struct ArtifactWriter {
 }
 
 impl ArtifactWriter {
+    #[cfg(feature = "runtime")]
+    pub fn write_callback_order(&self, rows: &[(usize, usize, i64)]) -> io::Result<()> {
+        let mut file = File::create(self.root.join("callback-order.csv"))?;
+        writeln!(file, "sequence,track,frame,timestamp")?;
+        for (sequence, &(track, frame, timestamp)) in rows.iter().enumerate() {
+            writeln!(file, "{sequence},{track},{frame},{timestamp}")?;
+        }
+        Ok(())
+    }
+
     pub fn create(
         root: impl AsRef<Path>,
         producer: Producer,

@@ -4,6 +4,12 @@ use crate::common::{BlendshapeConfig, Error, NpzArchive, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+mod bvls;
+#[cfg(all(feature = "cuda", any(test, feature = "tensorrt")))]
+pub(crate) mod rhs;
+#[cfg(all(test, feature = "cuda"))]
+mod sdk_tests;
+
 fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidSchema(message.into())
 }
@@ -172,10 +178,12 @@ pub(crate) struct PreparedBlendshape {
     pub(crate) active_indices: Vec<usize>,
     pub(crate) active_deltas: Vec<f32>,
     pub(crate) active_neutral: Vec<f32>,
+    #[cfg(feature = "cuda")]
     pub(crate) matrix: Vec<f64>,
+    pub(crate) cpu_matrix: Vec<f32>,
     pub(crate) cancel_pairs: Vec<(usize, usize)>,
     pub(crate) scale_factor: f64,
-    previous_weights: Vec<f64>,
+    previous_weights: Vec<f32>,
 }
 
 #[derive(Clone, Debug)]
@@ -366,6 +374,15 @@ impl CpuBlendshapeSolver {
     }
 
     pub fn prepare(&mut self) -> Result<()> {
+        self.prepare_impl(true)
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(crate) fn prepare_for_gpu(&mut self) -> Result<()> {
+        self.prepare_impl(false)
+    }
+
+    fn prepare_impl(&mut self, sdk: bool) -> Result<()> {
         validate_parameters(self.parameters)?;
         if !self.active_poses.iter().any(|value| *value != 0) {
             return Err(invalid("blendshape active pose set is empty"));
@@ -401,12 +418,63 @@ impl CpuBlendshapeSolver {
             }
         }
 
-        let scale_factor = (bounding_box_diagonal(&self.data.neutral_pose)
-            / f64::from(self.parameters.template_bb_size))
-        .powi(2);
-        let mut matrix = vec![0.0_f64; columns * columns];
+        let scale_factor = if sdk {
+            let mut range = [0.0_f32; 3];
+            for (axis, extent) in range.iter_mut().enumerate() {
+                let values = self.data.neutral_pose.iter().skip(axis).step_by(3).copied();
+                let low = values.clone().fold(f32::INFINITY, f32::min);
+                let high = values.fold(f32::NEG_INFINITY, f32::max);
+                *extent = high - low;
+            }
+            let diagonal =
+                (range[0] * range[0] + (range[1] * range[1] + range[2] * range[2])).sqrt();
+            f64::from((diagonal / self.parameters.template_bb_size).powi(2))
+        } else {
+            (bounding_box_diagonal(&self.data.neutral_pose)
+                / f64::from(self.parameters.template_bb_size))
+            .powi(2)
+        };
+        let block = if sdk {
+            bvls::preparation_block(rows, columns)?.0
+        } else {
+            rows
+        };
+        let mut matrix = if sdk {
+            Vec::new()
+        } else {
+            vec![0.0_f64; columns * columns]
+        };
+        let mut cpu_matrix = if sdk {
+            vec![0.0_f32; columns * columns]
+        } else {
+            Vec::new()
+        };
+        let cpu_scale = scale_factor as f32;
+        let cpu_l1 = self.parameters.l1_regularization
+            * self.parameters.l1_regularization
+            * (0.25 * cpu_scale);
+        let cpu_l2 = self.parameters.l2_regularization * (10.0 * cpu_scale);
+        let cpu_temporal = self.parameters.temporal_regularization * (100.0 * cpu_scale);
+        let cpu_symmetry = self.parameters.symmetry_regularization * (10.0 * cpu_scale);
         for i in 0..columns {
             for j in 0..columns {
+                if sdk {
+                    let dot = bvls::gram_entry(
+                        &active_deltas[i * rows..(i + 1) * rows],
+                        &active_deltas[j * rows..(j + 1) * rows],
+                        block,
+                        i,
+                        j,
+                        columns,
+                    );
+                    let mut value = dot + cpu_l1;
+                    if i == j {
+                        value += cpu_l2;
+                        value += cpu_temporal;
+                    }
+                    cpu_matrix[i * columns + j] = value;
+                    continue;
+                }
                 let dot = (0..rows)
                     .map(|row| {
                         f64::from(active_deltas[i * rows + row])
@@ -419,20 +487,38 @@ impl CpuBlendshapeSolver {
         }
         let diagonal = f64::from(self.parameters.l2_regularization) * 10.0 * scale_factor
             + f64::from(self.parameters.temporal_regularization) * 100.0 * scale_factor;
-        for i in 0..columns {
-            matrix[i * columns + i] += diagonal;
+        if !sdk {
+            for i in 0..columns {
+                matrix[i * columns + i] += diagonal;
+            }
         }
         let symmetry_pairs = active_pairs(&self.symmetry_poses, &active_indices);
         let symmetry = f64::from(self.parameters.symmetry_regularization) * 10.0 * scale_factor;
         for (first, second) in symmetry_pairs {
+            if sdk {
+                let symmetry = cpu_symmetry;
+                for (index, delta) in [
+                    (first * columns + first, symmetry),
+                    (second * columns + second, symmetry),
+                    (first * columns + second, -symmetry),
+                    (second * columns + first, -symmetry),
+                ] {
+                    cpu_matrix[index] += delta;
+                }
+                continue;
+            }
             matrix[first * columns + first] += symmetry;
             matrix[second * columns + second] += symmetry;
             matrix[first * columns + second] -= symmetry;
             matrix[second * columns + first] -= symmetry;
         }
         if (0..columns).any(|index| {
-            !matrix[index * columns + index].is_finite()
-                || matrix[index * columns + index] <= f64::EPSILON
+            let diagonal = if sdk {
+                f64::from(cpu_matrix[index * columns + index])
+            } else {
+                matrix[index * columns + index]
+            };
+            !diagonal.is_finite() || diagonal <= f64::EPSILON
         }) {
             return Err(invalid(
                 "blendshape normal matrix is singular; geometry or regularization is insufficient",
@@ -444,7 +530,9 @@ impl CpuBlendshapeSolver {
             active_indices: active_indices.clone(),
             active_deltas,
             active_neutral,
+            #[cfg(feature = "cuda")]
             matrix,
+            cpu_matrix,
             cancel_pairs: active_pairs(&self.cancel_poses, &active_indices),
             scale_factor,
             previous_weights: vec![0.0; columns],
@@ -472,33 +560,46 @@ impl CpuBlendshapeSolver {
         }
         let prepared = self
             .prepared
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| invalid("blendshape solver must be prepared before Solve"))?;
         let rows = prepared.coordinate_indices.len();
+        let atb = (0..prepared.active_indices.len())
+            .map(|column| {
+                prepared
+                    .coordinate_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(row, source)| {
+                        prepared.active_deltas[column * rows + row]
+                            * (target_pose[*source] - prepared.active_neutral[row])
+                    })
+                    .sum::<f32>()
+            })
+            .collect::<Vec<_>>();
+        self.solve_from_atb(&atb)
+    }
+
+    pub(crate) fn solve_from_atb(&mut self, atb: &[f32]) -> Result<Vec<f32>> {
+        let prepared = self
+            .prepared
+            .as_mut()
+            .ok_or_else(|| invalid("blendshape solver must be prepared before Solve"))?;
         let columns = prepared.active_indices.len();
-        let mut rhs = vec![0.0_f64; columns];
-        for (column, value) in rhs.iter_mut().enumerate() {
-            *value = prepared
-                .coordinate_indices
-                .iter()
-                .enumerate()
-                .map(|(row, source_row)| {
-                    f64::from(prepared.active_deltas[column * rows + row])
-                        * (f64::from(target_pose[*source_row])
-                            - f64::from(prepared.active_neutral[row]))
-                })
-                .sum::<f64>()
-                + f64::from(self.parameters.temporal_regularization)
-                    * prepared.scale_factor
-                    * prepared.previous_weights[column];
+        if atb.len() != columns || atb.iter().any(|value| !value.is_finite()) {
+            return Err(invalid("blendshape RHS dimensions/values are invalid"));
         }
-        let mut upper = vec![1.0_f64; columns];
-        let mut weights = solve_box_constrained(
-            &prepared.matrix,
+        let temporal = self.parameters.temporal_regularization * prepared.scale_factor as f32;
+        let rhs = atb
+            .iter()
+            .zip(&prepared.previous_weights)
+            .map(|(value, previous)| *value + temporal * previous)
+            .collect::<Vec<_>>();
+        let mut upper = vec![1.0_f32; columns];
+        let mut weights = bvls::solve_production(
+            &prepared.cpu_matrix,
             &rhs,
             &upper,
             self.parameters.tolerance,
-            None,
         )?;
         for (first, second) in &prepared.cancel_pairs {
             if weights[*first] >= weights[*second] {
@@ -508,19 +609,18 @@ impl CpuBlendshapeSolver {
             }
         }
         if !prepared.cancel_pairs.is_empty() {
-            weights = solve_box_constrained(
-                &prepared.matrix,
+            weights = bvls::solve_production(
+                &prepared.cpu_matrix,
                 &rhs,
                 &upper,
                 self.parameters.tolerance,
-                Some(weights),
             )?;
         }
         prepared.previous_weights.clone_from(&weights);
 
         let mut output = vec![0.0_f32; self.data.pose_count()];
         for (active, source) in prepared.active_indices.iter().copied().enumerate() {
-            output[source] = weights[active] as f32;
+            output[source] = weights[active];
         }
         for ((weight, multiplier), offset) in
             output.iter_mut().zip(&self.multipliers).zip(&self.offsets)
@@ -529,120 +629,6 @@ impl CpuBlendshapeSolver {
         }
         Ok(output)
     }
-}
-
-fn solve_box_constrained(
-    matrix: &[f64],
-    rhs: &[f64],
-    upper: &[f64],
-    tolerance: f32,
-    initial: Option<Vec<f64>>,
-) -> Result<Vec<f64>> {
-    let count = rhs.len();
-    let mut result = initial.unwrap_or_else(|| vec![0.0; count]);
-    // SDK BVLS minimizes ||A x - b||^2 even though A is already the
-    // regularized geometry normal matrix. Constraints make this different
-    // from minimizing x^T A x / 2 - b^T x.
-    for (value, bound) in result.iter_mut().zip(upper) {
-        *value = value.clamp(0.0, *bound);
-    }
-    let mut residual = (0..count)
-        .map(|row| {
-            (0..count)
-                .map(|column| matrix[row * count + column] * result[column])
-                .sum::<f64>()
-                - rhs[row]
-        })
-        .collect::<Vec<_>>();
-    let column_norms = (0..count)
-        .map(|column| {
-            (0..count)
-                .map(|row| matrix[row * count + column].powi(2))
-                .sum::<f64>()
-        })
-        .collect::<Vec<_>>();
-    let threshold = f64::from(tolerance).max(1.0e-12);
-    for _ in 0..20_000 {
-        let mut maximum_delta = 0.0_f64;
-        for i in 0..count {
-            let gradient = (0..count)
-                .map(|row| matrix[row * count + i] * residual[row])
-                .sum::<f64>();
-            let value = (result[i] - gradient / column_norms[i]).clamp(0.0, upper[i]);
-            let delta = value - result[i];
-            maximum_delta = maximum_delta.max(delta.abs());
-            for row in 0..count {
-                residual[row] += matrix[row * count + i] * delta;
-            }
-            result[i] = value;
-        }
-        if maximum_delta <= threshold {
-            return Ok(result);
-        }
-        // Solve the free-variable least-squares problem with QR rather than
-        // squaring the condition number again in normal equations.
-        let free = (0..count)
-            .filter(|i| result[*i] > 0.0 && result[*i] < upper[*i])
-            .collect::<Vec<_>>();
-        let width = free.len();
-        let mut q = vec![0.0; count * width];
-        let mut r = vec![0.0; width * width];
-        let mut projected = vec![0.0; width];
-        for (column, source) in free.iter().copied().enumerate() {
-            for row in 0..count {
-                q[column * count + row] = matrix[row * count + source];
-            }
-            // Reorthogonalization keeps nearly dependent poses stable.
-            for _ in 0..2 {
-                for previous in 0..column {
-                    let dot = (0..count)
-                        .map(|row| q[previous * count + row] * q[column * count + row])
-                        .sum::<f64>();
-                    r[previous * width + column] += dot;
-                    for row in 0..count {
-                        q[column * count + row] -= dot * q[previous * count + row];
-                    }
-                }
-            }
-            let norm = (0..count)
-                .map(|row| q[column * count + row].powi(2))
-                .sum::<f64>()
-                .sqrt();
-            if !norm.is_finite() || norm <= f64::EPSILON {
-                return Err(invalid("blendshape CPU free-variable matrix is singular"));
-            }
-            r[column * width + column] = norm;
-            for row in 0..count {
-                q[column * count + row] /= norm;
-                projected[column] -= q[column * count + row] * residual[row];
-            }
-        }
-        let mut step = projected;
-        for column in (0..width).rev() {
-            for next in column + 1..width {
-                step[column] -= r[column * width + next] * step[next];
-            }
-            step[column] /= r[column * width + column];
-        }
-        let mut alpha = 1.0_f64;
-        for (column, source) in free.iter().copied().enumerate() {
-            if step[column] < 0.0 {
-                alpha = alpha.min(-result[source] / step[column]);
-            } else if step[column] > 0.0 {
-                alpha = alpha.min((upper[source] - result[source]) / step[column]);
-            }
-        }
-        for (column, source) in free.iter().copied().enumerate() {
-            result[source] = (result[source] + alpha * step[column]).clamp(0.0, upper[source]);
-        }
-        for row in 0..count {
-            residual[row] = (0..count)
-                .map(|column| matrix[row * count + column] * result[column])
-                .sum::<f64>()
-                - rhs[row];
-        }
-    }
-    Err(invalid("blendshape CPU solver did not converge"))
 }
 
 fn bounding_box_diagonal(pose: &[f32]) -> f64 {
@@ -801,30 +787,26 @@ mod tests {
     fn bounded_solve_minimizes_sdk_matrix_residual() {
         // With x[1] pinned to zero, ||A x - b||^2 has its minimum
         // at x[0] = 2/5. The geometry quadratic instead gives 1/2.
-        let weights = solve_box_constrained(
-            &[2.0, 1.0, 1.0, 2.0],
-            &[1.0, 0.0],
-            &[1.0, 1.0],
-            1.0e-10,
-            None,
-        )
-        .unwrap();
-        assert!((weights[0] - 0.4).abs() < 1.0e-8);
+        let weights =
+            bvls::solve_production(&[2.0, 1.0, 1.0, 2.0], &[1.0, 0.0], &[1.0, 1.0], 1.0e-10)
+                .unwrap();
+        assert!((weights[0] - 0.4).abs() < 1.0e-6);
         assert_eq!(weights[1], 0.0);
     }
 
     #[test]
     fn bounded_solve_converges_for_nearly_dependent_columns() {
-        let weights = solve_box_constrained(
+        let weights = bvls::solve_production(
             &[1.0, 1.0, 1.0, 1.0001],
             &[0.8, 0.80006],
             &[1.0, 1.0],
             1.0e-10,
-            None,
         )
         .unwrap();
-        assert!((weights[0] - 0.2).abs() < 1.0e-7);
-        assert!((weights[1] - 0.6).abs() < 1.0e-7);
+        // Verify the residual in FP32: nearly dependent columns do not support
+        // the old FP64 weight precision, even in the original SDK solver.
+        assert!((weights[0] + weights[1] - 0.8).abs() < 1.0e-6);
+        assert!((weights[0] + 1.0001 * weights[1] - 0.80006).abs() < 1.0e-6);
     }
 
     #[test]

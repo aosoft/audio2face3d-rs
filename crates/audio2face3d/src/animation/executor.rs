@@ -480,6 +480,7 @@ impl RegressionScheduler {
         })
     }
 
+    #[cfg(test)]
     pub fn pump<B, C>(
         &self,
         tracks: &[RegressionTrack<'_>],

@@ -1,11 +1,10 @@
 #![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
 
-#[cfg(test)]
-use crate::animation::SkinAnimatorParams;
 use crate::animation::{
-    EyesAnimator, EyesRotation, JawParameters, JawTransform, RegressionGeometry, SkinAnimator,
-    TongueAnimator,
+    EyesAnimator, EyesRotation, JawParameters, JawTransform, SkinAnimator, TongueAnimator,
 };
+#[cfg(test)]
+use crate::animation::{RegressionGeometry, SkinAnimatorParams};
 use crate::common::{
     Binding, BindingSchema, DiffusionAudioParameters, DiffusionParameters, Dimension, ElementType,
     Error, IoMode, Result, Shape, WindowProgress, WindowProgressParameters,
@@ -562,6 +561,7 @@ impl DiffusionPostprocessor {
         })
     }
 
+    #[cfg(test)]
     pub fn process(&mut self, prediction: &[f32], dt: f32) -> Result<RegressionGeometry> {
         let result = self.layout.split(prediction)?;
         let eyes: [f32; 4] = result

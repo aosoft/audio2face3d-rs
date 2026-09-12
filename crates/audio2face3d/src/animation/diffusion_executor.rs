@@ -633,6 +633,7 @@ impl DiffusionScheduler {
         })
     }
 
+    #[cfg(test)]
     pub fn execute<B, C>(
         &self,
         tracks: &[DiffusionTrack<'_>],

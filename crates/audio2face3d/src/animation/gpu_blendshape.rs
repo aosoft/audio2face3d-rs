@@ -106,7 +106,7 @@ impl GpuBlendshapeSolver {
     ) -> Result<Self> {
         ensure_same_device(device.id(), stream.device_id())?;
         let mut cpu = CpuBlendshapeSolver::from_config(data, config)?;
-        cpu.prepare()?;
+        cpu.prepare_for_gpu()?;
         let prepared = cpu
             .prepared
             .take()

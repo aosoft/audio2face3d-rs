@@ -164,7 +164,7 @@ use crate::audio2x::FrameRate;
 
 #[cfg(feature = "tensorrt")]
 use crate::animation::{
-    GeometryModelData, RegressionCallbackMetadata, RegressionContract, RegressionGeometry,
+    GeometryModelData, RegressionContract, RegressionGeometry,
     RegressionGeometryInteractiveExecution, RegressionPostprocessor, RegressionScheduler,
     RegressionTrack, TensorRtRegressionBackend,
 };
@@ -1113,50 +1113,6 @@ impl RegressionGeometryExecutor {
                 index: track,
                 len: self.tracks.len(),
             })
-    }
-
-    /// Executes the owned internal scheduler and exposes its host geometry
-    /// output to the native adapter. The device-view callback is attached by
-    /// the CUDA facade once the result buffer/fence is available.
-    pub(crate) fn execute_host<C>(
-        &mut self,
-        mut callback: C,
-    ) -> crate::Result<crate::animation::PumpStatus>
-    where
-        C: FnMut(RegressionCallbackMetadata, &RegressionGeometry) -> ControlFlow<()>,
-    {
-        let tracks = self
-            .tracks
-            .iter()
-            .enumerate()
-            .map(|(index, track)| RegressionTrack {
-                audio: &track.audio,
-                emotions: &track.emotions,
-                implicit_emotion: &self.implicit_emotions[index],
-                input_strength: self.input_strength,
-            })
-            .collect::<Vec<_>>();
-        let mut postprocessors = std::mem::take(&mut self.postprocessors);
-        let result = self
-            .execution
-            .pump(&tracks, &mut self.backend, |metadata, output| {
-                let Some(processor) = postprocessors.get_mut(metadata.track) else {
-                    return false;
-                };
-                let geometry = match processor.process(
-                    output,
-                    self.frame_rate.denominator() as f32 / self.frame_rate.numerator() as f32,
-                ) {
-                    Ok(geometry) => geometry,
-                    Err(_) => return false,
-                };
-                matches!(callback(metadata, &geometry), ControlFlow::Continue(()))
-            });
-        self.postprocessors = postprocessors;
-        if result.is_ok() {
-            self.started.fill(true);
-        }
-        result
     }
 }
 

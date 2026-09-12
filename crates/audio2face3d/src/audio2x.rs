@@ -337,6 +337,17 @@ pub struct Execution {
 }
 
 impl Execution {
+    /// Geometry device execution completes its callbacks before returning.
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn into_ready_report(mut self) -> Result<ExecutionReport> {
+        let mut context = Context::from_waker(Waker::noop());
+        match Pin::new(&mut self).poll(&mut context) {
+            Poll::Ready(result) => result,
+            Poll::Pending => Err(Error::InvalidSchema(
+                "device execution unexpectedly pending".into(),
+            )),
+        }
+    }
     /// Creates an execution whose schedule is finished by
     /// [`ExecutionCompletion::finish_schedule`]. This is crate-private because
     /// only completed owning executors may create public execution handles.
