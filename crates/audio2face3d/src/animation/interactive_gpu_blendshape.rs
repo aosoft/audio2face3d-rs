@@ -532,6 +532,18 @@ mod tests {
         let mut layer = gpu_layer(2, 100.0);
         let first_geometry = geometry([0.2, 0.4, 0.6]);
         let first = capture(&mut layer, 0, 3, &first_geometry);
+        // A random solve must match a solver prepared with TemporalReg=0,
+        // not merely clear the previous-weight contribution on the RHS.
+        let mut zero_temporal = gpu_layer(2, 0.0);
+        let expected = capture(&mut zero_temporal, 0, 3, &first_geometry);
+        for (actual, expected) in first
+            .skin
+            .iter()
+            .chain(&first.tongue)
+            .zip(expected.skin.iter().chain(&expected.tongue))
+        {
+            assert!((actual - expected).abs() < 1e-5, "{actual} != {expected}");
+        }
         capture(&mut layer, 1, 3, &geometry([0.3, 0.5, 0.7]));
         capture(&mut layer, 2, 3, &geometry([0.4, 0.6, 0.8]));
         assert_eq!(layer.cached_frame_count(), 2);

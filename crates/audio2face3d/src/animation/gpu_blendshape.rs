@@ -25,6 +25,9 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 pub struct GpuBlendshapeSolver {
+    device: Arc<GpuDevice>,
+    stateless_matrix: Vec<f64>,
+    stateless_system: Option<StatelessSystem>,
     data: BlendshapeData,
     module: CudaModule,
     blas: CublasHandle,
@@ -56,6 +59,44 @@ pub struct GpuBlendshapeSolver {
     previous: DeviceBuffer<f32>,
 }
 
+struct StatelessSystem {
+    matrix: DeviceBuffer<f32>,
+    inverse: DeviceBuffer<f32>,
+    admm_weights: DeviceBuffer<f32>,
+    admm_inverse: DeviceBuffer<f32>,
+}
+
+impl StatelessSystem {
+    fn new(
+        device: &Arc<GpuDevice>,
+        stream: &CudaStream,
+        matrix: &[f64],
+        count: usize,
+    ) -> Result<Self> {
+        let inverse = invert_matrix(matrix, count)?;
+        let mut system = multiply_transpose_self(matrix, count);
+        let weights: Vec<_> = (0..count)
+            .map(|i| 0.25 * system[i * count + i].sqrt())
+            .collect();
+        for i in 0..count {
+            system[i * count + i] += weights[i].powi(2);
+        }
+        let admm_inverse = invert_matrix(&system, count)?;
+        let upload = |values: &[f64]| -> Result<DeviceBuffer<f32>> {
+            let values: Vec<_> = values.iter().map(|&value| value as f32).collect();
+            let mut buffer = device.allocate(values.len())?;
+            buffer.copy_from(&values, stream)?;
+            Ok(buffer)
+        };
+        Ok(Self {
+            matrix: upload(matrix)?,
+            inverse: upload(&inverse)?,
+            admm_weights: upload(&weights)?,
+            admm_inverse: upload(&admm_inverse)?,
+        })
+    }
+}
+
 impl GpuBlendshapeSolver {
     pub fn new(
         device: &Arc<GpuDevice>,
@@ -73,6 +114,12 @@ impl GpuBlendshapeSolver {
         let coordinate_count = prepared.coordinate_indices.len();
         let active_count = prepared.active_indices.len();
         let pose_count = cpu.data.pose_count();
+        let mut stateless_matrix = prepared.matrix.clone();
+        let temporal_diagonal =
+            f64::from(cpu.parameters.temporal_regularization) * 100.0 * prepared.scale_factor;
+        for i in 0..active_count {
+            stateless_matrix[i * active_count + i] -= temporal_diagonal;
+        }
 
         let matrix = prepared
             .matrix
@@ -145,6 +192,9 @@ impl GpuBlendshapeSolver {
         previous.memset_zero(stream)?;
 
         Ok(Self {
+            device: Arc::clone(device),
+            stateless_matrix,
+            stateless_system: None,
             data: cpu.data,
             module: device.load_module(blendshape_solver_ptx())?,
             blas: CublasHandle::new(stream)?,
@@ -244,6 +294,15 @@ impl GpuBlendshapeSolver {
         output: &'a mut DeviceBuffer<f32>,
         stream: &'a CudaStream,
     ) -> Result<GpuBlendshapeSolveFence<'a>> {
+        if self.temporal_beta != 0.0 && self.stateless_system.is_none() {
+            ensure_same_device(self.device.id(), stream.device_id())?;
+            self.stateless_system = Some(StatelessSystem::new(
+                &self.device,
+                stream,
+                &self.stateless_matrix,
+                self.active_count,
+            )?);
+        }
         self.solve_async_with_temporal_beta(target.view(), output, stream, 0.0)
     }
 
@@ -311,7 +370,8 @@ impl GpuBlendshapeSolver {
             )?;
         }
         launch_fill(&self.module, &mut self.upper, 1.0, active_count, stream)?;
-        self.enqueue_admm(active_count, stream)?;
+        let stateless = temporal_beta == 0.0 && self.temporal_beta != 0.0;
+        self.enqueue_admm(active_count, stream, stateless)?;
         if let (Some(first), Some(second)) = (&self.cancel_first, &self.cancel_second) {
             let mut pair_count = checked_u32(first.len(), "cancel pair count")?;
             let mut upper = self.upper.view().as_raw();
@@ -329,7 +389,7 @@ impl GpuBlendshapeSolver {
                     &mut cancel_params,
                 )?;
             }
-            self.enqueue_admm(active_count, stream)?;
+            self.enqueue_admm(active_count, stream, stateless)?;
         }
         launch_copy(
             &self.module,
@@ -383,12 +443,31 @@ impl GpuBlendshapeSolver {
         })
     }
 
-    fn enqueue_admm(&mut self, count: u32, stream: &CudaStream) -> Result<()> {
+    fn enqueue_admm(&mut self, count: u32, stream: &CudaStream, stateless: bool) -> Result<()> {
+        let (matrix, matrix_inverse, admm_weights, admm_inverse) = if stateless {
+            let system = self
+                .stateless_system
+                .as_ref()
+                .ok_or_else(|| invalid("stateless system is not prepared"))?;
+            (
+                &system.matrix,
+                &system.inverse,
+                &system.admm_weights,
+                &system.admm_inverse,
+            )
+        } else {
+            (
+                &self.matrix,
+                &self.matrix_inverse,
+                &self.admm_weights,
+                &self.admm_inverse,
+            )
+        };
         // SAFETY: persistent buffers all have active_count elements and remain
         // owned by self until the outer solve fence completes.
         unsafe {
             self.blas.enqueue_matrix_vector(
-                self.matrix.view(),
+                matrix.view(),
                 self.rhs.view(),
                 &mut self.atb,
                 self.active_count,
@@ -399,7 +478,7 @@ impl GpuBlendshapeSolver {
                 stream,
             )?;
             self.blas.enqueue_matrix_vector(
-                self.matrix_inverse.view(),
+                matrix_inverse.view(),
                 self.rhs.view(),
                 &mut self.solved,
                 self.active_count,
@@ -425,9 +504,9 @@ impl GpuBlendshapeSolver {
             &self.u1,
             &mut self.z2,
             &mut self.u2,
-            &self.admm_weights,
+            admm_weights,
             &self.atb,
-            &self.admm_inverse,
+            admm_inverse,
             &self.lower,
             &self.upper,
             count,
@@ -439,9 +518,9 @@ impl GpuBlendshapeSolver {
             &self.u2,
             &mut self.solved,
             &mut self.u1,
-            &self.admm_weights,
+            admm_weights,
             &self.atb,
-            &self.admm_inverse,
+            admm_inverse,
             &self.lower,
             &self.upper,
             count,
@@ -453,9 +532,9 @@ impl GpuBlendshapeSolver {
             &self.u1,
             &mut self.z2,
             &mut self.u2,
-            &self.admm_weights,
+            admm_weights,
             &self.atb,
-            &self.admm_inverse,
+            admm_inverse,
             &self.lower,
             &self.upper,
             count,
@@ -467,9 +546,9 @@ impl GpuBlendshapeSolver {
             &self.u2,
             &mut self.solved,
             &mut self.u1,
-            &self.admm_weights,
+            admm_weights,
             &self.atb,
-            &self.admm_inverse,
+            admm_inverse,
             &self.lower,
             &self.upper,
             count,
