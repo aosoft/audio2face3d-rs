@@ -18,13 +18,19 @@ use audio2face3d::audio2emotion::{
 };
 use audio2face3d::audio2face::diffusion::{
     DiffusionGeometryExecutorCreationParameters, DiffusionGeometryExecutorFactory,
+    DiffusionGeometryInteractiveExecutorCreationParameters,
+    DiffusionGeometryInteractiveExecutorFactory,
 };
 use audio2face3d::audio2face::regression::{
     RegressionGeometryExecutorCreationParameters, RegressionGeometryExecutorFactory,
+    RegressionGeometryInteractiveExecutorCreationParameters,
+    RegressionGeometryInteractiveExecutorFactory,
 };
 use audio2face3d::audio2face::{
     GeometryCallbacks, GeometryExecutionOption, GeometryExecutor,
-    GeometryExecutorCreationParameters, GeometryTrackResources,
+    GeometryExecutorCreationParameters, GeometryInteractiveExecutor,
+    GeometryInteractiveExecutorCreationParameters, GeometryInvalidationLayer,
+    GeometryTrackResources,
 };
 use audio2face3d::audio2x::{
     AudioAccumulator, EmotionAccumulator, Executor, FrameRate, InteractiveExecutionStatus,
@@ -353,6 +359,45 @@ fn acquired_models_execute_through_completed_facades() {
             metadata.first().copied(),
             "reset changed first callback metadata"
         );
+        drop(executor);
+        let common = GeometryInteractiveExecutorCreationParameters {
+            audio: audio(&samples),
+            emotions: emotions(geometry_emotion_size(&model)),
+            device_ordinal: manifest.device_ordinal,
+            execution_option: GeometryExecutionOption::ALL,
+        };
+        let mut interactive: Box<dyn GeometryInteractiveExecutor> = match expected {
+            ModelKind::Regression => Box::new(
+                block_on(RegressionGeometryInteractiveExecutorFactory::load(
+                    RegressionGeometryInteractiveExecutorCreationParameters {
+                        model_path: path.clone(),
+                        common,
+                        input_strength: 1.0,
+                        frame_rate,
+                        source_emotion_shot: None,
+                        source_emotion_frame: 0,
+                        batch_size: 1,
+                    },
+                ))
+                .unwrap(),
+            ),
+            ModelKind::Diffusion => Box::new(
+                block_on(DiffusionGeometryInteractiveExecutorFactory::load(
+                    DiffusionGeometryInteractiveExecutorCreationParameters {
+                        model_path: path.clone(),
+                        common,
+                        input_strength: 1.0,
+                        identity_index: 0,
+                        constant_noise: true,
+                        preview_inference_count: 1,
+                        noise_seed: 0,
+                    },
+                ))
+                .unwrap(),
+            ),
+            _ => unreachable!(),
+        };
+        verify_geometry_transitions(interactive.as_mut());
     }
 
     let emotion_model = Model::load(&manifest.emotion_model).unwrap();
@@ -540,5 +585,66 @@ fn acquired_models_execute_through_completed_facades() {
         assert_eq!(report.emitted_frames, total);
         assert_eq!(replay, interactive_frames);
         assert!(interactive.is_fully_valid());
+    }
+}
+
+fn verify_geometry_transitions(executor: &mut dyn GeometryInteractiveExecutor) {
+    let total = executor.total_frame_count().unwrap();
+    assert!(total > 1);
+    let expected: Vec<_> = (0..total)
+        .map(|frame| (frame, executor.frame_timestamp(frame).unwrap()))
+        .collect();
+    for layer in [
+        GeometryInvalidationLayer::All,
+        GeometryInvalidationLayer::Inference,
+        GeometryInvalidationLayer::Skin,
+        GeometryInvalidationLayer::Tongue,
+        GeometryInvalidationLayer::Teeth,
+        GeometryInvalidationLayer::Eyes,
+    ] {
+        executor.invalidate_geometry(layer).unwrap();
+        assert!(!executor.is_geometry_valid(layer), "{layer:?}");
+        let mut observed = Vec::new();
+        let mut callback = |result: audio2face3d::audio2face::GeometryResults<'_>| {
+            assert_eq!(result.metadata.track_index, 0);
+            observed.push((result.metadata.frame_index, result.metadata.timestamp));
+            ControlFlow::Continue(())
+        };
+        let report = block_on(executor.compute_all_frames(&mut callback)).unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+        assert_eq!(report.emitted_frames, total);
+        assert_eq!(observed, expected);
+        assert!(executor.is_fully_valid());
+    }
+    executor
+        .invalidate_geometry(GeometryInvalidationLayer::None)
+        .unwrap();
+    assert!(executor.is_fully_valid());
+    for interrupt_requested in [false, true] {
+        let interrupt = executor.interrupt_handle();
+        let mut observed = Vec::new();
+        let mut callback = |result: audio2face3d::audio2face::GeometryResults<'_>| {
+            observed.push(result.metadata.frame_index);
+            if interrupt_requested {
+                interrupt.interrupt();
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        };
+        let report = block_on(executor.compute_all_frames(&mut callback)).unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Interrupted);
+        assert_eq!(report.emitted_frames, 1);
+        assert_eq!(observed, vec![0]);
+        let mut replay = Vec::new();
+        let mut callback = |result: audio2face3d::audio2face::GeometryResults<'_>| {
+            replay.push((result.metadata.frame_index, result.metadata.timestamp));
+            ControlFlow::Continue(())
+        };
+        let report = block_on(executor.compute_all_frames(&mut callback)).unwrap();
+        assert_eq!(report.status, InteractiveExecutionStatus::Complete);
+        assert_eq!(report.emitted_frames, total);
+        assert_eq!(replay, expected);
+        assert!(executor.is_fully_valid());
     }
 }
