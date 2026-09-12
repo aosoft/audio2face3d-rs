@@ -253,6 +253,24 @@ fn acquired_models_execute_through_completed_facades() {
             ModelKind::Emotion => unreachable!(),
         };
         assert_eq!(executor.track_count(), 1);
+        let expected_rate = match model.network() {
+            NetworkDocument::Geometry(network) => match (&network.params, &network.audio_params) {
+                (
+                    GeometryParameters::Diffusion(parameters),
+                    audio2face3d::common::GeometryAudioParameters::Diffusion(audio),
+                ) => FrameRate::new(
+                    (parameters.num_frames_left_truncate
+                        + parameters.num_frames_center
+                        + parameters.num_frames_right_truncate)
+                        * audio.samplerate,
+                    audio.buffer_len,
+                )
+                .unwrap(),
+                _ => frame_rate,
+            },
+            _ => unreachable!(),
+        };
+        assert_eq!(executor.frame_rate(), expected_rate);
         assert_eq!(executor.total_frame_count(0).unwrap(), None);
         let mut awaiting = false;
         for _ in 0..100 {
@@ -397,6 +415,7 @@ fn acquired_models_execute_through_completed_facades() {
             ),
             _ => unreachable!(),
         };
+        assert_eq!(interactive.frame_rate(), expected_rate);
         verify_geometry_transitions(interactive.as_mut());
         verify_host_blendshape_transitions(&model, interactive.as_mut(), manifest.device_ordinal);
     }

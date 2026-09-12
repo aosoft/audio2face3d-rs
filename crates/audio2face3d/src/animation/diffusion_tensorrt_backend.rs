@@ -14,6 +14,7 @@ pub(crate) struct TensorRtDiffusionBackend {
     device: Arc<GpuDevice>,
     session: TensorRtSession,
     stream: CudaStream,
+    constant_noise: Option<Vec<f32>>,
 }
 
 pub(crate) struct DiffusionDeviceBatch {
@@ -38,7 +39,25 @@ impl TensorRtDiffusionBackend {
             device,
             session,
             stream,
+            constant_noise: None,
         })
+    }
+
+    pub(crate) fn configure_constant_noise(&mut self, enabled: bool, seed: u64) -> Result<()> {
+        self.constant_noise = if enabled {
+            let size = self.contract.noise_size()?;
+            let mut generator = crate::animation::GpuPhiloxNoise::new(&self.stream, 1, size, seed)?;
+            let mut device_noise = self.device.allocate(size)?;
+            generator
+                .generate(0, &mut device_noise, &self.stream)?
+                .synchronize()?;
+            let mut noise = vec![0.0; size];
+            device_noise.copy_to(&mut noise, &self.stream)?;
+            Some(noise)
+        } else {
+            None
+        };
+        Ok(())
     }
 
     pub fn stream(&self) -> &CudaStream {
@@ -89,7 +108,15 @@ impl TensorRtDiffusionBackend {
         }
         let frames = inputs
             .iter()
-            .map(|(_, input)| input.clone())
+            .map(|(_, input)| {
+                let mut frame = input.clone();
+                // The SDK generates one cuRAND tensor and shares it across
+                // all tracks and inferences in constant-noise mode.
+                if let Some(noise) = &self.constant_noise {
+                    frame.noise.clone_from(noise);
+                }
+                frame
+            })
             .collect::<Vec<_>>();
         let contract = DiffusionBufferContract::new(&self.contract, batch)?;
         let mut input = DiffusionInferenceInputBuffers::allocate(&self.device, &contract)?;
@@ -171,7 +198,7 @@ mod tests {
             contract.clone(),
         )
         .unwrap();
-        let outputs = backend.run_batch(&[(0, input)]).unwrap();
+        let outputs = backend.run_batch(&[(0, input.clone())]).unwrap();
         assert_eq!(outputs.len(), 1);
         assert!(outputs[0].prediction.iter().all(|value| value.is_finite()));
         assert!(
@@ -179,6 +206,32 @@ mod tests {
                 .output_latents
                 .iter()
                 .all(|value| value.is_finite())
+        );
+
+        backend.configure_constant_noise(true, 0).unwrap();
+        let fixed = backend.run_batch(&[(0, input.clone())]).unwrap();
+        let mut changed_noise = input.clone();
+        changed_noise.noise.fill(1.0);
+        let replay = backend.run_batch(&[(0, changed_noise.clone())]).unwrap();
+        assert_eq!(
+            fixed, replay,
+            "constant noise must ignore per-inference noise"
+        );
+        let tracks = backend
+            .run_batch(&[(0, input.clone()), (1, changed_noise)])
+            .unwrap();
+        assert_eq!(
+            tracks[0], tracks[1],
+            "constant noise must be shared by tracks"
+        );
+        backend.configure_constant_noise(true, 1).unwrap();
+        let other_seed = backend.run_batch(&[(0, input.clone())]).unwrap();
+        assert_ne!(fixed[0].prediction, other_seed[0].prediction);
+        backend.configure_constant_noise(false, 0).unwrap();
+        let restored = backend.run_batch(&[(0, input)]).unwrap();
+        assert_eq!(
+            outputs, restored,
+            "disabling constant noise must restore input noise"
         );
     }
 }

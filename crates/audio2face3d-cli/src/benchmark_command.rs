@@ -100,7 +100,7 @@ pub fn run(
 }
 
 enum Workload {
-    RawNetwork(RawNetworkBenchmark),
+    RawNetwork(Box<RawNetworkBenchmark>),
     CpuBlendshape {
         solver: Box<CpuBlendshapeSolver>,
         target: Vec<f32>,
@@ -123,7 +123,9 @@ enum Workload {
 impl Workload {
     fn load(model: &Model, engine: &Path, tracks: usize, scope: &str) -> Result<Self> {
         if scope == "raw-network" {
-            return RawNetworkBenchmark::load(model, engine, tracks).map(Self::RawNetwork);
+            return RawNetworkBenchmark::load(model, engine, tracks)
+                .map(Box::new)
+                .map(Self::RawNetwork);
         }
         Self::load_blendshape(model, tracks, scope)
     }

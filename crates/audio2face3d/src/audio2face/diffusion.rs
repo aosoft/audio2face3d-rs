@@ -64,6 +64,8 @@ pub struct DiffusionGeometryExecutorCreationParameters {
     pub model_path: PathBuf,
     pub common: GeometryExecutorCreationParameters,
     pub input_strength: f32,
+    /// Retained for source compatibility. Diffusion cadence is determined by
+    /// its network frame count, audio buffer length, and sample rate.
     pub frame_rate: FrameRate,
     pub identity_index: usize,
     pub constant_noise: bool,
@@ -262,11 +264,12 @@ impl DiffusionGeometryInteractiveExecutor {
             &contract,
         )?;
         let device = GpuDevice::new(parameters.common.device_ordinal)?;
-        let backend = TensorRtDiffusionBackend::load(
+        let mut backend = TensorRtDiffusionBackend::load(
             Arc::clone(&device),
             model.engine_path(),
             contract.clone(),
         )?;
+        backend.configure_constant_noise(parameters.constant_noise, parameters.noise_seed)?;
         let config = match model.parameters(0)? {
             ModelParameters::Geometry(value) => value,
             _ => {
@@ -819,11 +822,12 @@ impl DiffusionGeometryExecutor {
         let sample_rate = contract.sample_rate;
         let owned_contract = contract.clone();
         let device = GpuDevice::new(parameters.common.device_ordinal)?;
-        let backend = TensorRtDiffusionBackend::load(
+        let mut backend = TensorRtDiffusionBackend::load(
             Arc::clone(&device),
             model.engine_path(),
             contract.clone(),
         )?;
+        backend.configure_constant_noise(parameters.constant_noise, parameters.noise_seed)?;
         let config = match model.parameters(0)? {
             ModelParameters::Geometry(value) => value,
             _ => {
@@ -836,8 +840,11 @@ impl DiffusionGeometryExecutor {
         let processor = model_data.diffusion_postprocessor(config, contract.result_layout)?;
         let postprocessors = vec![processor; parameters.common.tracks.len()];
         let track_count = parameters.common.tracks.len();
-        let dt =
-            parameters.frame_rate.denominator() as f32 / parameters.frame_rate.numerator() as f32;
+        let frame_rate = FrameRate::new(
+            contract.frame_rate_numerator,
+            contract.frame_rate_denominator,
+        )?;
+        let dt = frame_rate.denominator() as f32 / frame_rate.numerator() as f32;
         let gpu_postprocessor =
             model_data.gpu_postprocessor(&device, backend.stream(), config, track_count, dt)?;
         let execution = DiffusionScheduler::new(contract, track_count, parameters.noise_seed)?;
@@ -867,7 +874,7 @@ impl DiffusionGeometryExecutor {
             input_strength: parameters.input_strength,
             identity_index: parameters.identity_index,
             constant_noise: parameters.constant_noise,
-            frame_rate: parameters.frame_rate,
+            frame_rate,
             sample_rate,
             execution_option: parameters.common.execution_option,
             skin_output,

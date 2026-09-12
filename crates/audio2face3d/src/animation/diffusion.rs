@@ -144,8 +144,14 @@ impl DiffusionContract {
             })?;
         Ok(Self {
             sample_rate: audio.samplerate,
-            frame_rate_numerator: 30,
-            frame_rate_denominator: 1,
+            frame_rate_numerator: total_frames.checked_mul(audio.samplerate).ok_or(
+                Error::IntegerOverflow {
+                    field: "diffusion_frame_rate",
+                    value: total_frames,
+                    target: "usize",
+                },
+            )?,
+            frame_rate_denominator: audio.buffer_len,
             emotion_size: parameters.emotions.len(),
             identity_size: parameters.identities.len(),
             audio_size: audio.buffer_len,
@@ -624,6 +630,8 @@ mod tests {
         assert_eq!(contract.frame_progress.window(2).unwrap().target, -2);
         assert_eq!(contract.state_size().unwrap(), 12);
         assert_eq!(contract.noise_size().unwrap(), 228);
+        assert_eq!(contract.frame_rate_numerator, 32);
+        assert_eq!(contract.frame_rate_denominator, 8);
     }
 
     #[test]

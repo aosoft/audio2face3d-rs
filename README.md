@@ -137,6 +137,12 @@ random access and replay; invalidating geometry automatically invalidates the
 dependent cache. Host/device BlendShape conversion is exposed by the owning
 geometry bundle and all device views require an explicit copy on their stream.
 
+Diffusion derives its frame cadence from the model's frame count, audio window,
+and sample rate. Its standard creation parameter `frame_rate` is retained for
+source compatibility; it does not override that cadence. With `constant_noise`
+enabled, the supplied seed generates one cuRAND noise tensor shared across all
+tracks and inference calls, including interactive replay.
+
 ## Standalone teeth animation
 
 `AnimatorTeeth` is the host-side semantic name for the teeth transform and
