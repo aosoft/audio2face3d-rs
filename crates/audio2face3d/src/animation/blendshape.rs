@@ -540,20 +540,106 @@ fn solve_box_constrained(
 ) -> Result<Vec<f64>> {
     let count = rhs.len();
     let mut result = initial.unwrap_or_else(|| vec![0.0; count]);
+    // SDK BVLS minimizes ||A x - b||^2 even though A is already the
+    // regularized geometry normal matrix. Constraints make this different
+    // from minimizing x^T A x / 2 - b^T x.
+    for (value, bound) in result.iter_mut().zip(upper) {
+        *value = value.clamp(0.0, *bound);
+    }
+    let mut residual = (0..count)
+        .map(|row| {
+            (0..count)
+                .map(|column| matrix[row * count + column] * result[column])
+                .sum::<f64>()
+                - rhs[row]
+        })
+        .collect::<Vec<_>>();
+    let column_norms = (0..count)
+        .map(|column| {
+            (0..count)
+                .map(|row| matrix[row * count + column].powi(2))
+                .sum::<f64>()
+        })
+        .collect::<Vec<_>>();
     let threshold = f64::from(tolerance).max(1.0e-12);
     for _ in 0..20_000 {
         let mut maximum_delta = 0.0_f64;
         for i in 0..count {
-            let off_diagonal = (0..count)
-                .filter(|j| *j != i)
-                .map(|j| matrix[i * count + j] * result[j])
+            let gradient = (0..count)
+                .map(|row| matrix[row * count + i] * residual[row])
                 .sum::<f64>();
-            let value = ((rhs[i] - off_diagonal) / matrix[i * count + i]).clamp(0.0, upper[i]);
-            maximum_delta = maximum_delta.max((result[i] - value).abs());
+            let value = (result[i] - gradient / column_norms[i]).clamp(0.0, upper[i]);
+            let delta = value - result[i];
+            maximum_delta = maximum_delta.max(delta.abs());
+            for row in 0..count {
+                residual[row] += matrix[row * count + i] * delta;
+            }
             result[i] = value;
         }
         if maximum_delta <= threshold {
             return Ok(result);
+        }
+        // Solve the free-variable least-squares problem with QR rather than
+        // squaring the condition number again in normal equations.
+        let free = (0..count)
+            .filter(|i| result[*i] > 0.0 && result[*i] < upper[*i])
+            .collect::<Vec<_>>();
+        let width = free.len();
+        let mut q = vec![0.0; count * width];
+        let mut r = vec![0.0; width * width];
+        let mut projected = vec![0.0; width];
+        for (column, source) in free.iter().copied().enumerate() {
+            for row in 0..count {
+                q[column * count + row] = matrix[row * count + source];
+            }
+            // Reorthogonalization keeps nearly dependent poses stable.
+            for _ in 0..2 {
+                for previous in 0..column {
+                    let dot = (0..count)
+                        .map(|row| q[previous * count + row] * q[column * count + row])
+                        .sum::<f64>();
+                    r[previous * width + column] += dot;
+                    for row in 0..count {
+                        q[column * count + row] -= dot * q[previous * count + row];
+                    }
+                }
+            }
+            let norm = (0..count)
+                .map(|row| q[column * count + row].powi(2))
+                .sum::<f64>()
+                .sqrt();
+            if !norm.is_finite() || norm <= f64::EPSILON {
+                return Err(invalid("blendshape CPU free-variable matrix is singular"));
+            }
+            r[column * width + column] = norm;
+            for row in 0..count {
+                q[column * count + row] /= norm;
+                projected[column] -= q[column * count + row] * residual[row];
+            }
+        }
+        let mut step = projected;
+        for column in (0..width).rev() {
+            for next in column + 1..width {
+                step[column] -= r[column * width + next] * step[next];
+            }
+            step[column] /= r[column * width + column];
+        }
+        let mut alpha = 1.0_f64;
+        for (column, source) in free.iter().copied().enumerate() {
+            if step[column] < 0.0 {
+                alpha = alpha.min(-result[source] / step[column]);
+            } else if step[column] > 0.0 {
+                alpha = alpha.min((upper[source] - result[source]) / step[column]);
+            }
+        }
+        for (column, source) in free.iter().copied().enumerate() {
+            result[source] = (result[source] + alpha * step[column]).clamp(0.0, upper[source]);
+        }
+        for row in 0..count {
+            residual[row] = (0..count)
+                .map(|column| matrix[row * count + column] * result[column])
+                .sum::<f64>()
+                - rhs[row];
         }
     }
     Err(invalid("blendshape CPU solver did not converge"))
@@ -709,6 +795,36 @@ mod tests {
         let weights = solver.solve(&target).unwrap();
         assert!(weights[0] > 0.79);
         assert!(weights[1] <= 1.1e-10);
+    }
+
+    #[test]
+    fn bounded_solve_minimizes_sdk_matrix_residual() {
+        // With x[1] pinned to zero, ||A x - b||^2 has its minimum
+        // at x[0] = 2/5. The geometry quadratic instead gives 1/2.
+        let weights = solve_box_constrained(
+            &[2.0, 1.0, 1.0, 2.0],
+            &[1.0, 0.0],
+            &[1.0, 1.0],
+            1.0e-10,
+            None,
+        )
+        .unwrap();
+        assert!((weights[0] - 0.4).abs() < 1.0e-8);
+        assert_eq!(weights[1], 0.0);
+    }
+
+    #[test]
+    fn bounded_solve_converges_for_nearly_dependent_columns() {
+        let weights = solve_box_constrained(
+            &[1.0, 1.0, 1.0, 1.0001],
+            &[0.8, 0.80006],
+            &[1.0, 1.0],
+            1.0e-10,
+            None,
+        )
+        .unwrap();
+        assert!((weights[0] - 0.2).abs() < 1.0e-7);
+        assert!((weights[1] - 0.6).abs() < 1.0e-7);
     }
 
     #[test]
