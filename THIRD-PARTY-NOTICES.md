@@ -22,5 +22,6 @@ MPL-covered source, including any modifications; the release archive or an
 exact source revision can be used for this purpose. See the
 [Mozilla MPL FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/).
 
-Models and external CUDA/TensorRT installations are not included in these
-source licenses; their own terms continue to apply.
+External CUDA/TensorRT installations remain subject to their own terms.
+These notices describe embedded SDK/Eigen source;
+binary releases must also retain notices required by their other dependencies.

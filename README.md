@@ -187,7 +187,9 @@ cargo run -p audio2face3d-cli -- --version
 
 ## Explicit model acquisition
 
-First accept the applicable NVIDIA model license and configure a Hugging Face access token. Downloads are explicit and never happen from `build.rs` or model loading:
+First obtain access on the official Hugging Face model page, then configure
+your own access token. Downloads are explicit and never happen from `build.rs`
+or model loading:
 
 ```sh
 export HF_TOKEN=...
@@ -326,8 +328,8 @@ See [third-party notices](THIRD-PARTY-NOTICES.md) for the file scope and provena
 It includes work derived from the NVIDIA Audio2Face-3D SDK and retains the
 applicable NVIDIA copyright and license notice.
 
-The MIT License does not apply to NVIDIA model files or externally installed
-CUDA and TensorRT SDK binaries, headers, and components. Those are distributed
-separately and remain subject to their respective NVIDIA license terms. In
-particular, Audio2Face-3D models use the NVIDIA Open Model License, while
-Audio2Emotion models use their model-specific license agreement.
+Models are obtained separately. Users are responsible for determining whether
+and how to use them.
+
+Externally installed CUDA and TensorRT SDK binaries, headers, and components
+remain subject to their respective NVIDIA license terms.
