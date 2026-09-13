@@ -19,8 +19,6 @@
 //! | Separate interactive query methods | [`InteractiveExecutor`] | `audio2x/interactive_executor.h` |
 //!
 //! Accumulators are shared inputs; completed executors uniquely own their state.
-//! See `api/api-compatibility-symbols.json` in the repository for SDK header
-//! correspondence, and `api/snapshots/` for the feature-specific public surface.
 //!
 //! Completion can be awaited on any runtime. The trait remains dyn-compatible:
 //!

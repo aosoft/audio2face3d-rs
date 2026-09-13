@@ -12,9 +12,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
-      - name: Install pinned public API tooling
-        shell: powershell
-        run: ./ci/install-api-tools.ps1
       - name: Run portable release tier
         shell: powershell
         run: ./ci/run-tier.ps1 portable

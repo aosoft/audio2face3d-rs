@@ -322,10 +322,11 @@ This project follows SemVer 2.0.0. Before 1.0, minor releases may change the
 public API; patch releases remain compatible. Removing a public feature is a
 breaking change, and every release requires a public-API and feature review.
 
-## API compatibility checks
+## Validation
 
-The [API verification guide](api/README.md) describes the pinned snapshot tool,
-feature matrix, symbol ledger, and local CI tiers. Portable CI runs automatically
+Public API and feature changes are reviewed in pull request diffs.
+Portable CI checks formatting, builds, linting, tests, and documentation across
+the portable feature configurations. It runs automatically
 on pull requests and can also be run manually. Other workflows remain manual-only.
 CUDA/TensorRT validation requires CUDA and TensorRT
 installations; original-SDK reference comparison additionally requires the

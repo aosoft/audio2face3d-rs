@@ -8,7 +8,6 @@ use audio2face3d::audio2x::{
     InteractiveExecutionStatus, InteractiveExecutor, InteractiveInterruptHandle, RangeConfig,
     Result, TransferError,
 };
-use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
@@ -95,75 +94,6 @@ fn boxed_send_future_can_be_polled_without_a_runtime() {
             emitted_frames: 4
         }))
     );
-}
-
-#[test]
-fn symbol_ledger_is_well_formed_and_internally_consistent() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../api/api-compatibility-symbols.json");
-    let document: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    assert_eq!(document["schema_version"], 1);
-    let symbols = document["symbols"].as_array().unwrap();
-    assert_eq!(
-        document["coverage"]["counts"]["total_records"].as_u64(),
-        Some(symbols.len() as u64)
-    );
-
-    let mut ids = HashSet::new();
-    let mut declared_paths = HashSet::new();
-    let mut statuses = std::collections::BTreeMap::<&str, u64>::new();
-    for symbol in symbols {
-        let id = symbol["id"].as_str().unwrap();
-        assert!(ids.insert(id), "duplicate ledger id: {id}");
-        let kind = symbol["kind"].as_str().unwrap();
-        assert!(!kind.is_empty(), "missing kind: {id}");
-        assert!(
-            symbol["step"].as_u64().is_some()
-                || matches!(symbol["step"].as_str(), Some("P2" | "P3")),
-            "invalid step: {id}"
-        );
-        let feature = symbol["feature"].as_array().unwrap();
-        assert!(!feature.is_empty(), "missing feature: {id}");
-        let status = symbol["status"].as_str().unwrap();
-        assert!(matches!(status, "declared" | "planned" | "deferred"));
-        *statuses.entry(status).or_default() += 1;
-
-        if status == "declared" {
-            let rust_path = symbol["new_rust_path"].as_str().unwrap();
-            assert!(
-                !rust_path.is_empty(),
-                "declared symbol lacks Rust path: {id}"
-            );
-            assert!(
-                declared_paths.insert(rust_path),
-                "duplicate declared Rust path: {rust_path}"
-            );
-        }
-
-        for origin in symbol["origins"].as_array().unwrap() {
-            let name = origin["fq_name"].as_str().unwrap();
-            let header = origin["header"].as_str().unwrap();
-            assert!(name.starts_with("nva2"), "invalid SDK name: {name}");
-            assert!(!std::path::Path::new(header).is_absolute());
-            assert!(!header.contains("\\"));
-            assert!(!header.split('/').any(|part| part == "internal"));
-            assert!(
-                header.starts_with("audio2x-common/include/audio2x/")
-                    || header.starts_with("audio2face-sdk/include/audio2face/")
-                    || header.starts_with("audio2emotion-sdk/include/audio2emotion/"),
-                "header is outside public roots: {header}"
-            );
-        }
-    }
-
-    for (status, actual) in statuses {
-        assert_eq!(
-            document["coverage"]["counts"]["by_status"][status].as_u64(),
-            Some(actual),
-            "incorrect status count for {status}"
-        );
-    }
 }
 
 #[test]

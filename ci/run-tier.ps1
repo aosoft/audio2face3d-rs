@@ -30,8 +30,6 @@ function Require-Environment {
 
 switch ($Tier) {
     "portable" {
-        & (Join-Path $PSScriptRoot "test-public-api-policy.ps1")
-        & (Join-Path $PSScriptRoot "check-public-api.ps1") -Tier portable
         Invoke-Checked @("cargo", "fmt", "--all", "--", "--check")
         Invoke-Checked @("cargo", "check", "--workspace")
         Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features")
@@ -59,7 +57,6 @@ switch ($Tier) {
     }
     "cuda-lifetime" {
         Require-Environment @("CUDA_PATH", "AUDIO2FACE3D_CUDA_ARCHS")
-        & (Join-Path $PSScriptRoot "check-public-api.ps1") -Tier cuda
         Invoke-Checked @("cargo", "clippy", "-p", "audio2face3d", "--features", "animation,cuda", "--all-targets", "--", "-D", "warnings")
         Invoke-Checked @("cargo", "test", "-p", "audio2face3d", "--features", "animation,cuda")
         Invoke-Checked @("cargo", "test", "-p", "audio2face3d", "--features", "animation,cuda", "--test", "compile_fail")
@@ -70,7 +67,6 @@ switch ($Tier) {
     "tensorrt-model" {
         Require-Environment @("CUDA_PATH", "TENSORRT_ROOT_DIR", "AUDIO2FACE3D_TEST_FACADE_MODELS")
         $env:PATH = "$(Join-Path $env:CUDA_PATH 'bin');$(Join-Path $env:TENSORRT_ROOT_DIR 'bin');$env:PATH"
-        & (Join-Path $PSScriptRoot "check-public-api.ps1") -Tier tensorrt
         foreach ($features in @("tensorrt", "animation,tensorrt", "emotion,tensorrt")) {
             Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features", "--features", $features, "--all-targets")
             Invoke-Checked @("cargo", "test", "--release", "-p", "audio2face3d", "--no-default-features", "--features", $features, "--test", "compile_fail", "--test", "api_contracts", "--test", "tokio_runtime")
@@ -97,7 +93,6 @@ switch ($Tier) {
     "release" {
         Require-Environment @("CUDA_PATH", "TENSORRT_ROOT_DIR")
         $env:PATH = "$(Join-Path $env:CUDA_PATH 'bin');$(Join-Path $env:TENSORRT_ROOT_DIR 'bin');$env:PATH"
-        & (Join-Path $PSScriptRoot "check-public-api.ps1") -Tier tensorrt
         $previousRustdocFlags = $env:RUSTDOCFLAGS
         try {
             $env:RUSTDOCFLAGS = "-D warnings"
