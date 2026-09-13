@@ -2,8 +2,8 @@
 
 This project is an independently maintained Rust port of NVIDIA's MIT-licensed
 [Audio2Face-3D-SDK](https://github.com/NVIDIA/Audio2Face-3D-SDK). Its upstream
-source and reference revision is recorded in `provenance.sdk` in
-[the release contract](release/release-baseline.json). NVIDIA attribution and the
+source and reference revision is recorded in the
+[root README's License section](README.md#license). NVIDIA attribution and the
 MIT permission text are retained in the root and crate `LICENSE` files.
 The Rust port implements the pipelines without linking the original Audio2Face
 SDK libraries; CUDA and TensorRT remain native dependencies.

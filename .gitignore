@@ -15,7 +15,7 @@ target
 
 .idea/
 
-docs/
+/temp/
 /models/
 
 # Local inputs and generated outputs for the original-SDK compatibility harness

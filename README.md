@@ -36,26 +36,24 @@ experimental. The minimum supported Rust version is 1.87.
 | `cuda` | CUDA buffers, streams, solvers, and lifetime tests | `cuda-lifetime` |
 | `tensorrt` | real TensorRT model execution | `tensorrt-model` |
 
-The machine-readable contract is `release/release-baseline.json`. Its five CI
-tiers deliberately separate portable tests, CUDA ownership tests, real-model
-tests, original-SDK reference parity, and package/release checks:
+The CI tiers separate portable tests, CUDA ownership tests, real-model tests,
+and original-SDK reference parity:
 
 ```powershell
 ./ci/run-tier.ps1 portable
 ./ci/run-tier.ps1 cuda-lifetime
 ./ci/run-tier.ps1 tensorrt-model
 ./ci/run-tier.ps1 reference-parity
-./ci/run-tier.ps1 release
 ```
 
-Native tiers require the environment variables listed in the release contract;
-machine-local SDK/model/audio paths and generated captures are never committed.
-Audit the contract, pinned revisions, licenses, artifact sizes/hashes, benchmark
-definitions, API policy, and safety invariants with:
-
-```sh
-cargo run -p audio2face3d-cli -- release audit
-```
+Native tiers require `CUDA_PATH` and, for TensorRT, `TENSORRT_ROOT_DIR`.
+CUDA lifetime checks also require `AUDIO2FACE3D_CUDA_ARCHS`; real-model tests
+require `AUDIO2FACE3D_TEST_FACADE_MODELS`. See the
+[reference guide](reference/README.md) for original-SDK comparison setup.
+Machine-local SDK/model/audio paths and generated captures are not committed.
+The `release` tier and `release audit` command require an internal release
+baseline that is not included in the repository; they are not standalone
+checks for a fresh checkout.
 
 ### Inference-free Audio2Emotion
 
@@ -327,8 +325,9 @@ breaking change, and every release requires a public-API and feature review.
 ## API compatibility checks
 
 The [API verification guide](api/README.md) describes the pinned snapshot tool,
-feature matrix, symbol ledger, and local CI tiers. GitHub Actions workflows are
-currently manual-only. CUDA/TensorRT validation requires CUDA and TensorRT
+feature matrix, symbol ledger, and local CI tiers. Portable CI runs automatically
+on pull requests and can also be run manually. Other workflows remain manual-only.
+CUDA/TensorRT validation requires CUDA and TensorRT
 installations; original-SDK reference comparison additionally requires the
 Audio2Face-3D SDK checkout.
 Passing portable checks does not imply model-runtime validation.
@@ -337,8 +336,8 @@ Passing portable checks does not imply model-runtime validation.
 
 This project is an independently maintained Rust port of NVIDIA's MIT-licensed
 [Audio2Face-3D-SDK](https://github.com/NVIDIA/Audio2Face-3D-SDK), not an official
-NVIDIA SDK release. Its upstream repository and revision are recorded in
-`provenance.sdk` in [the release contract](release/release-baseline.json).
+NVIDIA SDK release. The upstream source and reference revision is
+`1ca0f02535ed774f5dbcd724a31cd486368dc783`.
 
 The source code in this repository is available under the [MIT License](LICENSE),
 except the Eigen-derived CPU SVD implementation, which is licensed under

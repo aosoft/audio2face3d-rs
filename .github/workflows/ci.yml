@@ -1,7 +1,7 @@
 name: portable-ci
 
 on:
-  # Automatic runs are temporarily paused; run CI manually when needed.
+  pull_request:
   workflow_dispatch:
 
 jobs:
