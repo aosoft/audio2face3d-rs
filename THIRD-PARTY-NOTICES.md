@@ -1,9 +1,17 @@
 # Third-party source notices
 
+This project is an independently maintained Rust port of NVIDIA's MIT-licensed
+[Audio2Face-3D-SDK](https://github.com/NVIDIA/Audio2Face-3D-SDK). Its upstream
+source and reference revision is recorded in `provenance.sdk` in
+[the release contract](release/release-baseline.json). NVIDIA attribution and the
+MIT permission text are retained in the root and crate `LICENSE` files.
+The Rust port implements the pipelines without linking the original Audio2Face
+SDK libraries; CUDA and TensorRT remain native dependencies.
+
 The CPU BlendShape BVLS algorithm in
 `crates/audio2face3d/src/animation/blendshape/bvls.rs` follows NVIDIA
-Audio2Face-3D-SDK `audio2face-sdk/source/audio2face-core/bvls.cpp`, revision
-`1ca0f02535ed774f5dbcd724a31cd486368dc783` (MIT). The source retains its NVIDIA
+Audio2Face-3D-SDK `audio2face-sdk/source/audio2face-core/bvls.cpp` at that
+revision (MIT). The source retains its NVIDIA
 copyright notice; the MIT text is in `LICENSE` and the library's `LICENSE`.
 
 `crates/audio2face3d/src/animation/blendshape/bvls/svd.rs` is a Rust adaptation

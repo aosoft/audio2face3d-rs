@@ -1,6 +1,7 @@
 # Audio2Face-3D for Rust
 
-Rust implementation of the NVIDIA Audio2Face-3D and Audio2Emotion runtime pipelines. TensorRT engines and model data are not bundled or downloaded during builds.
+This project is a Rust port of NVIDIA's Audio2Face-3D-SDK, covering the
+Audio2Face-3D and Audio2Emotion runtime pipelines.
 
 The workspace is organized as two publishable packages:
 
@@ -155,6 +156,11 @@ returned through the owning device executor and its stream-scoped results.
 
 CUDA 12 and TensorRT 10 must be installed separately. The initial validated versions are CUDA 12.9 and TensorRT 10.16.1.11.
 
+Building the native features also requires a host C++ compiler for the TensorRT
+shim and CUDA compilation. On Windows, install the MSVC C++ build tools;
+the Visual Studio IDE itself is not required. The default portable features
+do not compile the CUDA kernels or TensorRT shim.
+
 On Windows, set `CUDA_PATH` and `TENSORRT_ROOT_DIR`, then add their `bin` directories to `PATH`:
 
 ```powershell
@@ -198,7 +204,13 @@ cargo run -p audio2face3d-cli -- model download mark
 cargo run -p audio2face3d-cli -- model download all
 ```
 
-The built-in catalog covers `diffusion`, `claire`, `james`, `mark`, and `emotion`. It pins the repository and full commit revision and installs under `./models/<preset>` by default. Pass a different output root and token environment after the preset when needed. Arbitrary immutable revisions remain available through `download-revision <owner/repository> <revision> <output> [token-env]`.
+The built-in catalog covers `diffusion`, `claire`, `james`, `mark`, and `emotion`.
+Each user obtains model snapshots directly from NVIDIA's official Hugging Face
+repositories using their own token; this project does not redistribute models.
+The catalog pins the repository and full commit revision and installs under
+`./models/<preset>` by default. Pass a different output root and token environment
+after the preset when needed. Arbitrary immutable revisions remain available
+through `download-revision <owner/repository> <revision> <output> [token-env]`.
 
 When an output already exists, the tool verifies its repository, revision, required files, and actual `network.onnx` SHA-256 against `.audio2x-source.json`. A matching snapshot is skipped without network access. A mismatch is preserved and reported; pass `--force` to download, validate, and safely replace it:
 
@@ -315,11 +327,18 @@ breaking change, and every release requires a public-API and feature review.
 ## API compatibility checks
 
 The [API verification guide](api/README.md) describes the pinned snapshot tool,
-feature matrix, symbol ledger, and local CI tiers. GitHub Actions runs only the
-portable tier. CUDA/TensorRT validation requires a native SDK installation;
-passing portable checks does not imply model-runtime validation.
+feature matrix, symbol ledger, and local CI tiers. GitHub Actions workflows are
+currently manual-only. CUDA/TensorRT validation requires CUDA and TensorRT
+installations; original-SDK reference comparison additionally requires the
+Audio2Face-3D SDK checkout.
+Passing portable checks does not imply model-runtime validation.
 
 ## License
+
+This project is an independently maintained Rust port of NVIDIA's MIT-licensed
+[Audio2Face-3D-SDK](https://github.com/NVIDIA/Audio2Face-3D-SDK), not an official
+NVIDIA SDK release. Its upstream repository and revision are recorded in
+`provenance.sdk` in [the release contract](release/release-baseline.json).
 
 The source code in this repository is available under the [MIT License](LICENSE),
 except the Eigen-derived CPU SVD implementation, which is licensed under
