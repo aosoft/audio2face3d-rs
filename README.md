@@ -26,7 +26,7 @@ The Rust modules correspond to the original SDK as follows:
 The required release target is Windows x86-64 with MSVC, CUDA 12.9.x,
 TensorRT 10.16.1.x, an SM 8.6 GPU, and both FP32 and FP16 engines. Linux
 x86-64 with the same CUDA and TensorRT families is currently build-only and
-experimental. The minimum supported Rust version is 1.87.
+experimental. The minimum supported Rust version is 1.91.
 
 | Feature | Contents | Required tier |
 |---|---|---|
@@ -51,9 +51,9 @@ CUDA lifetime checks also require `AUDIO2FACE3D_CUDA_ARCHS`; real-model tests
 require `AUDIO2FACE3D_TEST_FACADE_MODELS`. See the
 [reference guide](reference/README.md) for original-SDK comparison setup.
 Machine-local SDK/model/audio paths and generated captures are not committed.
-The `release` tier and `release audit` command require an internal release
-baseline that is not included in the repository; they are not standalone
-checks for a fresh checkout.
+The `release` tier verifies native documentation and publishable packages.
+The optional `release audit` command requires an explicit `--baseline` path
+and the corresponding `--workspace`; it is not part of CI or publication.
 
 ### Inference-free Audio2Emotion
 

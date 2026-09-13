@@ -65,9 +65,6 @@ jobs:
       - name: Run portable tests
         run: cargo test --workspace --locked
 
-      - name: Audit release contract
-        run: cargo run --locked -p audio2face3d-cli -- release audit
-
       - name: Show package contents
         run: cargo package --workspace --locked --list
 

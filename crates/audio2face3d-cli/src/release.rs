@@ -673,15 +673,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tracked_release_baseline_and_artifacts_are_consistent() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let baseline = workspace.join("release/release-baseline.json");
-        let report = audit_release_baseline(&workspace, &baseline).unwrap();
-        assert!(report.compatible, "{:?}", report.failures);
-        assert!(report.checks > 100);
-    }
-
-    #[test]
     fn benchmark_thresholds_are_independent_from_numeric_parity() {
         assert!(!exceeds(100, 110, 10.0));
         assert!(exceeds(100, 111, 10.0));

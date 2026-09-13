@@ -69,7 +69,7 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ReleaseCommand {
-    /// Validate the tracked support, CI, provenance, API, and safety contract.
+    /// Validate an explicitly supplied release contract and its workspace artifacts.
     Audit(ReleaseAuditCommand),
     /// Compare a benchmark JSON report independently from numeric parity.
     BenchmarkCompare(BenchmarkCompareCommand),
@@ -77,7 +77,7 @@ enum ReleaseCommand {
 
 #[derive(Args, Debug)]
 struct ReleaseAuditCommand {
-    #[arg(long, default_value = "release/release-baseline.json")]
+    #[arg(long)]
     baseline: PathBuf,
     #[arg(long, default_value = ".")]
     workspace: PathBuf,

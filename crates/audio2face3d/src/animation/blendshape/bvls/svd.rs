@@ -43,7 +43,7 @@ fn sse_k_block(rows: usize, columns: usize, l1: usize) -> usize {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[allow(unused_unsafe)] // CPUID intrinsics are unsafe on the Rust 1.87 MSRV.
+#[allow(unused_unsafe)] // CPUID intrinsic safety differs across supported Rust versions.
 fn l1_data_cache_bytes() -> Option<usize> {
     use std::arch::x86_64::__cpuid_count;
     // SAFETY: CPUID is available on x86-64. Query maximum supported leaves

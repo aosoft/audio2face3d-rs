@@ -8,7 +8,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.91"
 license = "MIT"
 publish = ["crates-io"]
 repository = "https://github.com/aosoft/audio2face3d-rs"

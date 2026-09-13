@@ -5,6 +5,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  msrv:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91.0
+      - name: Check minimum supported Rust version
+        run: cargo check --workspace --locked --all-targets
+
   portable:
     runs-on: windows-latest
     steps:

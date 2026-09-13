@@ -100,7 +100,6 @@ switch ($Tier) {
         } finally {
             $env:RUSTDOCFLAGS = $previousRustdocFlags
         }
-        Invoke-Checked @("cargo", "run", "-p", "audio2face3d-cli", "--", "release", "audit", "--report", "target/release-audit.json")
         & (Join-Path $PSScriptRoot "test-release-packages.ps1")
         if ($LASTEXITCODE -ne 0) {
             throw "release package checks failed ($LASTEXITCODE)"
