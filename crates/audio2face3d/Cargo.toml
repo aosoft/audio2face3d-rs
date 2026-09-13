@@ -19,7 +19,7 @@ default-features = true
 [features]
 default = ["animation", "emotion"]
 animation = []
-emotion = []
+emotion = ["animation"]
 cuda = ["dep:cudarc"]
 tensorrt = ["cuda"]
 

@@ -32,7 +32,7 @@ experimental. The minimum supported Rust version is 1.91.
 |---|---|---|
 | default | CPU animation and emotion processing | `portable` |
 | `animation` | geometry, BlendShape, Teeth, and interactive APIs | `portable` |
-| `emotion` | Audio2Emotion post-processing | `portable` |
+| `emotion` | Audio2Emotion post-processing; also enables `animation` | `portable` |
 | `cuda` | CUDA buffers, streams, solvers, and lifetime tests | `cuda-lifetime` |
 | `tensorrt` | real TensorRT model execution | `tensorrt-model` |
 
