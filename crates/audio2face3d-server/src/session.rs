@@ -26,6 +26,7 @@ pub struct ResponseStream {
     data: mpsc::Receiver<controller::AnimationDataStream>,
     terminal: Option<oneshot::Receiver<Result<(), Status>>>,
     ended: bool,
+    cancel: CancellationToken,
     permit: Option<Arc<OwnedSemaphorePermit>>,
 }
 impl ResponseStream {
@@ -33,13 +34,20 @@ impl ResponseStream {
         data: mpsc::Receiver<controller::AnimationDataStream>,
         terminal: oneshot::Receiver<Result<(), Status>>,
         permit: Arc<OwnedSemaphorePermit>,
+        cancel: CancellationToken,
     ) -> Self {
         Self {
             data,
             terminal: Some(terminal),
             ended: false,
+            cancel,
             permit: Some(permit),
         }
+    }
+}
+impl Drop for ResponseStream {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 impl Stream for ResponseStream {
@@ -142,7 +150,7 @@ pub async fn run(
             }
             None => return Err(Status::invalid_argument("missing or unknown stream_part")),
         };
-        while let Some(frame) = backend.next_frame().await? {
+        while let Some(frame) = backend.next_frame(shutdown).await? {
             send(tx, Output::AnimationData(frame), config, shutdown).await?;
         }
         if finished {
@@ -180,6 +188,21 @@ mod tests {
     use tokio_stream::StreamExt;
 
     #[tokio::test]
+    async fn dropping_response_cancels_but_keeps_worker_permit() {
+        let slots = Arc::new(Semaphore::new(1));
+        let worker = Arc::new(slots.clone().acquire_owned().await.unwrap());
+        let cancel = CancellationToken::new();
+        let (_tx, rx) = mpsc::channel(1);
+        let (_terminal, terminal_rx) = oneshot::channel();
+        let stream = ResponseStream::new(rx, terminal_rx, worker.clone(), cancel.clone());
+        drop(stream);
+        assert!(cancel.is_cancelled());
+        assert_eq!(slots.available_permits(), 0);
+        drop(worker);
+        assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
     async fn full_queue_times_out_and_error_bypasses_queued_data() {
         let config = Config::parse_from(["test", "--output-timeout-ms", "20"]);
         let shutdown = CancellationToken::new();
@@ -187,7 +210,7 @@ mod tests {
         let permit = Arc::new(slots.clone().acquire_owned().await.unwrap());
         let (tx, rx) = mpsc::channel(1);
         let (terminal_tx, terminal_rx) = oneshot::channel();
-        let mut stream = ResponseStream::new(rx, terminal_rx, permit);
+        let mut stream = ResponseStream::new(rx, terminal_rx, permit, CancellationToken::new());
         tx.send(animation::header(0.0)).await.unwrap();
         let error = send(
             &tx,
@@ -213,7 +236,7 @@ mod tests {
         let permit = Arc::new(slots.clone().acquire_owned().await.unwrap());
         let (tx, rx) = mpsc::channel(1);
         let (terminal_tx, terminal_rx) = oneshot::channel();
-        let mut stream = ResponseStream::new(rx, terminal_rx, permit);
+        let mut stream = ResponseStream::new(rx, terminal_rx, permit, CancellationToken::new());
         tx.send(animation::header(0.0)).await.unwrap();
         terminal_tx.send(Ok(())).unwrap();
         drop(tx);

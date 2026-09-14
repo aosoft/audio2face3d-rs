@@ -189,7 +189,7 @@ impl GeometryModelData {
                 blink_strength: config.blink_strength,
                 eyelid_open_offset: config.eyelid_open_offset,
                 lip_open_offset: config.lip_open_offset,
-                blink_offset: 0.0,
+                blink_offset: config.blink_offset,
             },
             self.skin_neutral_pose.clone(),
             self.skin_lip_open_delta.clone(),

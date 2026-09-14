@@ -10,10 +10,10 @@ pub fn validate_header(header: Option<&AudioHeader>) -> Result<(), Status> {
     if header.audio_format != 0
         || header.channel_count != 1
         || header.bits_per_sample != 16
-        || u64::from(header.samples_per_second) != SAMPLE_RATE
+        || ![16_000, 44_100, 48_000].contains(&header.samples_per_second)
     {
         return Err(Status::invalid_argument(
-            "expected PCM16 little-endian, mono, 16000 Hz",
+            "expected PCM16 little-endian, mono, 16000/44100/48000 Hz",
         ));
     }
     Ok(())

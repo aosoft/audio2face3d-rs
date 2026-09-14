@@ -25,6 +25,9 @@ pub struct Config {
     pub listen: SocketAddr,
     #[arg(long)]
     pub model: Option<PathBuf>,
+    /// Optional Audio2Emotion classifier descriptor (16000 Hz).
+    #[arg(long)]
+    pub emotion_model: Option<PathBuf>,
     #[arg(long, default_value_t = 0)]
     pub device: usize,
     #[arg(long, value_enum, default_value = "jaw-open-pulse")]
@@ -50,6 +53,9 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> Result<(), String> {
+        if self.device > i32::MAX as usize {
+            return Err("device ordinal exceeds i32 range".into());
+        }
         if self.max_streams == 0
             || self.output_queue_capacity == 0
             || self.max_message_bytes < 4096
@@ -74,11 +80,17 @@ impl Config {
             if self.model.as_ref().is_none_or(|path| !path.is_file()) {
                 return Err("--model must name an existing regression descriptor".into());
             }
-            if self.max_streams != 1 {
-                return Err("regression currently requires --max-streams 1".into());
-            }
         }
-        if self.backend == BackendKind::Mock && (self.model.is_some() || self.device != 0) {
+        if self
+            .emotion_model
+            .as_ref()
+            .is_some_and(|path| !path.is_file())
+        {
+            return Err("--emotion-model must name an existing descriptor".into());
+        }
+        if self.backend == BackendKind::Mock
+            && (self.model.is_some() || self.emotion_model.is_some() || self.device != 0)
+        {
             return Err("model/device settings require the regression backend".into());
         }
         Ok(())

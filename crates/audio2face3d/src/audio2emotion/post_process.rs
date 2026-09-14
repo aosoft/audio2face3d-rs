@@ -778,7 +778,9 @@ fn into_internal_data(data: PostProcessData) -> crate::emotion::EmotionPostProce
     }
 }
 
-fn into_internal_params(params: PostProcessParams) -> crate::emotion::EmotionPostProcessParameters {
+pub(crate) fn into_internal_params(
+    params: PostProcessParams,
+) -> crate::emotion::EmotionPostProcessParameters {
     crate::emotion::EmotionPostProcessParameters {
         emotion_contrast: params.emotion_contrast,
         max_emotions: params.max_emotions,

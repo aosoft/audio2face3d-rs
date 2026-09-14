@@ -235,6 +235,16 @@ pub struct RegressionGeometryExecutorFactory;
 
 #[cfg(feature = "tensorrt")]
 impl RegressionGeometryExecutorFactory {
+    /// Loads an executor with an owned geometry configuration, without modifying model files.
+    pub fn load_with_config(
+        parameters: RegressionGeometryExecutorCreationParameters,
+        config: crate::common::GeometryConfig,
+    ) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryExecutor> {
+        crate::audio2x::spawn_blocking_factory(move || {
+            RegressionGeometryExecutor::load_sync_with_config(parameters, Some(config))
+        })
+    }
+
     /// Loads model files and initializes CUDA/TensorRT on a worker thread.
     pub fn load(
         parameters: RegressionGeometryExecutorCreationParameters,
@@ -441,6 +451,7 @@ impl RegressionGeometryInteractiveExecutor {
                 ));
             }
         };
+
         let model_data = GeometryModelData::load_regression(model.model_data_path(0)?)?;
         let processor = model_data.regression_postprocessor(
             config,
@@ -966,6 +977,13 @@ impl RegressionGeometryExecutor {
     pub(crate) fn load_sync(
         parameters: RegressionGeometryExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        Self::load_sync_with_config(parameters, None)
+    }
+
+    fn load_sync_with_config(
+        parameters: RegressionGeometryExecutorCreationParameters,
+        override_config: Option<crate::common::GeometryConfig>,
+    ) -> crate::Result<Self> {
         let model = Model::load(&parameters.model_path)?;
         if model.kind() != ModelKind::Regression {
             return Err(crate::Error::InvalidSchema(
@@ -1013,6 +1031,7 @@ impl RegressionGeometryExecutor {
                 ));
             }
         };
+        let config = override_config.as_ref().unwrap_or(config);
         let model_data = GeometryModelData::load_regression(model.model_data_path(0)?)?;
         let processor = model_data.regression_postprocessor(
             config,

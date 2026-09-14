@@ -41,7 +41,10 @@ impl Backend for MockBackend {
             u64::from(self.config.max_audio_seconds) * SAMPLE_RATE,
         )
     }
-    async fn next_frame(&mut self) -> Result<Option<AnimationData>, Status> {
+    async fn next_frame(
+        &mut self,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Option<AnimationData>, Status> {
         Ok(self
             .buffer
             .pop(self.finished)

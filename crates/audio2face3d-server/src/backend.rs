@@ -1,6 +1,11 @@
 #[cfg(feature = "runtime")]
 pub mod audio2face;
+#[cfg(feature = "runtime")]
+mod emotion;
 pub mod mock;
+#[cfg(feature = "runtime")]
+mod parameters;
+pub(crate) mod resample;
 
 use crate::{
     config::{BackendKind, Config},
@@ -12,7 +17,10 @@ use tonic::Status;
 #[tonic::async_trait]
 pub trait Backend: Send {
     fn push(&mut self, input: AudioWithEmotion) -> Result<(), Status>;
-    async fn next_frame(&mut self) -> Result<Option<AnimationData>, Status>;
+    async fn next_frame(
+        &mut self,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Option<AnimationData>, Status>;
     fn finish(&mut self) -> Result<(), Status>;
     async fn close(&mut self) -> Result<(), Status>;
     fn success_message(&self) -> &'static str;
@@ -51,14 +59,22 @@ impl Factory {
             BackendKind::Regression => {
                 #[cfg(feature = "runtime")]
                 {
-                    let prepared = self.prepared.lock().await.take();
+                    let custom = header.face_params.is_some()
+                        || header.blendshape_params.is_some()
+                        || header.emotion_params.is_some()
+                        || header.emotion_post_processing_params.is_some();
+                    let mut prepared = self.prepared.lock().await.take();
+                    if custom && let Some(runtime) = prepared.take() {
+                        tokio::task::spawn_blocking(move || drop(runtime))
+                            .await
+                            .map_err(|e| Status::internal(e.to_string()))?;
+                    }
                     let runtime = match prepared {
                         Some(runtime) => runtime,
-                        None => audio2face::load(config.clone()).await?,
+                        None => {
+                            audio2face::load_with_header(config.clone(), header.clone()).await?
+                        }
                     };
-                    tracing::warn!(
-                        "regression uses model defaults; RPC face/blendshape/emotion settings are not applied yet"
-                    );
                     Ok(Box::new(audio2face::RegressionBackend::new(
                         runtime, config,
                     )))

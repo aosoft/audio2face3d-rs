@@ -73,13 +73,20 @@ impl A2fControllerService for Service {
         let (tx, rx) = mpsc::channel(self.config.output_queue_capacity);
         let (terminal_tx, terminal_rx) = oneshot::channel();
         let config = self.config.clone();
-        let shutdown = self.shutdown.clone();
+        let stream_cancel = self.shutdown.child_token();
+        let shutdown = stream_cancel.clone();
         self.workers.spawn(
             async move {
                 let _permit = permit;
                 tracing::info!("started");
                 let result = async {
-                    let mut backend = factory.start(&config, &header).await?;
+                    let inner = factory.start(&config, &header).await?;
+                    let mut backend: Box<dyn crate::backend::Backend> =
+                        Box::new(crate::backend::resample::ResamplingBackend::new(
+                            inner,
+                            header.audio_header.as_ref().unwrap().samples_per_second,
+                            config.max_audio_seconds,
+                        ));
                     let result =
                         session::run(&mut input, backend.as_mut(), &tx, &config, &shutdown).await;
                     let cleanup = backend.close().await;
@@ -99,6 +106,7 @@ impl A2fControllerService for Service {
             rx,
             terminal_rx,
             stream_permit,
+            stream_cancel,
         )))
     }
 }

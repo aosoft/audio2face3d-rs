@@ -148,6 +148,9 @@ impl TensorRtSession {
         self.profile_count
     }
 
+    /// Returns up to 1024 diagnostic messages captured while this session was live.
+    /// TensorRT uses one process-wide logger; concurrent sessions can therefore
+    /// observe the same messages. ErrorRecorder messages also remain session-local.
     pub fn logs(&self) -> Result<Vec<TensorRtLogMessage>, InferenceError> {
         let device = Arc::clone(&self.device);
         let _context = device.make_current().map_err(InferenceError::Cuda)?;

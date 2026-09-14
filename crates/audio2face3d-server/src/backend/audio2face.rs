@@ -16,10 +16,11 @@ use audio2face3d::{
         BlendshapeExecutor, BlendshapeSolveComponentParameters,
         BlendshapeSolveExecutorCreationParameters, BlendshapeSolverConfigView,
         BlendshapeSolverDataView, BlendshapeSolverParams, FaceExecutor, GeometryExecutionOption,
-        GeometryExecutorBundleCreationParameters, GeometryExecutorBundleFactory,
         GeometryExecutorCreationParameters, GeometryTrackResources, HostBlendshapeSolveExecutor,
         HostBlendshapeSolveExecutorCreationParameters,
-        regression::RegressionGeometryExecutorCreationParameters,
+        regression::{
+            RegressionGeometryExecutorCreationParameters, RegressionGeometryExecutorFactory,
+        },
     },
     audio2x::{AudioAccumulator, CallbackMetadata, EmotionAccumulator, ExecutionState, FrameRate},
     common::{
@@ -39,16 +40,29 @@ fn internal(error: impl std::fmt::Display) -> Status {
 pub struct Runtime {
     executor: HostBlendshapeSolveExecutor,
     order: Vec<usize>,
+    clamp: bool,
+    emotion: super::emotion::Stage,
 }
 
 pub async fn load(config: Config) -> Result<Runtime, Status> {
+    load_with_header(config, Default::default()).await
+}
+pub async fn load_with_header(
+    config: Config,
+    header: crate::proto::controller::AudioStreamHeader,
+) -> Result<Runtime, Status> {
     let handle = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || load_sync(&config, &handle))
+    tokio::task::spawn_blocking(move || load_sync(&config, &header, &handle))
         .await
         .map_err(internal)?
 }
 
-fn load_sync(config: &Config, handle: &tokio::runtime::Handle) -> Result<Runtime, Status> {
+fn load_sync(
+    config: &Config,
+    header: &crate::proto::controller::AudioStreamHeader,
+    handle: &tokio::runtime::Handle,
+) -> Result<Runtime, Status> {
+    let loaded_at = std::time::Instant::now();
     let path = config
         .model
         .as_ref()
@@ -72,35 +86,39 @@ fn load_sync(config: &Config, handle: &tokio::runtime::Handle) -> Result<Runtime
     let ModelParameters::Geometry(geometry_config) = model.parameters(0).map_err(internal)? else {
         return Err(internal("missing geometry configuration"));
     };
+    let mut geometry_config = geometry_config.clone();
+    super::parameters::face(&mut geometry_config, header)?;
     let audio = Arc::new(AudioAccumulator::new(audio_parameters.buffer_len, 0).map_err(internal)?);
     let emotions = Arc::new(
         EmotionAccumulator::new(parameters.explicit_emotions.len(), 30).map_err(internal)?,
     );
-    emotions
-        .accumulate(0, &parameters.default_emotion)
-        .map_err(internal)?;
-    emotions.close().map_err(internal)?;
+    let emotion = super::emotion::Stage::load(
+        config,
+        header,
+        &parameters.explicit_emotions,
+        &parameters.default_emotion,
+        emotions.clone(),
+        handle,
+    )?;
     let bundle = handle
-        .block_on(GeometryExecutorBundleFactory::load(
-            GeometryExecutorBundleCreationParameters::Regression(
-                RegressionGeometryExecutorCreationParameters {
-                    model_path: path.clone(),
-                    common: GeometryExecutorCreationParameters {
-                        tracks: vec![GeometryTrackResources { audio, emotions }],
-                        device_ordinal: i32::try_from(config.device).map_err(|_| {
-                            Status::invalid_argument("device ordinal is out of range")
-                        })?,
-                        execution_option: GeometryExecutionOption::SKIN,
-                    },
-                    input_strength: geometry_config.input_strength,
-                    frame_rate: FrameRate::new(30, 1).map_err(internal)?,
-                    source_emotion_shot: geometry_config.source_shot.clone(),
-                    source_emotion_frame: geometry_config
-                        .source_frame
-                        .and_then(|v| usize::try_from(v).ok())
-                        .unwrap_or(0),
+        .block_on(RegressionGeometryExecutorFactory::load_with_config(
+            RegressionGeometryExecutorCreationParameters {
+                model_path: path.clone(),
+                common: GeometryExecutorCreationParameters {
+                    tracks: vec![GeometryTrackResources { audio, emotions }],
+                    device_ordinal: i32::try_from(config.device)
+                        .map_err(|_| Status::invalid_argument("device ordinal is out of range"))?,
+                    execution_option: GeometryExecutionOption::SKIN,
                 },
-            ),
+                input_strength: geometry_config.input_strength,
+                frame_rate: FrameRate::new(30, 1).map_err(internal)?,
+                source_emotion_shot: geometry_config.source_shot.clone(),
+                source_emotion_frame: geometry_config
+                    .source_frame
+                    .and_then(|v| usize::try_from(v).ok())
+                    .unwrap_or(0),
+            },
+            geometry_config,
         ))
         .map_err(internal)?;
     let paths = model.blendshape_paths(0).map_err(internal)?;
@@ -108,7 +126,7 @@ fn load_sync(config: &Config, handle: &tokio::runtime::Handle) -> Result<Runtime
         .get("skin")
         .ok_or_else(|| internal("missing skin blendshape paths"))?;
     let data = BlendshapeData::load_npz(&skin_paths.data).map_err(internal)?;
-    let bs = load_blendshape_config(&skin_paths.config)
+    let mut bs = load_blendshape_config(&skin_paths.config)
         .map_err(internal)?
         .blendshape_params;
     if data.pose_names.len() != CURVE_NAMES.len() {
@@ -124,6 +142,8 @@ fn load_sync(config: &Config, handle: &tokio::runtime::Handle) -> Result<Runtime
                 .ok_or_else(|| internal(format!("missing model pose {model_name}")))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let clamp =
+        super::parameters::blendshapes(header, &order, &mut bs.multipliers, &mut bs.offsets)?;
     let names = data
         .pose_names
         .iter()
@@ -163,8 +183,13 @@ fn load_sync(config: &Config, handle: &tokio::runtime::Handle) -> Result<Runtime
     if executor.weight_count() != 52 {
         return Err(internal("solver output must contain 52 weights"));
     }
-    tracing::info!(model = %path.display(), device = config.device, "regression model and host solver ready");
-    Ok(Runtime { executor, order })
+    tracing::info!(model = %path.display(), device = config.device, load_ms = loaded_at.elapsed().as_millis(), "regression model and host solver ready");
+    Ok(Runtime {
+        executor,
+        order,
+        clamp,
+        emotion,
+    })
 }
 
 struct CapturedFrame {
@@ -180,6 +205,7 @@ impl Runtime {
     fn tick(&mut self, handle: &tokio::runtime::Handle) -> Result<Tick, Status> {
         // Input is fed in 534-sample increments, so a normal tick schedules at
         // most a few frames; closing adds only the model's lookahead tail.
+        self.emotion.tick(handle)?;
         let captured = Arc::new(Mutex::new(Ok(Vec::new())));
         let output = captured.clone();
         let execution = self
@@ -287,11 +313,28 @@ impl RegressionBackend {
             .as_ref()
             .ok_or_else(|| internal("runtime unavailable"))?
             .order;
-        let weights = order.iter().map(|&i| frame.weights[i]).collect();
+        let clamp = self.runtime.as_ref().unwrap().clamp;
+        let weights = order
+            .iter()
+            .map(|&i| {
+                if clamp {
+                    frame.weights[i].clamp(0.0, 1.0)
+                } else {
+                    frame.weights[i]
+                }
+            })
+            .collect();
+        let metadata = self
+            .runtime
+            .as_mut()
+            .unwrap()
+            .emotion
+            .metadata(start as i64)?;
         let pcm = self.pcm.drain(..bytes).collect();
         self.emitted = end;
         let time_code = start as f64 / SAMPLE_RATE as f64;
         Ok(Some(AnimationData {
+            metadata,
             skel_animation: Some(SkelAnimation {
                 blend_shape_weights: vec![FloatArrayWithTimeCode {
                     time_code,
@@ -320,13 +363,26 @@ impl Backend for RegressionBackend {
         if total > self.max_samples {
             return Err(Status::resource_exhausted("audio duration limit exceeded"));
         }
+        self.runtime
+            .as_mut()
+            .ok_or_else(|| internal("runtime unavailable"))?
+            .emotion
+            .push_keys(input.emotions)?;
         self.received = total;
         self.pcm.extend(input.audio_buffer);
         Ok(())
     }
 
-    async fn next_frame(&mut self) -> Result<Option<AnimationData>, Status> {
+    async fn next_frame(
+        &mut self,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Option<AnimationData>, Status> {
         loop {
+            if cancel.is_cancelled() {
+                return Err(Status::cancelled(
+                    "inference cancelled after draining started jobs",
+                ));
+            }
             if let Some(frame) = self.pending.pop_front() {
                 if let Some(output) = self.output(frame)? {
                     return Ok(Some(output));
@@ -365,6 +421,10 @@ impl Backend for RegressionBackend {
                     self.runtime = Some(runtime);
                     return Err(internal(error));
                 }
+                if let Err(error) = runtime.emotion.feed(&samples) {
+                    self.runtime = Some(runtime);
+                    return Err(error);
+                }
                 self.fed += count as u64;
             } else if self.finished && !self.closed {
                 if let Err(error) = runtime
@@ -374,6 +434,10 @@ impl Backend for RegressionBackend {
                 {
                     self.runtime = Some(runtime);
                     return Err(internal(error));
+                }
+                if let Err(error) = runtime.emotion.finish() {
+                    self.runtime = Some(runtime);
+                    return Err(error);
                 }
                 self.closed = true;
             } else if !self.closed {
@@ -390,10 +454,17 @@ impl Backend for RegressionBackend {
             self.runtime = Some(runtime);
             let tick = result?;
             self.complete = tick.state == ExecutionState::Complete;
-            if self.closed && tick.state == ExecutionState::AwaitingInput {
+            if self.closed
+                && tick.state == ExecutionState::AwaitingInput
+                && self.runtime.as_ref().unwrap().emotion.is_complete()
+            {
                 return Err(internal("executor awaiting input after close"));
             }
-            if self.closed && !self.complete && tick.frames.is_empty() {
+            if self.closed
+                && !self.complete
+                && tick.frames.is_empty()
+                && self.runtime.as_ref().unwrap().emotion.is_complete()
+            {
                 return Err(internal("executor made no progress after close"));
             }
             self.pending.extend(tick.frames);
@@ -423,6 +494,6 @@ impl Backend for RegressionBackend {
     }
 
     fn success_message(&self) -> &'static str {
-        "Regression audio processing completed successfully (model defaults)."
+        "Regression audio processing completed successfully."
     }
 }

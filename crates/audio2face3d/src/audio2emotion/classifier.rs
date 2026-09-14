@@ -193,8 +193,10 @@ impl ClassifierEmotionExecutor {
                 ));
             }
         };
-        let (data, model_parameters) =
-            crate::emotion::EmotionPostProcessData::from_model(network, config)?;
+        let (data, _) = crate::emotion::EmotionPostProcessData::from_model(network, config)?;
+        let model_parameters =
+            super::post_process::into_internal_params(parameters.post_process_params);
+        model_parameters.validate(&data)?;
         if parameters.buffer_length == 0 {
             return Err(crate::Error::InvalidArgument {
                 field: "buffer_length",

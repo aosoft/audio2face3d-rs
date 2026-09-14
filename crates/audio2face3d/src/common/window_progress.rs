@@ -161,7 +161,8 @@ impl WindowProgress {
         }
         Ok(count
             .saturating_sub(i64::try_from(self.read_window_count).unwrap_or(i64::MAX))
-            .saturating_add(1) as usize)
+            .saturating_add(1)
+            .max(0) as usize)
     }
 }
 
@@ -186,6 +187,30 @@ fn div_ceil_signed(value: i64, divisor: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_windows_never_include_unreceived_lookahead() {
+        let progress = WindowProgress::new(WindowProgressParameters {
+            window_size: 60_000,
+            start_offset: -30_000,
+            target_offset: 30_000,
+            stride_numerator: 16_000,
+            stride_denominator: 30,
+        })
+        .unwrap();
+        for end in [
+            0, 1, 534, 29_999, 30_000, 30_001, 30_532, 30_533, 30_534, 60_000,
+        ] {
+            let expected = (0..120)
+                .take_while(|&i| progress.window(i).unwrap().end <= end)
+                .count();
+            assert_eq!(
+                progress.available_windows(end, false).unwrap(),
+                expected,
+                "{end}"
+            );
+        }
+    }
 
     #[test]
     fn regression_window_uses_rational_stride() {
