@@ -1,0 +1,89 @@
+use clap::{Parser, ValueEnum};
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum BackendKind {
+    Mock,
+    Regression,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum MockPattern {
+    JawOpenPulse,
+    EyeBlinkLeft,
+    EyeBlinkRight,
+    MouthSmileLeft,
+    MouthSmileRight,
+}
+
+#[derive(Clone, Debug, Parser)]
+#[command(version, about = "Audio2Face-3D controller gRPC server (mock backend)")]
+pub struct Config {
+    #[arg(long, value_enum, default_value = "mock")]
+    pub backend: BackendKind,
+    #[arg(long, default_value = "127.0.0.1:52000")]
+    pub listen: SocketAddr,
+    #[arg(long)]
+    pub model: Option<PathBuf>,
+    #[arg(long, default_value_t = 0)]
+    pub device: usize,
+    #[arg(long, value_enum, default_value = "jaw-open-pulse")]
+    pub mock_pattern: MockPattern,
+    #[arg(long, default_value_t = 1)]
+    pub max_streams: usize,
+    #[arg(long, default_value_t = 1_048_576)]
+    pub max_message_bytes: usize,
+    #[arg(long, default_value_t = 600)]
+    pub max_audio_seconds: u32,
+    #[arg(long, default_value_t = 16)]
+    pub output_queue_capacity: usize,
+    #[arg(long, default_value_t = 30_000)]
+    pub input_idle_timeout_ms: u64,
+    #[arg(long, default_value_t = 10_000)]
+    pub output_timeout_ms: u64,
+    #[arg(long, default_value_t = 5_000)]
+    pub shutdown_timeout_ms: u64,
+    /// Write the embedded descriptor set and exit (no listener).
+    #[arg(long)]
+    pub export_descriptor: Option<PathBuf>,
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_streams == 0
+            || self.output_queue_capacity == 0
+            || self.max_message_bytes < 4096
+            || self.max_audio_seconds == 0
+            || self.input_idle_timeout_ms == 0
+            || self.output_timeout_ms == 0
+            || self.shutdown_timeout_ms == 0
+        {
+            return Err(
+                "limits and timeouts must be positive; max-message-bytes must be >= 4096".into(),
+            );
+        }
+        if self.max_streams > tokio::sync::Semaphore::MAX_PERMITS
+            || self.output_queue_capacity > tokio::sync::Semaphore::MAX_PERMITS
+        {
+            return Err("stream/queue limit exceeds Tokio capacity".into());
+        }
+        if self.backend == BackendKind::Regression {
+            return Err(if cfg!(feature = "runtime") {
+                "regression backend is not implemented yet (step 06)"
+            } else {
+                "regression requires --features runtime and the step 06 backend implementation"
+            }
+            .into());
+        }
+        if self.model.is_some() || self.device != 0 {
+            return Err("model/device settings require the regression backend".into());
+        }
+        Ok(())
+    }
+    pub fn input_timeout(&self) -> Duration {
+        Duration::from_millis(self.input_idle_timeout_ms)
+    }
+    pub fn output_timeout(&self) -> Duration {
+        Duration::from_millis(self.output_timeout_ms)
+    }
+}

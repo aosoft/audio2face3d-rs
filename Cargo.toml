@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/audio2face3d",
     "crates/audio2face3d-cli",
+    "crates/audio2face3d-server",
 ]
 
 [workspace.package]
