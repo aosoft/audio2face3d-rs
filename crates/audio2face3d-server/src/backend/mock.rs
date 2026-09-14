@@ -30,6 +30,7 @@ impl MockBackend {
         }
     }
 }
+#[tonic::async_trait]
 impl Backend for MockBackend {
     fn push(&mut self, input: AudioWithEmotion) -> Result<(), Status> {
         if !input.emotions.is_empty() {
@@ -40,10 +41,11 @@ impl Backend for MockBackend {
             u64::from(self.config.max_audio_seconds) * SAMPLE_RATE,
         )
     }
-    fn next_frame(&mut self) -> Option<AnimationData> {
-        self.buffer
+    async fn next_frame(&mut self) -> Result<Option<AnimationData>, Status> {
+        Ok(self
+            .buffer
             .pop(self.finished)
-            .map(|(start, pcm)| mock_frame(start, pcm, self.config.mock_pattern))
+            .map(|(start, pcm)| mock_frame(start, pcm, self.config.mock_pattern)))
     }
     fn finish(&mut self) -> Result<(), Status> {
         if self.buffer.is_empty() {
@@ -54,7 +56,11 @@ impl Backend for MockBackend {
         self.finished = true;
         Ok(())
     }
-    fn cancel(&mut self) {
+    async fn close(&mut self) -> Result<(), Status> {
         self.buffer = FrameBuffer::default();
+        Ok(())
+    }
+    fn success_message(&self) -> &'static str {
+        "Mock audio processing completed successfully (no inference)."
     }
 }

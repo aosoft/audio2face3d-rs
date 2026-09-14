@@ -1,6 +1,6 @@
 use crate::{
     audio::validate_header,
-    backend::{Backend, mock::MockBackend},
+    backend::Factory,
     config::Config,
     proto::{
         A2fControllerService,
@@ -23,15 +23,22 @@ pub struct Service {
     shutdown: CancellationToken,
     workers: TaskTracker,
     next_id: AtomicU64,
+    factory: Arc<Factory>,
 }
 impl Service {
-    pub fn new(config: Config, shutdown: CancellationToken, workers: TaskTracker) -> Self {
+    pub fn new(
+        config: Config,
+        shutdown: CancellationToken,
+        workers: TaskTracker,
+        factory: Arc<Factory>,
+    ) -> Self {
         Self {
             slots: Arc::new(Semaphore::new(config.max_streams)),
             config,
             shutdown,
             workers,
             next_id: AtomicU64::new(1),
+            factory,
         }
     }
 }
@@ -62,7 +69,7 @@ impl A2fControllerService for Service {
         validate_header(header.audio_header.as_ref())?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let span = tracing::info_span!("rpc", id);
-        let mut backend = MockBackend::start(&self.config, &header);
+        let factory = self.factory.clone();
         let (tx, rx) = mpsc::channel(self.config.output_queue_capacity);
         let (terminal_tx, terminal_rx) = oneshot::channel();
         let config = self.config.clone();
@@ -71,9 +78,15 @@ impl A2fControllerService for Service {
             async move {
                 let _permit = permit;
                 tracing::info!("started");
-                let result = session::run(&mut input, &mut backend, &tx, &config, &shutdown).await;
+                let result = async {
+                    let mut backend = factory.start(&config, &header).await?;
+                    let result =
+                        session::run(&mut input, backend.as_mut(), &tx, &config, &shutdown).await;
+                    let cleanup = backend.close().await;
+                    result.and(cleanup)
+                }
+                .await;
                 if let Err(error) = &result {
-                    backend.cancel();
                     tracing::warn!(code = ?error.code(), message = error.message(), "failed");
                 } else {
                     tracing::info!("completed");

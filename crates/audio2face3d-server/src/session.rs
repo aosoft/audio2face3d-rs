@@ -142,10 +142,11 @@ pub async fn run(
             }
             None => return Err(Status::invalid_argument("missing or unknown stream_part")),
         };
-        while let Some(frame) = backend.next_frame() {
+        while let Some(frame) = backend.next_frame().await? {
             send(tx, Output::AnimationData(frame), config, shutdown).await?;
         }
         if finished {
+            backend.close().await?;
             send(
                 tx,
                 Output::Event(controller::Event {
@@ -160,7 +161,7 @@ pub async fn run(
                 tx,
                 Output::Status(status::Status {
                     code: 0,
-                    message: "Mock audio processing completed successfully (no inference).".into(),
+                    message: backend.success_message().into(),
                 }),
                 config,
                 shutdown,

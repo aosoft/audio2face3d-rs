@@ -17,7 +17,7 @@ pub enum MockPattern {
 }
 
 #[derive(Clone, Debug, Parser)]
-#[command(version, about = "Audio2Face-3D controller gRPC server (mock backend)")]
+#[command(version, about = "Audio2Face-3D controller gRPC server")]
 pub struct Config {
     #[arg(long, value_enum, default_value = "mock")]
     pub backend: BackendKind,
@@ -68,14 +68,17 @@ impl Config {
             return Err("stream/queue limit exceeds Tokio capacity".into());
         }
         if self.backend == BackendKind::Regression {
-            return Err(if cfg!(feature = "runtime") {
-                "regression backend is not implemented yet (step 06)"
-            } else {
-                "regression requires --features runtime and the step 06 backend implementation"
+            if !cfg!(feature = "runtime") {
+                return Err("regression requires --features runtime".into());
             }
-            .into());
+            if self.model.as_ref().is_none_or(|path| !path.is_file()) {
+                return Err("--model must name an existing regression descriptor".into());
+            }
+            if self.max_streams != 1 {
+                return Err("regression currently requires --max-streams 1".into());
+            }
         }
-        if self.model.is_some() || self.device != 0 {
+        if self.backend == BackendKind::Mock && (self.model.is_some() || self.device != 0) {
             return Err("model/device settings require the regression backend".into());
         }
         Ok(())

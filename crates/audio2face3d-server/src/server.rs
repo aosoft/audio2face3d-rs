@@ -3,7 +3,7 @@ use crate::{
     proto::{A2fControllerServiceServer, SERVICE_NAME},
     service::Service,
 };
-use std::{error::Error, future::Future, time::Duration};
+use std::{error::Error, future::Future, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -17,6 +17,7 @@ pub async fn serve(
     stop: impl Future<Output = ()> + Send,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     config.validate()?;
+    let factory = Arc::new(crate::backend::Factory::prepare(&config).await?);
     let shutdown = CancellationToken::new();
     let workers = TaskTracker::new();
     let (health, health_service) = tonic_health::server::health_reporter();
@@ -28,6 +29,7 @@ pub async fn serve(
         config.clone(),
         shutdown.clone(),
         workers.clone(),
+        factory,
     ))
     .max_decoding_message_size(config.max_message_bytes)
     .max_encoding_message_size(config.max_message_bytes);
@@ -43,7 +45,7 @@ pub async fn serve(
         tracing::info!("stopping");
         cancel.cancel();
     };
-    tracing::info!(address = %listener.local_addr()?, backend = "mock", "serving");
+    tracing::info!(address = %listener.local_addr()?, backend = ?config.backend, "serving");
     let result = Server::builder()
         .add_service(health_service)
         .add_service(service)
