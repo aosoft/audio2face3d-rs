@@ -93,12 +93,22 @@ the supplied PCM. Existing presets remain available through `--mock-pattern`:
 Select any of the [52 case-sensitive ACE names](src/animation.rs) with
 `--mock-curve`. It overrides the preset's curve selection. Add `--mock-value`
 to hold that curve at a finite weight in [0, 1] while audio is streamed;
-without it, the selected curve pulses. All other weights are zero.
+without it, the selected curve pulses. Other weights are zero unless a jaw baseline is specified.
 
 ```powershell
 cargo run --locked -p audio2face3d-server -- --backend mock --mock-curve EyeBlinkLeft --mock-value 1
 # Neutral reference, with all 52 weights zero:
 cargo run --locked -p audio2face3d-server -- --backend mock --mock-curve JawOpen --mock-value 0
+```
+
+For combined diagnostics, `--mock-jaw-open 0.5` holds JawOpen at 0.5 while
+the selected curve varies or holds its own value. This helps inspect
+MouthClose and TongueOut against an open-jaw reference. Set `--mock-value 0`
+for the reference, then 0.5 or 1 for comparison. The baseline accepts finite
+values in [0, 1] and cannot be combined with selecting JawOpen itself.
+
+```powershell
+cargo run --locked -p audio2face3d-server -- --backend mock --mock-curve TongueOut --mock-value 1 --mock-jaw-open 0.5
 ```
 
 These options are for mock only. Mock weights do not depend on the supplied

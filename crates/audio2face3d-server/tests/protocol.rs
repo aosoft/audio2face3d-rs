@@ -350,3 +350,98 @@ fn diagnostic_default_retains_pulse_and_pcm_timestamps() {
         assert_eq!(weights.time_code, start as f64 / 16000.0);
     }
 }
+
+#[tokio::test]
+async fn diagnostic_jaw_baseline_preserves_selected_curve_and_audio() {
+    use proto::controller::animation_data_stream::StreamPart as Output;
+    for (name, index) in [("MouthClose", 18), ("TongueOut", 51)] {
+        for value in ["0", "0.5", "1"] {
+            let mut running = Running::start(&[
+                "--mock-curve",
+                name,
+                "--mock-value",
+                value,
+                "--mock-jaw-open",
+                "0.5",
+            ])
+            .await;
+            let (tx, mut stream) = running.stream().await;
+            let pcm = vec![23; 1600];
+            tx.send(audio(pcm.clone())).await.unwrap();
+            tx.send(end()).await.unwrap();
+            let mut returned = Vec::new();
+            let mut success = false;
+            while let Some(message) = stream.message().await.unwrap() {
+                match message.stream_part.unwrap() {
+                    Output::AnimationData(frame) => {
+                        let audio = frame.audio.unwrap();
+                        let weights = frame.skel_animation.unwrap().blend_shape_weights;
+                        assert_eq!(weights[0].time_code, audio.time_code);
+                        assert_eq!(weights[0].values.len(), 52);
+                        for (i, weight) in weights[0].values.iter().enumerate() {
+                            let expected = if i == 17 {
+                                0.5
+                            } else if i == index {
+                                value.parse::<f32>().unwrap()
+                            } else {
+                                0.0
+                            };
+                            assert_eq!(*weight, expected, "{name}: {i}");
+                        }
+                        returned.extend(audio.audio_buffer);
+                    }
+                    Output::Status(status) => {
+                        assert_eq!(status.code, 0);
+                        success = true;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(success);
+            assert_eq!(returned, pcm);
+            drop(tx);
+            running.stop().await;
+        }
+    }
+}
+
+#[test]
+fn diagnostic_jaw_baseline_rejects_ambiguous_or_invalid_settings() {
+    for args in [
+        vec!["test", "--mock-jaw-open", "0.5"],
+        vec![
+            "test",
+            "--mock-curve",
+            "TongueOut",
+            "--mock-jaw-open",
+            "NaN",
+        ],
+        vec![
+            "test",
+            "--mock-curve",
+            "TongueOut",
+            "--mock-jaw-open",
+            "1.1",
+        ],
+    ] {
+        assert!(Config::try_parse_from(args).is_err());
+    }
+    assert!(
+        Config::parse_from(["test", "--mock-curve", "JawOpen", "--mock-jaw-open", "0.5"])
+            .validate()
+            .is_err()
+    );
+    assert!(
+        Config::parse_from([
+            "test",
+            "--backend",
+            "regression",
+            "--mock-curve",
+            "TongueOut",
+            "--mock-jaw-open",
+            "0.5"
+        ])
+        .validate()
+        .is_err()
+    );
+}

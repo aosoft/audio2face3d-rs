@@ -38,6 +38,9 @@ pub struct Config {
     /// Hold the selected curve at a constant weight; omit for a one-second pulse.
     #[arg(long, requires = "mock_curve", value_parser = parse_mock_value)]
     pub mock_value: Option<f32>,
+    /// Add a fixed JawOpen baseline to another selected diagnostic curve.
+    #[arg(long, requires = "mock_curve", value_parser = parse_mock_value)]
+    pub mock_jaw_open: Option<f32>,
     #[arg(long, default_value_t = 1)]
     pub max_streams: usize,
     #[arg(long, default_value_t = 1_048_576)]
@@ -80,9 +83,14 @@ impl Config {
             return Err("stream/queue limit exceeds Tokio capacity".into());
         }
         if self.backend != BackendKind::Mock
-            && (self.mock_curve.is_some() || self.mock_value.is_some())
+            && (self.mock_curve.is_some()
+                || self.mock_value.is_some()
+                || self.mock_jaw_open.is_some())
         {
             return Err("mock-curve/mock-value require the mock backend".into());
+        }
+        if self.mock_jaw_open.is_some() && self.mock_curve.as_deref() == Some("JawOpen") {
+            return Err("mock-jaw-open requires a selected curve other than JawOpen".into());
         }
         if self.backend == BackendKind::Regression {
             if !cfg!(feature = "runtime") {

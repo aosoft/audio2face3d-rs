@@ -46,13 +46,18 @@ impl Backend for MockBackend {
         _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Option<AnimationData>, Status> {
         Ok(self.buffer.pop(self.finished).map(|(start, pcm)| {
-            diagnostic_frame(
+            let mut frame = diagnostic_frame(
                 start,
                 pcm,
                 self.config.mock_pattern,
                 self.config.mock_curve.as_deref(),
                 self.config.mock_value,
-            )
+            );
+            if let Some(jaw_open) = self.config.mock_jaw_open {
+                // diagnostic_frame always contains one sample in ACE curve order.
+                frame.skel_animation.as_mut().unwrap().blend_shape_weights[0].values[17] = jaw_open;
+            }
+            frame
         }))
     }
     fn finish(&mut self) -> Result<(), Status> {
