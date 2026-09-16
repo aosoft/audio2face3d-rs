@@ -243,3 +243,110 @@ async fn dropping_response_cancels_idle_worker_and_allows_next_rpc() {
     while next_stream.message().await.unwrap().is_some() {}
     running.stop().await;
 }
+
+#[tokio::test]
+async fn all_52_diagnostic_curves_survive_rpc_without_cross_talk() {
+    use audio2face3d_server::animation::CURVE_NAMES;
+    use proto::controller::animation_data_stream::StreamPart as Output;
+    for (selected, name) in CURVE_NAMES.iter().enumerate() {
+        let mut running = Running::start(&["--mock-curve", name, "--mock-value", "0.5"]).await;
+        let (tx, mut stream) = running.stream().await;
+        let pcm = vec![37; 1600];
+        tx.send(audio(pcm.clone())).await.unwrap();
+        tx.send(end()).await.unwrap();
+        let mut returned_pcm = Vec::new();
+        let mut frames = 0;
+        let mut header_seen = false;
+        let mut success = false;
+        let mut previous = None;
+        while let Some(message) = stream.message().await.unwrap() {
+            match message.stream_part.unwrap() {
+                Output::AnimationDataStreamHeader(header) => {
+                    assert_eq!(
+                        header.skel_animation_header.unwrap().blend_shapes,
+                        CURVE_NAMES
+                    );
+                    header_seen = true;
+                }
+                Output::AnimationData(frame) => {
+                    assert!(header_seen);
+                    let audio = frame.audio.unwrap();
+                    let weights = frame.skel_animation.unwrap().blend_shape_weights;
+                    assert_eq!(weights.len(), 1);
+                    let sample = &weights[0];
+                    assert_eq!(sample.time_code, audio.time_code);
+                    if let Some(last) = previous {
+                        assert!(sample.time_code > last);
+                    }
+                    previous = Some(sample.time_code);
+                    assert_eq!(sample.values.len(), 52);
+                    for (index, value) in sample.values.iter().enumerate() {
+                        assert_eq!(
+                            *value,
+                            if index == selected { 0.5 } else { 0.0 },
+                            "{name} index {index}"
+                        );
+                    }
+                    returned_pcm.extend(audio.audio_buffer);
+                    frames += 1;
+                }
+                Output::Status(status) => {
+                    assert_eq!(status.code, 0);
+                    success = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(frames > 0 && success, "{name}");
+        assert_eq!(returned_pcm, pcm, "{name}");
+        drop(tx);
+        running.stop().await;
+    }
+}
+
+#[test]
+fn diagnostic_cli_rejects_invalid_inputs() {
+    for args in [
+        vec!["test", "--mock-curve", "NotACurve"],
+        vec!["test", "--mock-value", "0.5"],
+        vec!["test", "--mock-curve", "JawOpen", "--mock-value", "NaN"],
+        vec!["test", "--mock-curve", "JawOpen", "--mock-value", "1.1"],
+    ] {
+        assert!(Config::try_parse_from(args).is_err());
+    }
+    let config = Config::parse_from(["test", "--backend", "regression", "--mock-curve", "JawOpen"]);
+    assert_eq!(
+        config.validate().unwrap_err(),
+        "mock-curve/mock-value require the mock backend"
+    );
+}
+
+#[test]
+fn diagnostic_default_retains_pulse_and_pcm_timestamps() {
+    use audio2face3d_server::{
+        animation::{diagnostic_frame, mock_frame},
+        config::MockPattern,
+    };
+    for start in [0, 4000, 8000, 12000, 16000] {
+        let original = mock_frame(start, vec![1, 2], MockPattern::JawOpenPulse);
+        assert_eq!(
+            original,
+            diagnostic_frame(
+                start,
+                vec![1, 2],
+                MockPattern::JawOpenPulse,
+                Some("JawOpen"),
+                None
+            )
+        );
+        let weights = &original.skel_animation.unwrap().blend_shape_weights[0];
+        let expected = match start {
+            0 | 16000 => 0.0,
+            8000 => 1.0,
+            _ => 0.5,
+        };
+        assert_eq!(weights.values[17], expected);
+        assert_eq!(original.audio.unwrap().audio_buffer, vec![1, 2]);
+        assert_eq!(weights.time_code, start as f64 / 16000.0);
+    }
+}

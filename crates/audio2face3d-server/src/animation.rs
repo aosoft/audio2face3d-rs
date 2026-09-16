@@ -83,6 +83,16 @@ pub fn header(epoch_seconds: f64) -> controller::AnimationDataStream {
 }
 
 pub fn mock_frame(start: u64, pcm: Vec<u8>, pattern: MockPattern) -> animation::AnimationData {
+    diagnostic_frame(start, pcm, pattern, None, None)
+}
+
+pub fn diagnostic_frame(
+    start: u64,
+    pcm: Vec<u8>,
+    pattern: MockPattern,
+    curve: Option<&str>,
+    weight: Option<f32>,
+) -> animation::AnimationData {
     let mut values = vec![0.0; CURVE_NAMES.len()];
     let index = match pattern {
         MockPattern::JawOpenPulse => 17,
@@ -92,7 +102,10 @@ pub fn mock_frame(start: u64, pcm: Vec<u8>, pattern: MockPattern) -> animation::
         MockPattern::MouthSmileRight => 24,
     };
     let phase = (start % SAMPLE_RATE) as f32 / SAMPLE_RATE as f32;
-    values[index] = 1.0 - (2.0 * phase - 1.0).abs();
+    let index = curve
+        .and_then(|name| CURVE_NAMES.iter().position(|candidate| *candidate == name))
+        .unwrap_or(index);
+    values[index] = weight.unwrap_or_else(|| 1.0 - (2.0 * phase - 1.0).abs());
     let time_code = start as f64 / SAMPLE_RATE as f64;
     animation::AnimationData {
         skel_animation: Some(animation::SkelAnimation {

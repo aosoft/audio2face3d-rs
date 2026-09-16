@@ -32,6 +32,12 @@ pub struct Config {
     pub device: usize,
     #[arg(long, value_enum, default_value = "jaw-open-pulse")]
     pub mock_pattern: MockPattern,
+    /// Select one of the 52 ACE curves instead of the preset pattern (mock only).
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(crate::animation::CURVE_NAMES))]
+    pub mock_curve: Option<String>,
+    /// Hold the selected curve at a constant weight; omit for a one-second pulse.
+    #[arg(long, requires = "mock_curve", value_parser = parse_mock_value)]
+    pub mock_value: Option<f32>,
     #[arg(long, default_value_t = 1)]
     pub max_streams: usize,
     #[arg(long, default_value_t = 1_048_576)]
@@ -73,6 +79,11 @@ impl Config {
         {
             return Err("stream/queue limit exceeds Tokio capacity".into());
         }
+        if self.backend != BackendKind::Mock
+            && (self.mock_curve.is_some() || self.mock_value.is_some())
+        {
+            return Err("mock-curve/mock-value require the mock backend".into());
+        }
         if self.backend == BackendKind::Regression {
             if !cfg!(feature = "runtime") {
                 return Err("regression requires --features runtime".into());
@@ -101,4 +112,12 @@ impl Config {
     pub fn output_timeout(&self) -> Duration {
         Duration::from_millis(self.output_timeout_ms)
     }
+}
+
+fn parse_mock_value(value: &str) -> Result<f32, String> {
+    let value: f32 = value.parse().map_err(|_| "expected a number in [0, 1]")?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err("expected a finite number in [0, 1]".into());
+    }
+    Ok(value)
 }

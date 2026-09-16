@@ -1,6 +1,6 @@
 use super::Backend;
 use crate::{
-    animation::mock_frame,
+    animation::diagnostic_frame,
     audio::{FrameBuffer, SAMPLE_RATE},
     config::Config,
     proto::{a2f::AudioWithEmotion, animation::AnimationData, controller::AudioStreamHeader},
@@ -45,10 +45,15 @@ impl Backend for MockBackend {
         &mut self,
         _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Option<AnimationData>, Status> {
-        Ok(self
-            .buffer
-            .pop(self.finished)
-            .map(|(start, pcm)| mock_frame(start, pcm, self.config.mock_pattern)))
+        Ok(self.buffer.pop(self.finished).map(|(start, pcm)| {
+            diagnostic_frame(
+                start,
+                pcm,
+                self.config.mock_pattern,
+                self.config.mock_curve.as_deref(),
+                self.config.mock_value,
+            )
+        }))
     }
     fn finish(&mut self) -> Result<(), Status> {
         if self.buffer.is_empty() {
