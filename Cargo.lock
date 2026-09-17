@@ -137,6 +137,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "audio2face3d-client"
+version = "0.1.0"
+dependencies = [
+ "audio2face3d-types",
+]
+
+[[package]]
 name = "audio2face3d-inference"
 version = "0.1.0"
 dependencies = [

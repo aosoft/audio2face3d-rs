@@ -1,0 +1,21 @@
+[package]
+name = "audio2face3d-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Runtime-independent Audio2Face client session control"
+
+[features]
+default = []
+# Adapter implementations are added separately; stage 04 provides the common core.
+direct = []
+server = []
+
+[dependencies]
+audio2face3d-types = { path = "../audio2face3d-types" }
+
+[lints]
+workspace = true

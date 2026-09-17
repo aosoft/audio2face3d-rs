@@ -26,6 +26,18 @@ impl CurveLayout {
     pub fn names(&self) -> &[String] {
         &self.names
     }
+    /// Retained name-buffer storage, including spare Vec/String capacity.
+    /// Excludes allocator overhead; callers may charge shared layouts conservatively.
+    pub fn storage_bytes(&self) -> usize {
+        self.names.iter().fold(
+            std::mem::size_of::<Self>().saturating_add(
+                self.names
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            ),
+            |bytes, name| bytes.saturating_add(name.capacity()),
+        )
+    }
     pub fn into_names(self) -> Vec<String> {
         self.names
     }
