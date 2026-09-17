@@ -372,3 +372,23 @@ cargo run -p audio2face3d-server --no-default-features --features cli,mock -- --
 The public `logging::Logger` trait uses only standard Rust types. `log(level, || message)` calls its closure only when the level passes the logger threshold; `Off` never generates an event. An explicit default Context is silent. Legacy constructors without a Context retain the calling tracing subscriber for compatibility. Internal scope propagation covers standard threads, future poll/drop, native job tasks and cleanup. Native SDK output outside Rust is separate.
 
 The executables provide a synchronous stderr logger. `RUST_LOG` accepts levels and target directives (default: info); span/field expressions are rejected. Level filtering occurs before message generation. CLI target filtering occurs on the formatted target-prefixed message, so a target-specific rejection can still incur formatting when the global minimum threshold allows that level.
+
+### Remote client authentication
+
+With `client-grpc`, set `audio2face3d::client::ServerConfig::api_key` to
+`Some(key)` when initializing `Client::server`. The default `None` sends no
+authorization header. Each inference RPC carries `authorization: Bearer <key>`;
+authentication is performed per RPC, not when the transport connects.
+The same setting applies to cloned clients. Create a new client to change the key.
+
+Keys must be nonempty RFC 6750 Bearer tokens of at most 4096 bytes; invalid
+values fail initialization without being echoed. Configuration `Debug` redacts
+the key. Credentials are not part of the shared inference request types.
+Authentication rejections currently surface as `ErrorKind::Transport`.
+Use HTTPS or a trusted local transport when sending credentials.
+
+```rust,ignore
+let mut config = audio2face3d::client::ServerConfig::new(endpoint);
+config.api_key = Some(api_key);
+let client = audio2face3d::client::Client::server(config).await?;
+```

@@ -17,9 +17,12 @@ use tokio::runtime::Handle;
 use tokio_stream::Stream;
 use tonic::transport::{Channel, Endpoint};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServerConfig {
     pub endpoint: String,
+    /// Optional Bearer credential sent on every inference RPC. Debug redacts the value.
+    /// None sends no authorization header; empty or malformed values are rejected.
+    pub api_key: Option<String>,
     /// None selects try_current during initialization; no runtime is created.
     pub runtime: Option<Handle>,
     pub limits: Limits,
@@ -32,6 +35,7 @@ impl ServerConfig {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
+            api_key: None,
             runtime: None,
             limits: Limits::default(),
             connect_timeout: Duration::from_secs(10),
@@ -40,14 +44,48 @@ impl ServerConfig {
         }
     }
 }
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("endpoint", &self.endpoint)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("runtime", &self.runtime)
+            .field("limits", &self.limits)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("max_message_bytes", &self.max_message_bytes)
+            .field("http2_window_bytes", &self.http2_window_bytes)
+            .finish()
+    }
+}
+type Authorization = tonic::metadata::MetadataValue<tonic::metadata::Ascii>;
+fn authorization(key: Option<&str>) -> Result<Option<Authorization>> {
+    let Some(key) = key else { return Ok(None) };
+    let invalid = || Error::invalid("invalid API key format");
+    // RFC 6750 b64token; preserve the credential exactly, without trimming.
+    let body = key.trim_end_matches('=');
+    if key.is_empty()
+        || key.len() > 4096
+        || body.is_empty()
+        || !body
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-._~+/".contains(&c))
+    {
+        return Err(invalid());
+    }
+    let mut value: Authorization = format!("Bearer {key}").parse().map_err(|_| invalid())?;
+    value.set_sensitive(true);
+    Ok(Some(value))
+}
 struct Server {
     handle: Handle,
     channel: Mutex<Option<Channel>>,
+    authorization: Option<Authorization>,
     max_message_bytes: usize,
 }
 impl Client {
-    async fn server_inner(config: ServerConfig) -> Result<Self> {
+    async fn server_inner(mut config: ServerConfig) -> Result<Self> {
         tracing::info!("connecting remote inference client");
+        let authorization = authorization(config.api_key.take().as_deref())?;
         config.limits.validate()?;
         if config.connect_timeout.is_zero()
             || config.max_message_bytes == 0
@@ -84,6 +122,7 @@ impl Client {
                     Arc::new(Server {
                         handle: selected,
                         channel: Mutex::new(Some(channel)),
+                        authorization,
                         max_message_bytes: config.max_message_bytes,
                     }),
                 )
@@ -101,13 +140,14 @@ impl Driver for Server {
             .clone()
             .ok_or_else(|| Error::new(ErrorKind::ShuttingDown, "server client closed"))?;
         let max = self.max_message_bytes;
+        let authorization = self.authorization.clone();
         let (reader, mut writer, mut guard) = session.split();
         guard.runtime_owned();
         self.handle
             .spawn(LogScope::capture().wrap_future(async move {
                 let result = tokio::select! {biased;
                     error=guard.cancelled()=>Err(error),
-                    result=run(channel,max,options,reader,&mut writer)=>result,
+                    result=run(channel,max,authorization,options,reader,&mut writer)=>result,
                 };
                 tracing::debug!(
                     success = result.is_ok(),
@@ -188,6 +228,7 @@ fn protocol(message: &str) -> Error {
 async fn run(
     channel: Channel,
     max: usize,
+    authorization: Option<Authorization>,
     options: RequestOptions,
     reader: Reader,
     writer: &mut Writer,
@@ -203,6 +244,9 @@ async fn run(
         ended: false,
         lease: None,
     });
+    if let Some(value) = authorization {
+        request.metadata_mut().insert("authorization", value);
+    }
     if let Some(timeout) = encoded.timeout {
         request.set_timeout(timeout);
     }
@@ -321,5 +365,25 @@ impl Client {
     ) -> Result<Self> {
         let scope = LogScope::new(context);
         scope.wrap_future(Self::server_inner(config)).await
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    #[test]
+    fn bearer_value_preserves_tokens_and_is_sensitive() {
+        assert!(authorization(None).unwrap().is_none());
+        for key in ["a-._~+/", "abc==", &"a".repeat(4096)] {
+            let value = authorization(Some(key)).unwrap().unwrap();
+            assert_eq!(value.to_str().unwrap(), format!("Bearer {key}"));
+            assert!(value.is_sensitive());
+        }
+        for key in [" a", "a ", "a,b", "a\tb", "=abc", "ab=c"] {
+            assert_eq!(
+                authorization(Some(key)).unwrap_err().kind(),
+                ErrorKind::InvalidInput
+            );
+        }
     }
 }
