@@ -20,6 +20,7 @@ use tracing::Instrument;
 
 pub struct Service<A> {
     scope: LogScope,
+    metrics: Arc<crate::lifecycle::Metrics>,
     config: Config,
     admission: Admission,
     shutdown: CancellationToken,
@@ -34,9 +35,11 @@ impl<A: Authenticator> Service<A> {
         workers: TaskTracker,
         factory: Arc<Factory>,
         gate: Arc<AuthGate<A>>,
+        metrics: Arc<crate::lifecycle::Metrics>,
     ) -> Result<Self, Status> {
         Ok(Self {
             scope: LogScope::capture(),
+            metrics,
             admission: Admission::new(
                 config.max_streams,
                 config.request_queue_capacity,
@@ -60,6 +63,9 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
         'borrow: 'future,
         Self: 'future,
     {
+        self.metrics
+            .inference_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let scope = self.scope.clone();
         let request_context =
             crate::request::RequestContext::new(self.gate.next_id(), request.metadata());
@@ -83,7 +89,7 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                                     RpcMethod::ProcessAudioStream,
                                     &self.shutdown,
                                 )
-                                .await?;
+                                .await.inspect_err(|_| { self.metrics.authentication_rejections.fetch_add(1, std::sync::atomic::Ordering::Relaxed); })?;
                             let mut input = request.into_inner();
                             let permit = self.admission.acquire(&self.shutdown).await?;
                             let permit = Arc::new(permit);
@@ -105,6 +111,8 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                             let stream_cancel = self.shutdown.child_token();
                             let shutdown = stream_cancel.clone();
                             let worker_scope = LogScope::capture();
+                            let metrics = self.metrics.clone();
+                            metrics.inference_workers_started.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             self.workers.spawn(worker_scope.wrap_future(
                 async move {
                     let _permit = permit;
@@ -112,7 +120,7 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                     let result = async {
                         let mut backend = factory.start(&config, &header).await?;
                         let result =
-                            session::run(&mut input, &mut backend, &tx, &config, &shutdown).await;
+                            request_context.run(session::run(&mut input, &mut backend, &tx, &config, &shutdown)).await;
                         let cleanup = backend.close().await;
                         result.and(cleanup)
                     }
@@ -122,12 +130,13 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                     } else {
                         tracing::info!("completed");
                     }
+                    metrics.inference_workers_finished.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = terminal_tx.send(result);
                 }
                 .instrument(span.clone()),
             ));
                             Ok(Response::new(span.in_scope(|| {
-                                ResponseStream::new(rx, terminal_rx, stream_permit, stream_cancel)
+                                ResponseStream::new_with_deadline(rx, terminal_rx, stream_permit, stream_cancel, request_context.deadline)
                             })))
                         })
                         .await

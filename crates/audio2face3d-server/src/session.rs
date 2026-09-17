@@ -28,17 +28,29 @@ pub struct ResponseStream {
     data: mpsc::Receiver<controller::AnimationDataStream>,
     terminal: Option<oneshot::Receiver<Result<(), Status>>>,
     ended: bool,
+    deadline: Option<Pin<Box<tokio::time::Sleep>>>,
     cancel: CancellationToken,
     permit: Option<Arc<Permit>>,
 }
 impl ResponseStream {
+    #[cfg(test)]
     pub fn new(
         data: mpsc::Receiver<controller::AnimationDataStream>,
         terminal: oneshot::Receiver<Result<(), Status>>,
         permit: Arc<Permit>,
         cancel: CancellationToken,
     ) -> Self {
+        Self::new_with_deadline(data, terminal, permit, cancel, None)
+    }
+    pub fn new_with_deadline(
+        data: mpsc::Receiver<controller::AnimationDataStream>,
+        terminal: oneshot::Receiver<Result<(), Status>>,
+        permit: Arc<Permit>,
+        cancel: CancellationToken,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Self {
         Self {
+            deadline: deadline.map(|d| Box::pin(tokio::time::sleep_until(d))),
             scope: audio2face3d::logging::integration::LogScope::capture(),
             data,
             terminal: Some(terminal),
@@ -60,6 +72,19 @@ impl Stream for ResponseStream {
         let _scope = self.scope.activate();
         if self.ended {
             return Poll::Ready(None);
+        }
+        if self
+            .deadline
+            .as_mut()
+            .is_some_and(|deadline| deadline.as_mut().poll(cx).is_ready())
+        {
+            self.ended = true;
+            self.cancel.cancel();
+            self.data.close();
+            self.permit.take();
+            return Poll::Ready(Some(Err(Status::deadline_exceeded(
+                "RPC deadline exceeded",
+            ))));
         }
         if let Some(terminal) = &mut self.terminal
             && let Poll::Ready(result) = Pin::new(terminal).poll(cx)

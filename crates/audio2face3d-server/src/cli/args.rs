@@ -8,9 +8,15 @@ fn default_backend() -> &'static str {
         "mock"
     }
 }
-#[derive(Clone, Debug, Parser)]
+#[derive(Parser)]
 #[command(version, about = "Audio2Face-3D controller gRPC server")]
 pub struct Args {
+    /// Single API key. Overrides AUDIO2FACE3D_API_KEY; neither means no authentication.
+    #[arg(long, value_name = "KEY", allow_hyphen_values = false)]
+    pub api_key: Option<std::ffi::OsString>,
+    /// Health policy: public or same-as-inference.
+    #[arg(long, default_value = "public", value_parser = parse_health_auth)]
+    pub health_auth: audio2face3d_server::HealthAuth,
     #[arg(long, default_value = default_backend())]
     pub backend: BackendKind,
     #[arg(long, default_value = "127.0.0.1:52000")]
@@ -87,5 +93,22 @@ impl Args {
             output_timeout_ms: self.output_timeout_ms,
             shutdown_timeout_ms: self.shutdown_timeout_ms,
         }
+    }
+}
+
+fn parse_health_auth(value: &str) -> Result<audio2face3d_server::HealthAuth, &'static str> {
+    match value {
+        "public" => Ok(audio2face3d_server::HealthAuth::Public),
+        "same-as-inference" => Ok(audio2face3d_server::HealthAuth::SameAsInference),
+        _ => Err("expected public or same-as-inference"),
+    }
+}
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("backend", &self.backend)
+            .field("listen", &self.listen)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .finish_non_exhaustive()
     }
 }

@@ -12,9 +12,10 @@ description = "Audio2Face-3D compatible gRPC server"
 default = ["native"]
 native = ["audio2face3d/native"]
 mock = ["audio2face3d/mock"]
-cli = ["dep:clap", "tokio/signal"]
+cli = ["dep:subtle", "dep:clap", "tokio/signal"]
 
 [dependencies]
+subtle = { version = "2.6.1", optional = true }
 audio2face3d = { version = "0.1.0", path = "../audio2face3d", default-features = false, features = ["grpc-server"] }
 clap = { workspace = true, optional = true }
 tracing.workspace = true
@@ -35,4 +36,6 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dev-dependencies]
+h2 = "0.4.18"
+http = "1.4.0"
 audio2face3d = { path = "../audio2face3d", default-features = false, features = ["client-grpc"] }

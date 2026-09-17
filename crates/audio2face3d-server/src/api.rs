@@ -17,11 +17,13 @@ pub struct ServerBuilder<A = NoAuth> {
     config: Config,
     context: Audio2Face3DContext,
     authenticator: Option<Arc<A>>,
+    health_auth: crate::HealthAuth,
 }
 pub struct Server<A = NoAuth> {
     config: Config,
     context: Audio2Face3DContext,
     authenticator: Option<Arc<A>>,
+    health_auth: crate::HealthAuth,
 }
 impl Server<NoAuth> {
     pub fn builder(config: Config) -> ServerBuilder<NoAuth> {
@@ -29,6 +31,7 @@ impl Server<NoAuth> {
             config,
             context: Audio2Face3DContext::default(),
             authenticator: None,
+            health_auth: crate::HealthAuth::Public,
         }
     }
 }
@@ -37,11 +40,12 @@ impl<A: Authenticator> Server<A> {
         self,
         listener: tokio::net::TcpListener,
         stop: impl Future<Output = ()> + Send,
-    ) -> Result<(), crate::server::ServerError> {
+    ) -> Result<crate::ShutdownReport, crate::server::ServerError> {
         LogScope::new(self.context)
             .wrap_future(crate::server::serve_typed(
                 self.config,
                 self.authenticator,
+                self.health_auth,
                 listener,
                 stop,
             ))
@@ -58,6 +62,7 @@ impl<A: Authenticator> ServerBuilder<A> {
             config: self.config,
             context: self.context,
             authenticator: authenticator.map(Arc::new),
+            health_auth: self.health_auth,
         }
     }
     pub fn without_authentication(self) -> ServerBuilder<NoAuth> {
@@ -65,14 +70,25 @@ impl<A: Authenticator> ServerBuilder<A> {
             config: self.config,
             context: self.context,
             authenticator: None,
+            health_auth: self.health_auth,
         }
     }
+    pub fn health_auth(mut self, policy: crate::HealthAuth) -> Self {
+        self.health_auth = policy;
+        self
+    }
     pub fn build(self) -> Result<Server<A>, ConfigError> {
+        if self.health_auth == crate::HealthAuth::SameAsInference && self.authenticator.is_none() {
+            return Err(ConfigError(
+                "authenticated health requires an authenticator".into(),
+            ));
+        }
         self.config.validate().map_err(ConfigError)?;
         Ok(Server {
             config: self.config,
             context: self.context,
             authenticator: self.authenticator,
+            health_auth: self.health_auth,
         })
     }
 }

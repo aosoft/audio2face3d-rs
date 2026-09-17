@@ -48,7 +48,9 @@ fn end() -> AudioStream {
 struct Running {
     client: A2fControllerServiceClient<Channel>,
     stop: oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    task: tokio::task::JoinHandle<
+        Result<audio2face3d_server::ShutdownReport, audio2face3d_server::ServerError>,
+    >,
     addr: std::net::SocketAddr,
 }
 impl Running {

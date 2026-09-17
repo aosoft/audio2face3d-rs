@@ -1,4 +1,4 @@
-//! Portable mock server for the NVIDIA ACE controller protocol.
+//! Embeddable inference server for the NVIDIA ACE controller protocol.
 mod admission;
 pub mod animation;
 pub mod audio;
@@ -18,3 +18,8 @@ pub use config::Config as ServerConfig;
 pub mod auth;
 
 mod request;
+
+mod health;
+mod lifecycle;
+pub use health::HealthAuth;
+pub use lifecycle::{CleanupCompletion, CleanupStage, ShutdownReport};

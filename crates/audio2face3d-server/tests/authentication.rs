@@ -25,9 +25,15 @@ struct Running {
     address: SocketAddr,
     client: A2fControllerServiceClient<Channel>,
     stop: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<Result<(), ServerError>>,
+    task: tokio::task::JoinHandle<Result<audio2face3d_server::ShutdownReport, ServerError>>,
 }
 async fn start<A: Authenticator>(auth: Option<A>) -> Running {
+    start_policy(auth, audio2face3d_server::HealthAuth::Public).await
+}
+async fn start_policy<A: Authenticator>(
+    auth: Option<A>,
+    policy: audio2face3d_server::HealthAuth,
+) -> Running {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -37,6 +43,7 @@ async fn start<A: Authenticator>(auth: Option<A>) -> Running {
         ..Default::default()
     })
     .authentication(auth)
+    .health_auth(policy)
     .build()
     .unwrap();
     let task = tokio::spawn(server.serve(listener, async {
@@ -55,11 +62,15 @@ async fn start<A: Authenticator>(auth: Option<A>) -> Running {
 impl Running {
     async fn close(self) {
         self.stop.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(3), self.task)
+        let report = tokio::time::timeout(Duration::from_secs(3), self.task)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
+        assert_eq!(
+            report.inference_workers_started,
+            report.inference_workers_finished
+        );
     }
 }
 fn request<S>(stream: S, key: Option<&str>) -> Request<S> {
@@ -291,5 +302,181 @@ async fn slow_verifier_does_not_block_later_authorized_inference() {
     .unwrap();
     release.notify_one();
     pending.await.unwrap();
+    running.close().await;
+}
+
+#[tokio::test]
+async fn deadline_after_headers_and_unconsumed_response_releases_worker() {
+    let mut running = start::<NoAuth>(None).await;
+    let (tx, rx) = tokio::sync::mpsc::channel(2);
+    tx.send(messages().remove(0)).await.unwrap();
+    let mut r = request(tokio_stream::wrappers::ReceiverStream::new(rx), None);
+    r.set_timeout(Duration::from_millis(60));
+    let mut body = running
+        .client
+        .process_audio_stream(r)
+        .await
+        .unwrap()
+        .into_inner();
+    // Do not poll the response until after its deadline.
+    tokio::time::sleep(Duration::from_millis(110)).await;
+    let error = loop {
+        match body.message().await {
+            Err(e) => break e,
+            Ok(Some(_)) => (),
+            Ok(None) => panic!("expired request succeeded"),
+        }
+    };
+    assert_eq!(error.code(), Code::DeadlineExceeded);
+    tokio::time::timeout(Duration::from_secs(1), tx.closed())
+        .await
+        .unwrap();
+    success(&mut running.client, None).await;
+    running.close().await;
+}
+#[tokio::test]
+async fn invalid_zero_and_queued_rpc_deadlines_are_distinct() {
+    let mut running = start::<NoAuth>(None).await;
+    for value in ["1s", "123456789S", "-1S"] {
+        let mut r = request(tokio_stream::pending::<AudioStream>(), None);
+        r.metadata_mut()
+            .insert("grpc-timeout", value.parse().unwrap());
+        let error = running.client.process_audio_stream(r).await.unwrap_err();
+        assert_eq!(
+            error.code(),
+            if value == "0S" {
+                Code::DeadlineExceeded
+            } else {
+                Code::InvalidArgument
+            }
+        );
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tx.send(messages().remove(0)).await.unwrap();
+    let active = running
+        .client
+        .process_audio_stream(tokio_stream::wrappers::ReceiverStream::new(rx))
+        .await
+        .unwrap();
+    assert_eq!(raw_timeout_status(running.address, &["50m"]).await, "4");
+    drop(active);
+    drop(tx);
+    success(&mut running.client, None).await;
+    running.close().await;
+}
+#[tokio::test]
+async fn health_authentication_watch_and_shutdown_share_policy() {
+    use audio2face3d_server::HealthAuth;
+    use tonic_health::pb::{HealthCheckRequest, health_client::HealthClient};
+    assert!(
+        Server::builder(Config {
+            backend: BackendKind::Mock,
+            ..Default::default()
+        })
+        .health_auth(HealthAuth::SameAsInference)
+        .build()
+        .is_err()
+    );
+    for policy in [HealthAuth::Public, HealthAuth::SameAsInference] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let mut running = start_policy(
+            Some(move |r: AuthRequest<'_>| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                if r.api_key.expose() == "accepted" {
+                    Principal::new("test")
+                } else {
+                    Err(AuthError::InvalidCredential)
+                }
+            }),
+            policy,
+        )
+        .await;
+        let channel =
+            tonic::transport::Endpoint::from_shared(format!("http://{}", running.address))
+                .unwrap()
+                .connect()
+                .await
+                .unwrap();
+        let mut health = HealthClient::new(channel);
+        let req = || HealthCheckRequest {
+            service: String::new(),
+        };
+        if policy == HealthAuth::SameAsInference {
+            assert_eq!(
+                health.check(req()).await.unwrap_err().code(),
+                Code::Unauthenticated
+            );
+            assert_eq!(
+                health
+                    .watch(request(req(), Some("wrong")))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                Code::Unauthenticated
+            );
+        } else {
+            assert_eq!(health.check(req()).await.unwrap().into_inner().status, 1);
+        }
+        let key = if policy == HealthAuth::Public {
+            None
+        } else {
+            Some("accepted")
+        };
+        let mut watches = vec![];
+        for _ in 0..66 {
+            let mut watch = health
+                .watch(request(req(), key))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(watch.message().await.unwrap().unwrap().status, 1);
+            watches.push(watch);
+        }
+        // More watches than auth slots: each Watch released its auth permit.
+        success(&mut running.client, Some("accepted")).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            if policy == HealthAuth::Public { 1 } else { 68 }
+        );
+        running.close().await;
+        for mut watch in watches {
+            while watch.message().await.unwrap().is_some() {}
+        }
+    }
+}
+
+async fn raw_timeout_status(address: SocketAddr, values: &[&str]) -> String {
+    let socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    let (mut client, connection) = h2::client::handshake(socket).await.unwrap();
+    let connection = tokio::spawn(connection);
+    let mut request = http::Request::builder().method("POST")
+        .uri(format!("http://{address}/nvidia_ace.services.a2f_controller.v1.A2FControllerService/ProcessAudioStream"))
+        .header("content-type","application/grpc").header("te","trailers");
+    for v in values {
+        request = request.header("grpc-timeout", *v);
+    }
+    let (response, _send) = client
+        .send_request(request.body(()).unwrap(), false)
+        .unwrap();
+    let response = response.await.unwrap();
+    let status = response
+        .headers()
+        .get("grpc-status")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    connection.abort();
+    status
+}
+#[tokio::test]
+async fn raw_http2_zero_deadline_and_duplicate_timeout_return_wire_status() {
+    let running = start::<NoAuth>(None).await;
+    assert_eq!(raw_timeout_status(running.address, &["0S"]).await, "4");
+    assert_eq!(
+        raw_timeout_status(running.address, &["1S", "2S"]).await,
+        "3"
+    );
     running.close().await;
 }

@@ -20,10 +20,18 @@ impl Drop for Reentry {
     }
 }
 pub(super) fn dispatch(context: Audio2Face3DContext) -> tracing::Dispatch {
-    tracing::Dispatch::new(tracing_subscriber::registry().with(Bridge { context }))
+    tracing::Dispatch::new(tracing_subscriber::registry().with(Bridge {
+        context,
+        _registration_guard: tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()),
+    }))
 }
 struct Bridge {
     context: Audio2Face3DContext,
+    // tracing-core uses the current thread to register callsites when only one
+    // dispatcher exists. A scoped subscriber may be absent on that thread. Keep
+    // a second inert registrar alive so interest is computed from all dispatchers.
+    // Neither registrar is installed globally.
+    _registration_guard: tracing::Dispatch,
 }
 fn level(value: &tracing::Level) -> LogLevel {
     match *value {

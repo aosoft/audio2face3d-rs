@@ -140,8 +140,11 @@ version = "0.1.0"
 dependencies = [
  "audio2face3d",
  "clap",
+ "h2",
+ "http",
  "prost",
  "prost-types",
+ "subtle",
  "tokio",
  "tokio-stream",
  "tokio-util",
