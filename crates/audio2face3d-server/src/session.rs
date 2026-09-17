@@ -9,6 +9,7 @@ use crate::{
         status,
     },
 };
+use audio2face3d_inference::admission::Permit;
 use std::sync::Arc;
 use std::{
     future::Future,
@@ -16,7 +17,7 @@ use std::{
     task::{Context, Poll},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::Stream;
 use tokio_util::sync::CancellationToken;
 use tonic::{Status, Streaming};
@@ -27,13 +28,13 @@ pub struct ResponseStream {
     terminal: Option<oneshot::Receiver<Result<(), Status>>>,
     ended: bool,
     cancel: CancellationToken,
-    permit: Option<Arc<OwnedSemaphorePermit>>,
+    permit: Option<Arc<Permit>>,
 }
 impl ResponseStream {
     pub fn new(
         data: mpsc::Receiver<controller::AnimationDataStream>,
         terminal: oneshot::Receiver<Result<(), Status>>,
-        permit: Arc<OwnedSemaphorePermit>,
+        permit: Arc<Permit>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -115,7 +116,7 @@ async fn send(
 
 pub async fn run(
     input: &mut Streaming<controller::AudioStream>,
-    backend: &mut dyn Backend,
+    backend: &mut Backend,
     tx: &mpsc::Sender<controller::AnimationDataStream>,
     config: &Config,
     shutdown: &CancellationToken,
@@ -138,11 +139,11 @@ pub async fn run(
         };
         let finished = match message.stream_part {
             Some(Input::AudioWithEmotion(audio)) => {
-                backend.push(audio)?;
+                backend.push(audio).await?;
                 false
             }
             Some(Input::EndOfAudio(_)) => {
-                backend.finish()?;
+                backend.finish().await?;
                 true
             }
             Some(Input::AudioStreamHeader(_)) => {
@@ -183,14 +184,14 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use audio2face3d_inference::{Cancellation, admission::Admission};
     use clap::Parser;
-    use tokio::sync::Semaphore;
     use tokio_stream::StreamExt;
 
     #[tokio::test]
     async fn dropping_response_cancels_but_keeps_worker_permit() {
-        let slots = Arc::new(Semaphore::new(1));
-        let worker = Arc::new(slots.clone().acquire_owned().await.unwrap());
+        let slots = Admission::new(1, 1, std::time::Duration::ZERO).unwrap();
+        let worker = Arc::new(slots.acquire(&Cancellation::new()).await.unwrap());
         let cancel = CancellationToken::new();
         let (_tx, rx) = mpsc::channel(1);
         let (_terminal, terminal_rx) = oneshot::channel();
@@ -206,8 +207,8 @@ mod tests {
     async fn full_queue_times_out_and_error_bypasses_queued_data() {
         let config = Config::parse_from(["test", "--output-timeout-ms", "20"]);
         let shutdown = CancellationToken::new();
-        let slots = Arc::new(Semaphore::new(1));
-        let permit = Arc::new(slots.clone().acquire_owned().await.unwrap());
+        let slots = Admission::new(1, 1, std::time::Duration::ZERO).unwrap();
+        let permit = Arc::new(slots.acquire(&Cancellation::new()).await.unwrap());
         let (tx, rx) = mpsc::channel(1);
         let (terminal_tx, terminal_rx) = oneshot::channel();
         let mut stream = ResponseStream::new(rx, terminal_rx, permit, CancellationToken::new());
@@ -232,8 +233,8 @@ mod tests {
 
     #[tokio::test]
     async fn success_drains_queued_output_before_releasing_slot() {
-        let slots = Arc::new(Semaphore::new(1));
-        let permit = Arc::new(slots.clone().acquire_owned().await.unwrap());
+        let slots = Admission::new(1, 1, std::time::Duration::ZERO).unwrap();
+        let permit = Arc::new(slots.acquire(&Cancellation::new()).await.unwrap());
         let (tx, rx) = mpsc::channel(1);
         let (terminal_tx, terminal_rx) = oneshot::channel();
         let mut stream = ResponseStream::new(rx, terminal_rx, permit, CancellationToken::new());

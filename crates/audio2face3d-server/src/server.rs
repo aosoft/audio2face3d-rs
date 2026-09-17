@@ -29,8 +29,8 @@ pub async fn serve(
         config.clone(),
         shutdown.clone(),
         workers.clone(),
-        factory,
-    ))
+        factory.clone(),
+    )?)
     .max_decoding_message_size(config.max_message_bytes)
     .max_encoding_message_size(config.max_message_bytes);
     let cancel = shutdown.clone();
@@ -66,5 +66,6 @@ pub async fn serve(
         workers.wait(),
     )
     .await?;
+    factory.release_prepared().await?;
     outcome
 }

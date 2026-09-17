@@ -2,7 +2,7 @@
 
 Generate facial animation from audio through the ACE
 `A2FControllerService/ProcessAudioStream` bidirectional RPC. The server uses
-this workspace's Rust Audio2Face-3D runtime for Regression inference and the
+the workspace's [shared inference layer](../audio2face3d-inference/README.md) for Regression inference and the
 host BlendShape solver, returning 52 face curves together with audio.
 Audio2Emotion classifier inference is optional.
 
@@ -106,7 +106,7 @@ the supplied PCM. Existing presets remain available through `--mock-pattern`:
 `jaw-open-pulse`, `eye-blink-left`, `eye-blink-right`, `mouth-smile-left`,
 `mouth-smile-right`.
 
-Select any of the [52 case-sensitive ACE names](src/animation.rs) with
+Select any of the [52 case-sensitive ACE names](../audio2face3d-inference/src/animation.rs) with
 `--mock-curve`. It overrides the preset's curve selection. Add `--mock-value`
 to hold that curve at a finite weight in [0, 1] while audio is streamed;
 without it, the selected curve pulses. Other weights are zero unless a jaw baseline is specified.
@@ -151,6 +151,9 @@ tongue output and model pooling are not implemented by this server. It emits
 52 face curves, not the additional tongue curves or head rotation channels.
 Long-running production stability and perceptual lip-sync quality are not
 established by the short integration tests.
+
+Inference, resampling and FIFO admission use the shared inference crate. Native
+work runs on standard control workers; gRPC transport remains on Tokio.
 
 The NVIDIA protocol definitions are maintained in
 [audio2face3d-protocol](../audio2face3d-protocol/README.md). They retain their

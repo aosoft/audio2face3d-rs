@@ -1,13 +1,5 @@
-//! Per-RPC sparse input timeline and A2E -> A2F dependency ordering.
-use crate::{
-    config::Config,
-    proto::{
-        controller::AudioStreamHeader,
-        nvidia_ace::{
-            emotion_aggregate::v1::EmotionAggregate, emotion_with_timecode::v1::EmotionWithTimeCode,
-        },
-    },
-};
+//! Sparse input timeline and A2E -> A2F dependency ordering, without wire metadata.
+use crate::{config::Config, worker::wait};
 use audio2face3d::{
     Model, ModelKind, ModelParameters,
     audio2emotion::{
@@ -21,19 +13,17 @@ use audio2face3d::{
     audio2x::{AudioAccumulator, EmotionAccumulator, ExecutionState, FrameRate},
     common::NetworkDocument,
 };
-use prost::Message;
-use std::{
-    collections::{BTreeMap, HashMap},
-    ops::ControlFlow,
-    sync::Arc,
+use audio2face3d_types::{
+    EmotionKeyframe, EmotionTrace, EmotionValues, MediaTime, RequestOptions, SamplePosition,
 };
-use tonic::Status;
+use audio2face3d_types::{Error, ErrorKind};
+use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
-fn internal(e: impl std::fmt::Display) -> Status {
-    Status::internal(format!("emotion backend: {e}"))
+fn internal(e: impl std::fmt::Display) -> Error {
+    Error::new(ErrorKind::Inference, format!("emotion backend: {e}"))
 }
-fn invalid(e: impl Into<String>) -> Status {
-    Status::invalid_argument(e.into())
+fn invalid(e: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidInput, e.into())
 }
 const NAMES: [&str; 10] = [
     "amazement",
@@ -76,12 +66,11 @@ pub struct Stage {
 impl Stage {
     pub fn load(
         config: &Config,
-        header: &AudioStreamHeader,
+        header: &RequestOptions,
         names: &[String],
         defaults: &[f32],
         output: Arc<EmotionAccumulator>,
-        handle: &tokio::runtime::Handle,
-    ) -> Result<Self, Status> {
+    ) -> Result<Self, Error> {
         if names.iter().map(String::as_str).collect::<Vec<_>>() != NAMES {
             return Err(invalid("unsupported model emotion ordering"));
         }
@@ -115,42 +104,42 @@ impl Stage {
             };
             classifier_model = Some(model);
         }
-        if let Some(p) = &header.emotion_params {
-            if let Some(v) = p.live_transition_time {
+        if let Some(p) = &header.emotion {
+            if let Some(v) = p.transition_time {
                 if !v.is_finite() || v <= 0.0 {
                     return Err(invalid("live_transition_time must be positive and finite"));
                 }
                 params.live_transition_time = v;
             }
-            if !p.beginning_emotion.is_empty() {
-                params.beginning_emotion = values(&p.beginning_emotion)?;
+            if !p.beginning.is_empty() {
+                params.beginning_emotion = values(&p.beginning)?;
             }
         }
-        if let Some(p) = &header.emotion_post_processing_params {
+        if let Some(p) = &header.emotion_post_processing {
             for (v, lo, hi, name, target) in [
                 (
-                    p.emotion_contrast,
+                    p.contrast,
                     0.3,
                     3.0,
                     "emotion_contrast",
                     &mut params.emotion_contrast,
                 ),
                 (
-                    p.live_blend_coef,
+                    p.smoothing,
                     0.0,
                     1.0,
                     "live_blend_coef",
                     &mut params.live_blend_coefficient,
                 ),
                 (
-                    p.preferred_emotion_strength,
+                    p.preferred_strength,
                     0.0,
                     1.0,
                     "preferred_emotion_strength",
                     &mut params.preferred_emotion_strength,
                 ),
                 (
-                    p.emotion_strength,
+                    p.strength,
                     0.0,
                     1.0,
                     "emotion_strength",
@@ -164,7 +153,7 @@ impl Stage {
                     *target = v;
                 }
             }
-            if let Some(v) = p.enable_preferred_emotion {
+            if let Some(v) = p.use_preferred {
                 params.enable_preferred_emotion = v;
             }
             if let Some(v) = p.max_emotions {
@@ -208,29 +197,28 @@ impl Stage {
                     .collect::<Result<Vec<_>, _>>()?,
             };
             Some(
-                handle
-                    .block_on(ClassifierEmotionExecutorFactory::load(
-                        ClassifierEmotionExecutorCreationParameters {
-                            model_path: config.emotion_model.clone().unwrap(),
-                            common: EmotionExecutorCreationParameters {
-                                tracks: vec![EmotionTrackResources {
-                                    audio: audio.clone(),
-                                }],
-                                device_ordinal: config.device as i32,
-                            },
-                            input_strength: 1.0,
-                            buffer_length: 60_000,
-                            frame_rate: FrameRate::new(30, 1).map_err(internal)?,
-                            inferences_to_skip: 0,
-                            post_process_data: data,
-                            post_process_params: params,
-                            preferred_emotions: vec![preferred.clone()],
+                wait(ClassifierEmotionExecutorFactory::load(
+                    ClassifierEmotionExecutorCreationParameters {
+                        model_path: config.emotion_model.clone().unwrap(),
+                        common: EmotionExecutorCreationParameters {
+                            tracks: vec![EmotionTrackResources {
+                                audio: audio.clone(),
+                            }],
+                            device_ordinal: config.device as i32,
                         },
-                    ))
-                    .map_err(internal)?,
+                        input_strength: 1.0,
+                        buffer_length: 60_000,
+                        frame_rate: FrameRate::new(30, 1).map_err(internal)?,
+                        inferences_to_skip: 0,
+                        post_process_data: data,
+                        post_process_params: params,
+                        preferred_emotions: vec![preferred.clone()],
+                    },
+                ))
+                .map_err(internal)?,
             )
         } else {
-            if header.emotion_post_processing_params.is_some() {
+            if header.emotion_post_processing.is_some() {
                 tracing::warn!(
                     "A2E mixing parameters require --emotion-model; direct input emotion mode"
                 );
@@ -257,24 +245,30 @@ impl Stage {
             max_time: f64::from(config.max_audio_seconds),
         })
     }
-    pub fn push_keys(&mut self, keys: Vec<EmotionWithTimeCode>) -> Result<(), Status> {
+    pub fn push_keys(&mut self, keys: Vec<EmotionKeyframe>) -> Result<(), Error> {
         for key in keys {
-            if !key.time_code.is_finite() || key.time_code < 0.0 || key.time_code > self.max_time {
+            if !key.time().as_seconds().is_finite()
+                || key.time().as_seconds() < 0.0
+                || key.time().as_seconds() > self.max_time
+            {
                 return Err(invalid("emotion time_code outside clip limit"));
             }
-            let time = (key.time_code * 16000.0).round() as i64;
+            let time = (key.time().as_seconds() * 16000.0).round() as i64;
             if time <= self.last_input {
                 return Err(invalid("emotion key targets an already consumed time"));
             }
-            let value = values(&key.emotion)?;
+            let value = values(key.values())?;
             if !self.keys.contains_key(&time) && self.keys.len() >= 4096 {
-                return Err(Status::resource_exhausted("emotion key limit exceeded"));
+                return Err(Error::new(
+                    ErrorKind::LimitExceeded,
+                    "emotion key limit exceeded",
+                ));
             }
             self.keys.insert(time, value);
         }
         Ok(())
     }
-    pub fn feed(&mut self, samples: &[f32]) -> Result<(), Status> {
+    pub fn feed(&mut self, samples: &[f32]) -> Result<(), Error> {
         self.fed += samples.len() as u64;
         if self.classifier.is_some() {
             self.audio.accumulate(samples).map_err(internal)?;
@@ -300,12 +294,13 @@ impl Stage {
         }
         Ok(())
     }
-    fn record(&mut self, time: i64, mixed: Vec<f32>) -> Result<(), Status> {
+    fn record(&mut self, time: i64, mixed: Vec<f32>) -> Result<(), Error> {
         if mixed.len() != self.names.len() || mixed.iter().any(|v| !v.is_finite()) {
             return Err(internal("invalid emotion result"));
         }
         if self.records.len() >= 256 {
-            return Err(Status::resource_exhausted(
+            return Err(Error::new(
+                ErrorKind::LimitExceeded,
                 "emotion result queue exceeds 256 frames",
             ));
         }
@@ -336,7 +331,7 @@ impl Stage {
         );
         Ok(())
     }
-    pub fn finish(&mut self) -> Result<(), Status> {
+    pub fn finish(&mut self) -> Result<(), Error> {
         if self.classifier.is_some() {
             self.audio.close().map_err(internal)?;
             self.preferred.close().map_err(internal)?;
@@ -346,7 +341,7 @@ impl Stage {
         }
         Ok(())
     }
-    pub fn tick(&mut self, handle: &tokio::runtime::Handle) -> Result<(), Status> {
+    pub fn tick(&mut self) -> Result<(), Error> {
         if self.complete || self.classifier.is_none() {
             return Ok(());
         }
@@ -367,7 +362,7 @@ impl Stage {
                 ControlFlow::Continue(())
             })
             .map_err(internal)?;
-        let report = handle.block_on(execution.wait_all()).map_err(internal)?;
+        let report = wait(execution.wait_all()).map_err(internal)?;
         if let Some(error) = error {
             return Err(error);
         }
@@ -392,7 +387,7 @@ impl Stage {
     pub fn is_complete(&self) -> bool {
         self.complete
     }
-    pub fn metadata(&mut self, time: i64) -> Result<HashMap<String, prost_types::Any>, Status> {
+    pub fn metadata(&mut self, time: i64) -> Result<EmotionTrace, Error> {
         let Some(EmotionRecord {
             input,
             mixed,
@@ -402,30 +397,22 @@ impl Stage {
             return Err(internal(format!("missing emotion metadata at {time}")));
         };
         self.output.drop_before(time).map_err(internal)?;
-        let message = |v: Vec<f32>| EmotionWithTimeCode {
-            time_code: time as f64 / 16000.0,
-            emotion: self.names.iter().cloned().zip(v).collect(),
+        let timestamp = MediaTime::from_samples(SamplePosition(time as u64), 16000)?;
+        let message = |v: Vec<f32>| {
+            EmotionKeyframe::new(timestamp, self.names.iter().cloned().zip(v).collect())
         };
-        let aggregate = EmotionAggregate {
-            input_emotions: vec![message(input)],
-            a2e_output: if self.classifier.is_some() {
-                vec![message(mixed)]
+        Ok(EmotionTrace {
+            input: vec![message(input)?],
+            mixed: if self.classifier.is_some() {
+                vec![message(mixed)?]
             } else {
                 vec![]
             },
-            a2f_smoothed_output: vec![message(smooth)],
-        };
-        Ok(HashMap::from([(
-            "emotion_aggregate".into(),
-            prost_types::Any {
-                type_url: "type.googleapis.com/nvidia_ace.emotion_aggregate.v1.EmotionAggregate"
-                    .into(),
-                value: aggregate.encode_to_vec(),
-            },
-        )]))
+            smoothed: vec![message(smooth)?],
+        })
     }
 }
-fn values(map: &HashMap<String, f32>) -> Result<Vec<f32>, Status> {
+fn values(map: &EmotionValues) -> Result<Vec<f32>, Error> {
     let mut result = vec![0.0; NAMES.len()];
     for (name, &value) in map {
         let index = NAMES
@@ -443,23 +430,24 @@ fn values(map: &HashMap<String, f32>) -> Result<Vec<f32>, Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
-    #[tokio::test]
-    async fn future_and_duplicate_keys_do_not_close_or_rewrite_consumed_time() {
+    #[test]
+    fn future_and_duplicate_keys_do_not_close_or_rewrite_consumed_time() {
         let output = Arc::new(EmotionAccumulator::new(10, 30).unwrap());
         let names = NAMES.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         let mut stage = Stage::load(
-            &Config::parse_from(["test"]),
-            &AudioStreamHeader::default(),
+            &Config::default(),
+            &RequestOptions::default(),
             &names,
             &[0.0; 10],
             output.clone(),
-            &tokio::runtime::Handle::current(),
         )
         .unwrap();
-        let key = |time, value| EmotionWithTimeCode {
-            time_code: time,
-            emotion: HashMap::from([("joy".into(), value)]),
+        let key = |time, value| {
+            EmotionKeyframe::new(
+                MediaTime::from_seconds(time).unwrap(),
+                BTreeMap::from([("joy".into(), value)]),
+            )
+            .unwrap()
         };
         stage
             .push_keys(vec![key(1.0, 0.3), key(0.0, 0.5), key(1.0, 0.8)])

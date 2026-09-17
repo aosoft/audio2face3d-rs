@@ -137,6 +137,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "audio2face3d-inference"
+version = "0.1.0"
+dependencies = [
+ "audio2face3d",
+ "audio2face3d-types",
+ "tracing",
+]
+
+[[package]]
 name = "audio2face3d-protocol"
 version = "0.1.0"
 dependencies = [
@@ -153,8 +162,9 @@ dependencies = [
 name = "audio2face3d-server"
 version = "0.1.0"
 dependencies = [
- "audio2face3d",
+ "audio2face3d-inference",
  "audio2face3d-protocol",
+ "audio2face3d-types",
  "clap",
  "prost",
  "prost-types",

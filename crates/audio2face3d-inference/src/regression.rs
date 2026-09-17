@@ -1,13 +1,10 @@
-//! Regression + host BlendShape adapter. CUDA work stays on blocking workers.
-use super::Backend;
+//! Regression + host BlendShape adapter, owned by an independent control worker.
 use crate::{
+    Backend, Cancellation, EngineFuture,
     animation::CURVE_NAMES,
     audio::SAMPLE_RATE,
     config::Config,
-    proto::{
-        a2f::AudioWithEmotion,
-        animation::{AnimationData, AudioWithTimeCode, FloatArrayWithTimeCode, SkelAnimation},
-    },
+    worker::{Worker, wait},
 };
 use audio2face3d::{
     Model, ModelKind, ModelParameters,
@@ -27,14 +24,15 @@ use audio2face3d::{
         GeometryAudioParameters, GeometryParameters, NetworkDocument, load_blendshape_config,
     },
 };
+use audio2face3d_types::{Error, ErrorKind};
+use audio2face3d_types::{InputChunk, OutputBatch, RequestOptions};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
 };
-use tonic::Status;
 
-fn internal(error: impl std::fmt::Display) -> Status {
-    Status::internal(format!("regression backend: {error}"))
+fn internal(error: impl std::fmt::Display) -> Error {
+    Error::new(ErrorKind::Inference, format!("regression backend: {error}"))
 }
 
 pub struct Runtime {
@@ -44,32 +42,16 @@ pub struct Runtime {
     emotion: super::emotion::Stage,
 }
 
-pub async fn load(config: Config) -> Result<Runtime, Status> {
-    load_with_header(config, Default::default()).await
-}
-pub async fn load_with_header(
-    config: Config,
-    header: crate::proto::controller::AudioStreamHeader,
-) -> Result<Runtime, Status> {
-    let handle = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || load_sync(&config, &header, &handle))
-        .await
-        .map_err(internal)?
-}
-
-fn load_sync(
-    config: &Config,
-    header: &crate::proto::controller::AudioStreamHeader,
-    handle: &tokio::runtime::Handle,
-) -> Result<Runtime, Status> {
+fn load_sync(config: &Config, header: &RequestOptions) -> Result<Runtime, Error> {
     let loaded_at = std::time::Instant::now();
     let path = config
         .model
         .as_ref()
-        .ok_or_else(|| Status::invalid_argument("--model is required"))?;
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "--model is required"))?;
     let model = Model::load(path).map_err(internal)?;
     if model.kind() != ModelKind::Regression || model.sample_rate() != SAMPLE_RATE as usize {
-        return Err(Status::invalid_argument(
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
             "expected a 16000 Hz regression model",
         ));
     }
@@ -98,29 +80,28 @@ fn load_sync(
         &parameters.explicit_emotions,
         &parameters.default_emotion,
         emotions.clone(),
-        handle,
     )?;
-    let bundle = handle
-        .block_on(RegressionGeometryExecutorFactory::load_with_config(
-            RegressionGeometryExecutorCreationParameters {
-                model_path: path.clone(),
-                common: GeometryExecutorCreationParameters {
-                    tracks: vec![GeometryTrackResources { audio, emotions }],
-                    device_ordinal: i32::try_from(config.device)
-                        .map_err(|_| Status::invalid_argument("device ordinal is out of range"))?,
-                    execution_option: GeometryExecutionOption::SKIN,
-                },
-                input_strength: geometry_config.input_strength,
-                frame_rate: FrameRate::new(30, 1).map_err(internal)?,
-                source_emotion_shot: geometry_config.source_shot.clone(),
-                source_emotion_frame: geometry_config
-                    .source_frame
-                    .and_then(|v| usize::try_from(v).ok())
-                    .unwrap_or(0),
+    let bundle = wait(RegressionGeometryExecutorFactory::load_with_config(
+        RegressionGeometryExecutorCreationParameters {
+            model_path: path.clone(),
+            common: GeometryExecutorCreationParameters {
+                tracks: vec![GeometryTrackResources { audio, emotions }],
+                device_ordinal: i32::try_from(config.device).map_err(|_| {
+                    Error::new(ErrorKind::InvalidInput, "device ordinal is out of range")
+                })?,
+                execution_option: GeometryExecutionOption::SKIN,
             },
-            geometry_config,
-        ))
-        .map_err(internal)?;
+            input_strength: geometry_config.input_strength,
+            frame_rate: FrameRate::new(30, 1).map_err(internal)?,
+            source_emotion_shot: geometry_config.source_shot.clone(),
+            source_emotion_frame: geometry_config
+                .source_frame
+                .and_then(|v| usize::try_from(v).ok())
+                .unwrap_or(0),
+        },
+        geometry_config,
+    ))
+    .map_err(internal)?;
     let paths = model.blendshape_paths(0).map_err(internal)?;
     let skin_paths = paths
         .get("skin")
@@ -202,10 +183,10 @@ struct Tick {
 }
 
 impl Runtime {
-    fn tick(&mut self, handle: &tokio::runtime::Handle) -> Result<Tick, Status> {
+    fn tick(&mut self) -> Result<Tick, Error> {
         // Input is fed in 534-sample increments, so a normal tick schedules at
         // most a few frames; closing adds only the model's lookahead tail.
-        self.emotion.tick(handle)?;
+        self.emotion.tick()?;
         let captured = Arc::new(Mutex::new(Ok(Vec::new())));
         let output = captured.clone();
         let execution = self
@@ -228,7 +209,7 @@ impl Runtime {
             .map_err(internal)?;
         // Do not select cancellation against wait_all: dropping Execution does
         // not cancel GPU/CPU jobs or their borrowed resources.
-        let report = handle.block_on(execution.wait_all()).map_err(internal)?;
+        let report = wait(execution.wait_all()).map_err(internal)?;
         let mut frames = captured
             .lock()
             .map_err(internal)?
@@ -252,7 +233,7 @@ impl Runtime {
     }
 }
 
-pub struct RegressionBackend {
+pub struct RegressionState {
     runtime: Option<Runtime>,
     pcm: VecDeque<u8>,
     pending: VecDeque<CapturedFrame>,
@@ -266,7 +247,7 @@ pub struct RegressionBackend {
     max_samples: u64,
 }
 
-impl RegressionBackend {
+impl RegressionState {
     pub fn new(runtime: Runtime, config: &Config) -> Self {
         Self {
             runtime: Some(runtime),
@@ -283,7 +264,7 @@ impl RegressionBackend {
         }
     }
 
-    fn output(&mut self, frame: CapturedFrame) -> Result<Option<AnimationData>, Status> {
+    fn output(&mut self, frame: CapturedFrame) -> Result<Option<OutputBatch>, Error> {
         let m = frame.metadata;
         if m.track_index != 0
             || m.frame_index != self.next_index
@@ -332,54 +313,44 @@ impl RegressionBackend {
             .metadata(start as i64)?;
         let pcm = self.pcm.drain(..bytes).collect();
         self.emitted = end;
-        let time_code = start as f64 / SAMPLE_RATE as f64;
-        Ok(Some(AnimationData {
-            metadata,
-            skel_animation: Some(SkelAnimation {
-                blend_shape_weights: vec![FloatArrayWithTimeCode {
-                    time_code,
-                    values: weights,
-                }],
-                ..Default::default()
-            }),
-            audio: Some(AudioWithTimeCode {
-                time_code,
-                audio_buffer: pcm,
-            }),
-            ..Default::default()
-        }))
+        let mut batch = crate::animation::frame(start, pcm, weights)?;
+        batch.emotion = Some(metadata);
+        Ok(Some(batch))
     }
 }
 
-#[tonic::async_trait]
-impl Backend for RegressionBackend {
-    fn push(&mut self, input: AudioWithEmotion) -> Result<(), Status> {
-        if !input.audio_buffer.len().is_multiple_of(2) {
-            return Err(Status::invalid_argument(
+impl RegressionState {
+    fn push(&mut self, input: InputChunk) -> Result<(), Error> {
+        let (pcm, emotions) = input.into_parts();
+        let audio_buffer = pcm.into_vec();
+        if !audio_buffer.len().is_multiple_of(2) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
                 "PCM chunk must contain whole 16-bit samples",
             ));
         }
-        let total = self.received + (input.audio_buffer.len() / 2) as u64;
+        let total = self.received + (audio_buffer.len() / 2) as u64;
         if total > self.max_samples {
-            return Err(Status::resource_exhausted("audio duration limit exceeded"));
+            return Err(Error::new(
+                ErrorKind::LimitExceeded,
+                "audio duration limit exceeded",
+            ));
         }
         self.runtime
             .as_mut()
             .ok_or_else(|| internal("runtime unavailable"))?
             .emotion
-            .push_keys(input.emotions)?;
+            .push_keys(emotions)?;
         self.received = total;
-        self.pcm.extend(input.audio_buffer);
+        self.pcm.extend(audio_buffer);
         Ok(())
     }
 
-    async fn next_frame(
-        &mut self,
-        cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Option<AnimationData>, Status> {
+    fn next_frame(&mut self, cancel: &Cancellation) -> Result<Option<OutputBatch>, Error> {
         loop {
             if cancel.is_cancelled() {
-                return Err(Status::cancelled(
+                return Err(Error::new(
+                    ErrorKind::Cancelled,
                     "inference cancelled after draining started jobs",
                 ));
             }
@@ -444,13 +415,7 @@ impl Backend for RegressionBackend {
                 self.runtime = Some(runtime);
                 return Ok(None);
             }
-            let handle = tokio::runtime::Handle::current();
-            let (runtime, result) = tokio::task::spawn_blocking(move || {
-                let result = runtime.tick(&handle);
-                (runtime, result)
-            })
-            .await
-            .map_err(internal)?;
+            let result = runtime.tick();
             self.runtime = Some(runtime);
             let tick = result?;
             self.complete = tick.state == ExecutionState::Complete;
@@ -471,9 +436,10 @@ impl Backend for RegressionBackend {
         }
     }
 
-    fn finish(&mut self) -> Result<(), Status> {
+    fn finish(&mut self) -> Result<(), Error> {
         if self.received == 0 {
-            return Err(Status::invalid_argument(
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
                 "audio clip must contain at least one sample",
             ));
         }
@@ -481,18 +447,48 @@ impl Backend for RegressionBackend {
         Ok(())
     }
 
-    async fn close(&mut self) -> Result<(), Status> {
+    fn close(&mut self) -> Result<(), Error> {
         self.pending.clear();
         self.pcm.clear();
         if let Some(runtime) = self.runtime.take() {
             // The native destructor also drains jobs when execute itself failed.
-            tokio::task::spawn_blocking(move || drop(runtime))
-                .await
-                .map_err(internal)?;
+            drop(runtime);
         }
         Ok(())
     }
+}
 
+/// The handle never owns native state: abandonment still cleans up on the worker.
+pub struct RegressionBackend {
+    worker: Worker<RegressionState>,
+}
+impl RegressionBackend {
+    pub async fn load(config: Config, options: RequestOptions) -> Result<Self, Error> {
+        let worker = Worker::start(move || {
+            let runtime = load_sync(&config, &options)?;
+            Ok(RegressionState::new(runtime, &config))
+        })
+        .await?;
+        Ok(Self { worker })
+    }
+}
+impl Backend for RegressionBackend {
+    fn push(&mut self, input: InputChunk) -> EngineFuture<'_, ()> {
+        Box::pin(self.worker.call(move |state| state.push(input)))
+    }
+    fn next_frame<'a>(
+        &'a mut self,
+        cancel: &'a Cancellation,
+    ) -> EngineFuture<'a, Option<OutputBatch>> {
+        let cancel = cancel.clone();
+        Box::pin(self.worker.call(move |state| state.next_frame(&cancel)))
+    }
+    fn finish(&mut self) -> EngineFuture<'_, ()> {
+        Box::pin(self.worker.call(RegressionState::finish))
+    }
+    fn close(&mut self) -> EngineFuture<'_, ()> {
+        Box::pin(self.worker.call(RegressionState::close))
+    }
     fn success_message(&self) -> &'static str {
         "Regression audio processing completed successfully."
     }

@@ -10,11 +10,12 @@ description = "Audio2Face-3D compatible gRPC server"
 
 [features]
 default = []
-runtime = ["dep:audio2face3d", "audio2face3d/animation", "audio2face3d/emotion", "audio2face3d/tensorrt"]
+runtime = ["audio2face3d-inference/runtime"]
 
 [dependencies]
 audio2face3d-protocol = { path = "../audio2face3d-protocol", features = ["client", "server"] }
-audio2face3d = { workspace = true, optional = true }
+audio2face3d-inference = { path = "../audio2face3d-inference" }
+audio2face3d-types = { path = "../audio2face3d-types" }
 clap.workspace = true
 tracing.workspace = true
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net"] }

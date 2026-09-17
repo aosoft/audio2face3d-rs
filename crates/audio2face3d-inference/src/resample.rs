@@ -1,10 +1,5 @@
-//! Streaming, band-limited PCM conversion with a bounded FIR history.
-use super::Backend;
-use crate::proto::{a2f::AudioWithEmotion, animation::AnimationData};
+use audio2face3d_types::{Error, ErrorKind};
 use std::collections::VecDeque;
-use tokio_util::sync::CancellationToken;
-use tonic::Status;
-
 const RADIUS: i64 = 32;
 
 pub struct Resampler {
@@ -26,15 +21,19 @@ impl Resampler {
             limit: u64::from(rate) * u64::from(seconds),
         }
     }
-    pub fn push(&mut self, pcm: &[u8]) -> Result<Vec<u8>, Status> {
+    pub fn push(&mut self, pcm: &[u8]) -> Result<Vec<u8>, Error> {
         if !pcm.len().is_multiple_of(2) {
-            return Err(Status::invalid_argument(
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
                 "PCM chunk must contain whole 16-bit samples",
             ));
         }
         let count = (pcm.len() / 2) as u64;
         if count > self.limit - self.received {
-            return Err(Status::resource_exhausted("audio duration limit exceeded"));
+            return Err(Error::new(
+                ErrorKind::LimitExceeded,
+                "audio duration limit exceeded",
+            ));
         }
         self.received += count;
         if self.rate == 16_000 {
@@ -91,48 +90,6 @@ impl Resampler {
             self.base += drop as u64;
         }
         pcm
-    }
-}
-
-pub struct ResamplingBackend {
-    inner: Box<dyn Backend>,
-    resampler: Resampler,
-}
-impl ResamplingBackend {
-    pub fn new(inner: Box<dyn Backend>, rate: u32, seconds: u32) -> Self {
-        Self {
-            inner,
-            resampler: Resampler::new(rate, seconds),
-        }
-    }
-}
-#[tonic::async_trait]
-impl Backend for ResamplingBackend {
-    fn push(&mut self, mut input: AudioWithEmotion) -> Result<(), Status> {
-        input.audio_buffer = self.resampler.push(&input.audio_buffer)?;
-        self.inner.push(input)
-    }
-    async fn next_frame(
-        &mut self,
-        cancel: &CancellationToken,
-    ) -> Result<Option<AnimationData>, Status> {
-        self.inner.next_frame(cancel).await
-    }
-    fn finish(&mut self) -> Result<(), Status> {
-        let tail = self.resampler.finish();
-        if !tail.is_empty() {
-            self.inner.push(AudioWithEmotion {
-                audio_buffer: tail,
-                emotions: vec![],
-            })?;
-        }
-        self.inner.finish()
-    }
-    async fn close(&mut self) -> Result<(), Status> {
-        self.inner.close().await
-    }
-    fn success_message(&self) -> &'static str {
-        self.inner.success_message()
     }
 }
 

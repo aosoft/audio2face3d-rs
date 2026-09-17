@@ -137,3 +137,15 @@ fn parse_mock_value(value: &str) -> Result<f32, String> {
     }
     Ok(value)
 }
+
+impl From<MockPattern> for audio2face3d_inference::MockPattern {
+    fn from(pattern: MockPattern) -> Self {
+        match pattern {
+            MockPattern::JawOpenPulse => Self::JawOpenPulse,
+            MockPattern::EyeBlinkLeft => Self::EyeBlinkLeft,
+            MockPattern::EyeBlinkRight => Self::EyeBlinkRight,
+            MockPattern::MouthSmileLeft => Self::MouthSmileLeft,
+            MockPattern::MouthSmileRight => Self::MouthSmileRight,
+        }
+    }
+}

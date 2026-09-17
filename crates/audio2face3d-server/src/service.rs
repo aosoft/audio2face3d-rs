@@ -33,19 +33,19 @@ impl Service {
         shutdown: CancellationToken,
         workers: TaskTracker,
         factory: Arc<Factory>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Status> {
+        Ok(Self {
             admission: Admission::new(
                 config.max_streams,
                 config.request_queue_capacity,
                 std::time::Duration::from_millis(config.request_queue_timeout_ms),
-            ),
+            )?,
             config,
             shutdown,
             workers,
             next_id: AtomicU64::new(1),
             factory,
-        }
+        })
     }
 }
 impl A2fControllerService for Service {
@@ -86,16 +86,9 @@ impl A2fControllerService for Service {
                     let _permit = permit;
                     tracing::info!("started");
                     let result = async {
-                        let inner = factory.start(&config, &header).await?;
-                        let mut backend: Box<dyn crate::backend::Backend> =
-                            Box::new(crate::backend::resample::ResamplingBackend::new(
-                                inner,
-                                header.audio_header.as_ref().unwrap().samples_per_second,
-                                config.max_audio_seconds,
-                            ));
+                        let mut backend = factory.start(&config, &header).await?;
                         let result =
-                            session::run(&mut input, backend.as_mut(), &tx, &config, &shutdown)
-                                .await;
+                            session::run(&mut input, &mut backend, &tx, &config, &shutdown).await;
                         let cleanup = backend.close().await;
                         result.and(cleanup)
                     }
