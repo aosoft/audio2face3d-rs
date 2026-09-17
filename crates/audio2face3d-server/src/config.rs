@@ -43,6 +43,12 @@ pub struct Config {
     pub mock_jaw_open: Option<f32>,
     #[arg(long, default_value_t = 1)]
     pub max_streams: usize,
+    /// Maximum requests waiting for an execution slot, excluding active streams.
+    #[arg(long, default_value_t = 64)]
+    pub request_queue_capacity: usize,
+    /// Maximum execution-slot wait in milliseconds; zero waits until cancellation.
+    #[arg(long, default_value_t = 0)]
+    pub request_queue_timeout_ms: u64,
     #[arg(long, default_value_t = 1_048_576)]
     pub max_message_bytes: usize,
     #[arg(long, default_value_t = 600)]
@@ -66,6 +72,7 @@ impl Config {
             return Err("device ordinal exceeds i32 range".into());
         }
         if self.max_streams == 0
+            || self.request_queue_capacity == 0
             || self.output_queue_capacity == 0
             || self.max_message_bytes < 4096
             || self.max_audio_seconds == 0
@@ -78,6 +85,7 @@ impl Config {
             );
         }
         if self.max_streams > tokio::sync::Semaphore::MAX_PERMITS
+            || self.request_queue_capacity > tokio::sync::Semaphore::MAX_PERMITS
             || self.output_queue_capacity > tokio::sync::Semaphore::MAX_PERMITS
         {
             return Err("stream/queue limit exceeds Tokio capacity".into());

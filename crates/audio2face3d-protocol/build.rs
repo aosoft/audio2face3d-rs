@@ -11,6 +11,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
     config.include_file("ace.rs");
     tonic_prost_build::configure()
+        .build_client(cfg!(feature = "client"))
+        .build_server(cfg!(feature = "server"))
         .file_descriptor_set_path(PathBuf::from(env::var("OUT_DIR")?).join("ace_descriptor.bin"))
         .compile_with_config(
             config,

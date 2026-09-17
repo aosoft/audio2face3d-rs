@@ -13,6 +13,7 @@ default = []
 runtime = ["dep:audio2face3d", "audio2face3d/animation", "audio2face3d/emotion", "audio2face3d/tensorrt"]
 
 [dependencies]
+audio2face3d-protocol = { path = "../audio2face3d-protocol", features = ["client", "server"] }
 audio2face3d = { workspace = true, optional = true }
 clap.workspace = true
 tracing.workspace = true
@@ -20,15 +21,10 @@ tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal",
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tokio-util = { version = "0.7.18", features = ["rt"] }
 tonic = "=0.14.6"
-tonic-prost = "=0.14.6"
 tonic-health = "=0.14.6"
 prost = "=0.14.4"
 prost-types = "=0.14.4"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-
-[build-dependencies]
-tonic-prost-build = "=0.14.6"
-protoc-bin-vendored = "=3.2.0"
 
 [lints]
 workspace = true

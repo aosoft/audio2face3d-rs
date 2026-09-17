@@ -152,6 +152,7 @@ tongue output and model pooling are not implemented by this server. It emits
 Long-running production stability and perceptual lip-sync quality are not
 established by the short integration tests.
 
-The bundled NVIDIA protocol definitions retain their upstream notices and
-are covered by [LICENSE-APACHE](LICENSE-APACHE). See the workspace license
-for the Rust implementation.
+The NVIDIA protocol definitions are maintained in
+[audio2face3d-protocol](../audio2face3d-protocol/README.md). They retain their
+upstream notices and are covered by [LICENSE-APACHE](LICENSE-APACHE).
+See the workspace license for the Rust implementation.

@@ -137,24 +137,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "audio2face3d-protocol"
+version = "0.1.0"
+dependencies = [
+ "audio2face3d-types",
+ "prost",
+ "prost-types",
+ "protoc-bin-vendored",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "audio2face3d-server"
 version = "0.1.0"
 dependencies = [
  "audio2face3d",
+ "audio2face3d-protocol",
  "clap",
  "prost",
  "prost-types",
- "protoc-bin-vendored",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "tonic",
  "tonic-health",
- "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "audio2face3d-types"
+version = "0.1.0"
 
 [[package]]
 name = "autocfg"

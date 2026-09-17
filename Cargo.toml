@@ -4,6 +4,8 @@ members = [
     "crates/audio2face3d",
     "crates/audio2face3d-cli",
     "crates/audio2face3d-server",
+    "crates/audio2face3d-types",
+    "crates/audio2face3d-protocol",
 ]
 
 [workspace.package]
