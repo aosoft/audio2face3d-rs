@@ -52,6 +52,7 @@ impl WorkerSession {
                 request,
                 settings: Some(lease),
                 done: false,
+                unexpected: ErrorKind::Inference,
             },
         }
     }
@@ -70,9 +71,14 @@ impl WorkerSession {
 pub(crate) struct WorkerGuard {
     request: Arc<Request>,
     settings: Option<Lease>,
+    unexpected: ErrorKind,
     done: bool,
 }
 impl WorkerGuard {
+    #[cfg(feature = "server")]
+    pub fn runtime_owned(&mut self) {
+        self.unexpected = ErrorKind::RuntimeUnavailable;
+    }
     pub fn fail(&self, error: Error) {
         self.request.fail(error);
     }
@@ -93,7 +99,7 @@ impl Drop for WorkerGuard {
         if !self.done {
             drop(self.settings.take());
             self.request.closed(Err(Error::new(
-                ErrorKind::Inference,
+                self.unexpected,
                 "backend worker stopped unexpectedly",
             )));
         }
@@ -144,7 +150,16 @@ impl Future for ReadInput<'_> {
     type Output = Result<Option<InputPacket>>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.subscription.register(cx.waker());
-        let request = &self.reader.request;
+        self.reader.poll_recv(cx)
+    }
+}
+impl Reader {
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn subscription(&self) -> Subscription {
+        self.request.notify.subscribe()
+    }
+    pub fn poll_recv(&self, _cx: &mut Context<'_>) -> Poll<Result<Option<InputPacket>>> {
+        let request = &self.request;
         let mut state = request.state.lock().unwrap();
         if let Some(error) = state.error() {
             return Poll::Ready(Err(error));

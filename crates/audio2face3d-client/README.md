@@ -2,7 +2,47 @@
 
 Runtime-independent session control for Audio2Face inference, using the Rust-owned types in `audio2face3d-types`.
 
-This crate currently implements the common Client/Session layer. The `direct` and `server` features reserve the adapter boundaries; their constructors and inference/transport implementations are not yet available. They are planned for stages 06 and 05 respectively. The private test backend is not a public inference mode.
+Choose a constructor, then use the same Client/Session API for direct inference and gRPC inference. Public request and output data are Rust-owned types; generated protocol types remain inside the transport adapter.
+
+## Features and initialization
+
+| Feature | Available mode | Requirements |
+| --- | --- | --- |
+| none (default) | Shared API types only | Standard library and shared types |
+| `direct` | `Client::direct(DirectConfig)`, diagnostic mock | No async runtime required |
+| `runtime` (includes direct) | Native Regression and optional Audio2Emotion | CUDA, TensorRT, model files; no async runtime required |
+| `server` | `Client::server(ServerConfig)` | A caller-owned, driven Tokio runtime with I/O and time enabled |
+
+Features can be combined. Native initialization with `runtime,server` still works without creating or entering Tokio.
+
+Native initialization (await this on any standard-Future executor):
+
+```rust
+use audio2face3d_client::{Client, DirectConfig, InferenceConfig, BackendKind};
+let client = Client::direct(DirectConfig {
+    engine: InferenceConfig {
+        backend: BackendKind::Regression,
+        model: Some("models/mark/model.json".into()),
+        // emotion_model: Some("models/emotion/model.json".into()),
+        ..Default::default()
+    },
+    max_executions: 2,
+    ..Default::default()
+}).await?;
+```
+
+Remote initialization:
+
+```rust
+use audio2face3d_client::{Client, ServerConfig};
+let mut config = ServerConfig::new("http://127.0.0.1:52000");
+config.runtime = Some(runtime.handle().clone());
+let client = Client::server(config).await?;
+```
+
+Without an explicit Handle, server initialization uses Tokio's current Handle or returns `RuntimeUnavailable`. Connection failures are returned by initialization; RPC failures are reported by each Session. A current-thread runtime must continue to be driven while common Futures are waiting. Keep the selected runtime alive until `client.shutdown().await` completes. Dropping that runtime aborts its tasks and terminates affected requests with an error; a transport failure may be observed first.
+
+After either constructor, use `client.start(options)?.split()`, drive input sends and output receives concurrently, await input finish, consume output through Completed, and await closed. [Rust integration tests](tests/modes.rs) use exactly the same application function for both modes.
 
 ## Session contract
 
@@ -18,7 +58,7 @@ This crate currently implements the common Client/Session layer. The `direct` an
 
 ## Runtime and ownership
 
-Common control uses standard-library synchronization, `Future` and `Waker`, without Tokio, generated protocol types, native inference libraries or async traits. One deadline thread per Client advances timeouts even when application Futures are not being polled. Future server initialization will select the Tokio runtime required by its transport; direct initialization will preserve runtime independence.
+Common control uses standard-library synchronization, `Future` and `Waker`, without Tokio, generated protocol types, native inference libraries or async traits. One deadline thread per Client advances timeouts even when application Futures are not being polled. Server initialization selects the Tokio runtime required by its transport. Direct uses one standard control thread per Client to drive bounded session Futures, with the shared inference layer owning native workers. Waiting requests do not create threads.
 
 PCM and curve vectors move through the queues without copying their elements. Shared curve layouts retain their `Arc` identity. Dropping a pending send removes its unaccepted chunk; accepted chunks remain ordered. Sending and receiving should be driven concurrently to allow bounded queues to make progress.
 
@@ -32,4 +72,12 @@ A request slot remains occupied until backend cleanup and either output consumpt
 
 ## Validation
 
-Permanent tests are Rust unit/integration tests. A private backend and standard-Waker executor cover bounded queues, ownership, dropped Futures and handles, cancellation races, deadlines, worker panic, cleanup ordering and shutdown. Run `cargo test -p audio2face3d-client`; both feature flags currently exercise the same common layer. Adapter behavior will receive separate tests when implemented.
+Permanent tests are Rust unit/integration tests. A private backend and standard-Waker executor cover bounded queues, ownership, dropped Futures and handles, cancellation races, deadlines, worker panic, cleanup ordering and shutdown. Run `cargo test -p audio2face3d-client --features direct,server`. Adapter tests additionally cover actual TCP disconnection, trailers, missing terminal messages, explicit/stopped Tokio runtimes, FIFO execution capacity and mode comparison. Native tests are explicitly ignored by default and require model/SDK configuration.
+
+## Adapter behavior
+
+DirectConfig selects the engine/model, optional emotion model, device, execution capacity and queue policy. All Client clones share FIFO admission. The same queue algorithm handles one or multiple execution slots. A permit is retained until native cleanup completes. Loaded runtime pooling across utterances is not implemented. `DirectConfig::default()` deliberately uses the diagnostic mock; select Regression as above for native inference.
+
+Server success requires a response header, a final SUCCESS status and clean gRPC termination. Intermediate SUCCESS and ProcessingFinished do not end the response. Disconnected utterances are never automatically retried; later requests may reconnect. `closed` acknowledges local RPC cleanup, not remote GPU completion.
+
+The server adapter also bounds encoded/decoded gRPC message size through `max_message_bytes`. A decoded packet, protocol conversion storage, transport buffers and native model memory are additional to the common queue accounting. Backpressure stops response reads; cancellation and deadlines remain independent of application polling. A remote error cannot be observed until its response bytes/trailers can be read.

@@ -140,7 +140,14 @@ dependencies = [
 name = "audio2face3d-client"
 version = "0.1.0"
 dependencies = [
+ "audio2face3d-inference",
+ "audio2face3d-protocol",
+ "audio2face3d-server",
  "audio2face3d-types",
+ "clap",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

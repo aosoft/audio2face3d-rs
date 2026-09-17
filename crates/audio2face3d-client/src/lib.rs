@@ -14,3 +14,17 @@ pub use session::{
 };
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "direct")]
+mod direct;
+#[cfg(feature = "direct")]
+mod executor;
+#[cfg(feature = "direct")]
+pub use direct::DirectConfig;
+#[cfg(feature = "server")]
+mod server;
+#[cfg(feature = "server")]
+pub use server::ServerConfig;
+
+#[cfg(feature = "direct")]
+pub use audio2face3d_inference::{BackendKind, Config as InferenceConfig, MockPattern};

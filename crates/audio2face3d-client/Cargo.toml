@@ -10,12 +10,26 @@ description = "Runtime-independent Audio2Face client session control"
 
 [features]
 default = []
-# Adapter implementations are added separately; stage 04 provides the common core.
-direct = []
-server = []
+direct = ["dep:audio2face3d-inference"]
+runtime = ["direct", "audio2face3d-inference/runtime"]
+server = ["dep:audio2face3d-protocol", "dep:tokio", "dep:tokio-stream", "dep:tonic"]
 
 [dependencies]
 audio2face3d-types = { path = "../audio2face3d-types" }
+
+audio2face3d-inference = { path = "../audio2face3d-inference", optional = true }
+audio2face3d-protocol = { path = "../audio2face3d-protocol", features = ["client"], optional = true }
+tokio = { version = "1.53.1", features = ["rt", "sync", "time", "net", "macros"], optional = true }
+tokio-stream = { version = "0.1.18", optional = true }
+tonic = { version = "=0.14.6", optional = true }
+
+[dev-dependencies]
+audio2face3d-server = { path = "../audio2face3d-server" }
+clap.workspace = true
+audio2face3d-protocol = { path = "../audio2face3d-protocol", features = ["server"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "macros"] }
+tokio-stream = { version = "0.1.18", features = ["net"] }
+tonic = "=0.14.6"
 
 [lints]
 workspace = true
