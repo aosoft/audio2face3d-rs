@@ -37,11 +37,12 @@ async fn start_policy<A: Authenticator>(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = Server::builder(Config {
-        backend: BackendKind::Mock,
-        max_streams: 1,
-        ..Default::default()
-    })
+    let server = Server::builder(
+        Config::builder(BackendKind::Mock)
+            .max_streams(1)
+            .build()
+            .unwrap(),
+    )
     .authentication(auth)
     .health_auth(policy)
     .build()
@@ -259,14 +260,11 @@ async fn runtime_none_and_without_authentication_use_same_public_builder() {
     success(&mut running.client, None).await;
     running.close().await;
     assert!(
-        Server::builder(Config {
-            backend: BackendKind::Mock,
-            ..Default::default()
-        })
-        .authentication(Some(|_: AuthRequest<'_>| Err(AuthError::Forbidden)))
-        .without_authentication()
-        .build()
-        .is_ok()
+        Server::builder(Config::builder(BackendKind::Mock).build().unwrap())
+            .authentication(Some(|_: AuthRequest<'_>| Err(AuthError::Forbidden)))
+            .without_authentication()
+            .build()
+            .is_ok()
     );
 }
 
@@ -369,13 +367,10 @@ async fn health_authentication_watch_and_shutdown_share_policy() {
     use audio2face3d_server::HealthAuth;
     use tonic_health::pb::{HealthCheckRequest, health_client::HealthClient};
     assert!(
-        Server::builder(Config {
-            backend: BackendKind::Mock,
-            ..Default::default()
-        })
-        .health_auth(HealthAuth::SameAsInference)
-        .build()
-        .is_err()
+        Server::builder(Config::builder(BackendKind::Mock).build().unwrap())
+            .health_auth(HealthAuth::SameAsInference)
+            .build()
+            .is_err()
     );
     for policy in [HealthAuth::Public, HealthAuth::SameAsInference] {
         let calls = Arc::new(AtomicUsize::new(0));

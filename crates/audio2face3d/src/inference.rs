@@ -22,7 +22,7 @@ mod worker;
 pub use crate::types;
 pub use backend::{Backend, EngineFuture, Factory};
 pub use cancellation::Cancellation;
-pub use config::{BackendKind, Config, MockPattern};
+pub use config::{BackendKind, Config, ConfigBuilder, MockPattern};
 
 #[cfg(test)]
 mod engine_tests;

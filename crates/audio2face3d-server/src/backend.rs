@@ -24,22 +24,23 @@ pub(crate) fn status(error: Error) -> Status {
         _ => Status::internal(error.message()),
     }
 }
-fn engine_config(config: &Config) -> inference::Config {
-    inference::Config {
-        backend: match config.backend {
-            BackendKind::Mock => inference::BackendKind::Mock,
-            BackendKind::Regression => inference::BackendKind::Regression,
-        },
-        model: config.model.clone(),
-        emotion_model: config.emotion_model.clone(),
-        device: config.device,
-        max_audio_seconds: config.max_audio_seconds,
-        mock_pattern: config.mock_pattern.into(),
-        mock_curve: config.mock_curve.clone(),
-        mock_value: config.mock_value,
-        mock_jaw_open: config.mock_jaw_open,
-    }
+fn engine_config(config: &Config) -> Result<inference::Config, Status> {
+    inference::Config::builder(match config.backend {
+        BackendKind::Mock => inference::BackendKind::Mock,
+        BackendKind::Regression => inference::BackendKind::Regression,
+    })
+    .optional_model(config.model.clone())
+    .optional_emotion_model(config.emotion_model.clone())
+    .device(config.device)
+    .max_audio_seconds(config.max_audio_seconds)
+    .mock_pattern(config.mock_pattern.into())
+    .optional_mock_curve(config.mock_curve.clone())
+    .optional_mock_value(config.mock_value)
+    .optional_mock_jaw_open(config.mock_jaw_open)
+    .build()
+    .map_err(status)
 }
+
 pub struct Factory {
     inner: inference::Factory,
 }
@@ -47,7 +48,7 @@ impl Factory {
     pub async fn prepare(config: &Config) -> Result<Self, Status> {
         config.validate().map_err(Status::invalid_argument)?;
         Ok(Self {
-            inner: inference::Factory::prepare(engine_config(config))
+            inner: inference::Factory::prepare(engine_config(config)?)
                 .await
                 .map_err(status)?,
         })
@@ -70,7 +71,7 @@ impl Factory {
                     "mock ignores face, blendshape and emotion settings; output is diagnostic only"
                 );
             }
-            RequestOptions::new(
+            RequestOptions::builder(
                 convert::decode_audio_format(
                     header
                         .audio_header
@@ -78,10 +79,12 @@ impl Factory {
                 )
                 .map_err(status)?,
             )
+            .build()
+            .map_err(status)?
         } else {
             convert::decode_request(header.clone()).map_err(status)?
         };
-        let format = options.input_format;
+        let format = options.input_format();
         let inner = self.inner.start(options).await.map_err(status)?;
         Ok(Backend {
             inner,

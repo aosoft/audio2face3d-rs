@@ -181,15 +181,14 @@ mod bridge {
 fn direct_and_factory_keep_logger_after_initialization() {
     let a = Arc::new(Sink::default());
     let b = Arc::new(Sink::default());
-    let config = audio2face3d::inference::Config {
-        backend: audio2face3d::inference::BackendKind::Mock,
-        ..Default::default()
-    };
+    let config =
+        audio2face3d::inference::Config::builder(audio2face3d::inference::BackendKind::Mock)
+            .build()
+            .unwrap();
     let client = support::wait(audio2face3d::client::Client::direct_with_context(
-        audio2face3d::client::DirectConfig {
-            engine: config.clone(),
-            ..Default::default()
-        },
+        audio2face3d::client::DirectConfig::builder(config.clone())
+            .build()
+            .unwrap(),
         context(a.clone()),
     ))
     .unwrap();
@@ -198,7 +197,16 @@ fn direct_and_factory_keep_logger_after_initialization() {
         context(b.clone()),
     ))
     .unwrap();
-    let mut engine = support::wait(factory.start(Default::default())).unwrap();
+    let mut engine = support::wait(
+        factory.start(
+            audio2face3d::types::RequestOptions::builder(
+                audio2face3d::types::AudioFormat::MONO_16KHZ,
+            )
+            .build()
+            .unwrap(),
+        ),
+    )
+    .unwrap();
     support::wait(engine.close()).unwrap();
     support::wait(factory.release_prepared()).unwrap();
     drop(engine);
@@ -231,18 +239,27 @@ fn native_logger_reaches_model_worker_and_cleanup_without_tokio() {
     let model = audio2face3d::Model::load_with_context(&path, ctx.clone()).unwrap();
     assert!(Arc::ptr_eq(model.context().logger(), ctx.logger()));
     drop(model);
-    let config = audio2face3d::inference::Config {
-        backend: audio2face3d::inference::BackendKind::Regression,
-        model: Some(path.into()),
-        ..Default::default()
-    };
+    let config =
+        audio2face3d::inference::Config::builder(audio2face3d::inference::BackendKind::Regression)
+            .model(path)
+            .build()
+            .unwrap();
     let factory = support::wait(audio2face3d::inference::Factory::prepare_with_context(
         config,
         ctx.clone(),
     ))
     .unwrap();
     drop(ctx);
-    let mut engine = support::wait(factory.start(Default::default())).unwrap();
+    let mut engine = support::wait(
+        factory.start(
+            audio2face3d::types::RequestOptions::builder(
+                audio2face3d::types::AudioFormat::MONO_16KHZ,
+            )
+            .build()
+            .unwrap(),
+        ),
+    )
+    .unwrap();
     let chunk = audio2face3d::types::InputChunk::new(
         audio2face3d::types::PcmBuffer::from_vec(vec![0; 3200]).unwrap(),
         vec![],

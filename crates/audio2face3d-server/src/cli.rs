@@ -30,7 +30,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     let context = audio2face3d::Audio2Face3DContext::builder()
         .logger(std::sync::Arc::new(logger))
         .build();
-    let server = Server::builder(args.config())
+    let server = Server::builder(args.config()?)
         .context(context)
         .authentication(authenticator)
         .health_auth(args.health_auth)

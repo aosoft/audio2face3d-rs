@@ -9,18 +9,35 @@ use std::{
     time::Duration,
 };
 
-/// Direct inference configuration. `runtime` enables native Regression/A2E.
+/// Direct inference configuration. The native feature enables Regression/A2E.
 #[derive(Clone, Debug)]
 pub struct DirectConfig {
-    pub engine: engine::Config,
-    pub limits: Limits,
-    pub max_executions: usize,
-    pub max_queued: usize,
+    pub(crate) engine: engine::Config,
+    pub(crate) limits: Limits,
+    pub(crate) max_executions: usize,
+    pub(crate) max_queued: usize,
     /// Zero means no admission timeout; RequestOptions.timeout still applies.
-    pub queue_timeout: Duration,
+    pub(crate) queue_timeout: Duration,
 }
-impl Default for DirectConfig {
-    fn default() -> Self {
+impl DirectConfig {
+    pub fn validate(&self) -> Result<()> {
+        self.engine.validate()?;
+        self.limits.validate()?;
+        if self.max_executions == 0 {
+            return Err(Error::invalid("execution capacity must be positive"));
+        }
+        if !self.queue_timeout.is_zero()
+            && std::time::Instant::now()
+                .checked_add(self.queue_timeout)
+                .is_none()
+        {
+            return Err(Error::invalid("queue timeout exceeds clock range"));
+        }
+        Ok(())
+    }
+}
+impl DirectConfig {
+    pub(crate) fn default() -> Self {
         Self {
             engine: engine::Config::default(),
             limits: Limits::default(),
@@ -38,8 +55,7 @@ struct Direct {
 }
 impl Client {
     async fn direct_inner(config: DirectConfig) -> Result<Self> {
-        config.limits.validate()?;
-        config.engine.validate()?;
+        config.validate()?;
         let admission = Admission::new(
             config.max_executions,
             config.max_queued,
@@ -204,5 +220,69 @@ impl Client {
     ) -> Result<Self> {
         let scope = LogScope::new(context);
         scope.wrap_future(Self::direct_inner(config)).await
+    }
+}
+
+/// Consuming builder; validation runs in build before resources are started.
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct DirectConfigBuilder {
+    config: DirectConfig,
+}
+impl DirectConfig {
+    pub fn builder(engine: engine::Config) -> DirectConfigBuilder {
+        DirectConfigBuilder {
+            config: DirectConfig {
+                engine,
+                ..DirectConfig::default()
+            },
+        }
+    }
+}
+impl DirectConfigBuilder {
+    pub fn engine(mut self, value: engine::Config) -> Self {
+        self.config.engine = value;
+        self
+    }
+    pub fn limits(mut self, value: Limits) -> Self {
+        self.config.limits = value;
+        self
+    }
+    pub fn max_executions(mut self, value: usize) -> Self {
+        self.config.max_executions = value;
+        self
+    }
+    pub fn max_queued(mut self, value: usize) -> Self {
+        self.config.max_queued = value;
+        self
+    }
+    pub fn queue_timeout(mut self, value: Duration) -> Self {
+        self.config.queue_timeout = value;
+        self
+    }
+    pub fn build(self) -> Result<DirectConfig> {
+        self.config.validate()?;
+        Ok(self.config)
+    }
+}
+
+impl DirectConfig {
+    pub fn into_builder(self) -> DirectConfigBuilder {
+        DirectConfigBuilder { config: self }
+    }
+    pub fn engine(&self) -> &engine::Config {
+        &self.engine
+    }
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+    pub fn max_executions(&self) -> usize {
+        self.max_executions
+    }
+    pub fn max_queued(&self) -> usize {
+        self.max_queued
+    }
+    pub fn queue_timeout(&self) -> Duration {
+        self.queue_timeout
     }
 }

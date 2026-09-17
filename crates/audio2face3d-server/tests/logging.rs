@@ -25,7 +25,14 @@ fn context(sink: Arc<Sink>) -> Audio2Face3DContext {
     Audio2Face3DContext::builder().logger(sink).build()
 }
 async fn utterance(client: &Client) {
-    let (mut input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     input
         .send(InputChunk::new(
             PcmBuffer::from_vec(vec![0; 3200]).unwrap(),
@@ -51,20 +58,19 @@ async fn two_servers_remote_clients_and_direct_have_separate_contexts() {
         let sink = Arc::new(Sink::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = Server::builder(Config {
-            backend: BackendKind::Mock,
-            ..Default::default()
-        })
-        .context(context(sink.clone()))
-        .build()
-        .unwrap();
+        let server = Server::builder(Config::builder(BackendKind::Mock).build().unwrap())
+            .context(context(sink.clone()))
+            .build()
+            .unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(server.serve(listener, async {
             let _ = rx.await;
         }));
         let remote_sink = Arc::new(Sink::default());
         let client = Client::server_with_context(
-            ServerConfig::new(format!("http://{addr}")),
+            ServerConfig::builder(format!("http://{addr}"))
+                .build()
+                .unwrap(),
             context(remote_sink.clone()),
         )
         .await
@@ -85,13 +91,9 @@ async fn two_servers_remote_clients_and_direct_have_separate_contexts() {
     }
     let direct_sink = Arc::new(Sink::default());
     let direct = Client::direct_with_context(
-        DirectConfig {
-            engine: EngineConfig {
-                backend: EngineKind::Mock,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        DirectConfig::builder(EngineConfig::builder(EngineKind::Mock).build().unwrap())
+            .build()
+            .unwrap(),
         context(direct_sink.clone()),
     )
     .await

@@ -283,7 +283,7 @@ fn deadline_runs_without_polling_and_includes_waiting_for_output_consumption() {
     let (client, fake) = setup();
     let options = RequestOptions {
         timeout: Some(Duration::from_millis(20)),
-        ..Default::default()
+        ..RequestOptions::default()
     };
     let (mut input, mut output, control) = client.start(options.clone()).unwrap().split();
     let (_, _, guard) = fake.take();
@@ -675,7 +675,7 @@ fn deadline_wakes_a_suspended_receiver() {
     let (client, fake) = setup();
     let options = RequestOptions {
         timeout: Some(Duration::from_millis(30)),
-        ..Default::default()
+        ..RequestOptions::default()
     };
     let (input, mut output, _) = client.start(options).unwrap().split();
     let (_, _, guard) = fake.take();

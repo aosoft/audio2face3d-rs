@@ -13,7 +13,7 @@ mod api;
 pub use api::{ConfigError, Server, ServerBuilder};
 pub use server::ServerError;
 
-pub use config::Config as ServerConfig;
+pub use config::{Config as ServerConfig, ConfigBuilder as ServerConfigBuilder};
 
 pub mod auth;
 

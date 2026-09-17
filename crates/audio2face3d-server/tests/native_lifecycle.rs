@@ -8,12 +8,13 @@ use audio2face3d_server::{
 #[ignore = "requires native SDK, GPU and prepared Regression model"]
 async fn stopping_during_native_prepare_keeps_cleanup_owned() {
     let model = std::env::var_os("AUDIO2FACE3D_LOG_MODEL").expect("prepared model");
-    let server = Server::builder(Config {
-        backend: BackendKind::Regression,
-        model: Some(model.into()),
-        shutdown_timeout_ms: 1,
-        ..Default::default()
-    })
+    let server = Server::builder(
+        Config::builder(BackendKind::Regression)
+            .optional_model(Some(model.into()))
+            .shutdown_timeout_ms(1)
+            .build()
+            .unwrap(),
+    )
     .build()
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

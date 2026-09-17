@@ -19,20 +19,39 @@ use tonic::transport::{Channel, Endpoint};
 
 #[derive(Clone)]
 pub struct ServerConfig {
-    pub endpoint: String,
+    pub(crate) endpoint: String,
     /// Optional Bearer credential sent on every inference RPC. Debug redacts the value.
     /// None sends no authorization header; empty or malformed values are rejected.
-    pub api_key: Option<String>,
+    pub(crate) api_key: Option<String>,
     /// None selects try_current during initialization; no runtime is created.
-    pub runtime: Option<Handle>,
-    pub limits: Limits,
-    pub connect_timeout: Duration,
-    pub max_message_bytes: usize,
+    pub(crate) runtime: Option<Handle>,
+    pub(crate) limits: Limits,
+    pub(crate) connect_timeout: Duration,
+    pub(crate) max_message_bytes: usize,
     /// Fixed HTTP/2 connection and stream receive windows; adaptive growth is disabled.
-    pub http2_window_bytes: u32,
+    pub(crate) http2_window_bytes: u32,
 }
 impl ServerConfig {
-    pub fn new(endpoint: impl Into<String>) -> Self {
+    pub fn validate(&self) -> Result<()> {
+        authorization(self.api_key.as_deref())?;
+        self.limits.validate()?;
+        if self.connect_timeout.is_zero()
+            || self.max_message_bytes == 0
+            || !(65_535..=0x7fff_ffff).contains(&self.http2_window_bytes)
+        {
+            return Err(Error::invalid("invalid server transport limits"));
+        }
+        let uri: tonic::codegen::http::Uri = self
+            .endpoint
+            .parse()
+            .map_err(|_| Error::invalid("invalid server endpoint"))?;
+        if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.host().is_none() {
+            return Err(Error::invalid("invalid server endpoint"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
             api_key: None,
@@ -85,14 +104,8 @@ struct Server {
 impl Client {
     async fn server_inner(mut config: ServerConfig) -> Result<Self> {
         tracing::info!("connecting remote inference client");
+        config.validate()?;
         let authorization = authorization(config.api_key.take().as_deref())?;
-        config.limits.validate()?;
-        if config.connect_timeout.is_zero()
-            || config.max_message_bytes == 0
-            || !(65_535..=0x7fff_ffff).contains(&config.http2_window_bytes)
-        {
-            return Err(Error::invalid("invalid server transport limits"));
-        }
         let handle = config
             .runtime
             .or_else(|| Handle::try_current().ok())
@@ -385,5 +398,88 @@ mod auth_tests {
                 ErrorKind::InvalidInput
             );
         }
+    }
+}
+
+/// Consuming builder; validation runs in build before resources are started.
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct ServerConfigBuilder {
+    config: ServerConfig,
+}
+impl ServerConfig {
+    pub fn builder(endpoint: impl Into<String>) -> ServerConfigBuilder {
+        ServerConfigBuilder {
+            config: ServerConfig::new(endpoint),
+        }
+    }
+}
+impl ServerConfigBuilder {
+    pub fn endpoint(mut self, value: impl Into<String>) -> Self {
+        self.config.endpoint = value.into();
+        self
+    }
+    pub fn api_key(mut self, value: impl Into<String>) -> Self {
+        self.config.api_key = Some(value.into());
+        self
+    }
+    pub fn optional_api_key(mut self, value: Option<String>) -> Self {
+        self.config.api_key = value;
+        self
+    }
+    pub fn runtime(mut self, value: Handle) -> Self {
+        self.config.runtime = Some(value);
+        self
+    }
+    pub fn optional_runtime(mut self, value: Option<Handle>) -> Self {
+        self.config.runtime = value;
+        self
+    }
+    pub fn limits(mut self, value: Limits) -> Self {
+        self.config.limits = value;
+        self
+    }
+    pub fn connect_timeout(mut self, value: Duration) -> Self {
+        self.config.connect_timeout = value;
+        self
+    }
+    pub fn max_message_bytes(mut self, value: usize) -> Self {
+        self.config.max_message_bytes = value;
+        self
+    }
+    pub fn http2_window_bytes(mut self, value: u32) -> Self {
+        self.config.http2_window_bytes = value;
+        self
+    }
+    pub fn build(self) -> Result<ServerConfig> {
+        self.config.validate()?;
+        Ok(self.config)
+    }
+}
+
+impl ServerConfig {
+    pub fn into_builder(self) -> ServerConfigBuilder {
+        ServerConfigBuilder { config: self }
+    }
+    pub fn endpoint(&self) -> &String {
+        &self.endpoint
+    }
+    pub fn api_key(&self) -> &Option<String> {
+        &self.api_key
+    }
+    pub fn runtime(&self) -> &Option<Handle> {
+        &self.runtime
+    }
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
+    }
+    pub fn max_message_bytes(&self) -> usize {
+        self.max_message_bytes
+    }
+    pub fn http2_window_bytes(&self) -> u32 {
+        self.http2_window_bytes
     }
 }

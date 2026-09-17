@@ -27,7 +27,7 @@ mod notify;
 mod session;
 
 pub use crate::types;
-pub use handle::{Client, Limits, Shutdown};
+pub use handle::{Client, Limits, LimitsBuilder, Shutdown};
 pub use session::{
     Closed, Control, Finish, Input, Output, Receive, SendChunk, Session, TrySendError,
 };
@@ -39,11 +39,11 @@ mod direct;
 #[cfg(any(feature = "mock", feature = "native"))]
 mod executor;
 #[cfg(any(feature = "mock", feature = "native"))]
-pub use direct::DirectConfig;
+pub use direct::{DirectConfig, DirectConfigBuilder};
 #[cfg(feature = "client-grpc")]
 mod server;
 #[cfg(feature = "client-grpc")]
-pub use server::ServerConfig;
+pub use server::{ServerConfig, ServerConfigBuilder};
 
 #[cfg(any(feature = "mock", feature = "native"))]
 pub use crate::inference::{BackendKind, Config as InferenceConfig, MockPattern};

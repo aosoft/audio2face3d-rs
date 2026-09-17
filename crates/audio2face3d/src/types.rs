@@ -17,5 +17,6 @@ pub use error::{Error, ErrorKind, Progress, RequestId, Result};
 pub use event::{Diagnostic, OutputBatch, OutputEvent, Severity, StreamInfo, Summary};
 pub use request::{
     BlendshapeParameters, EmotionParameters, EmotionPostProcessing, FaceParameters, RequestOptions,
+    RequestOptionsBuilder,
 };
 pub use time::{MediaTime, SamplePosition};

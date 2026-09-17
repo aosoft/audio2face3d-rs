@@ -5,10 +5,7 @@ use audio2face3d_server::{
 };
 #[tokio::test]
 async fn embedded_server_uses_caller_listener_and_stop() {
-    let config = Config {
-        backend: BackendKind::Mock,
-        ..Config::default()
-    };
+    let config = Config::builder(BackendKind::Mock).build().unwrap();
     let server = Server::builder(config).build().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -9,11 +9,18 @@ use std::{
 };
 use support::*;
 fn exercises(config: DirectConfig) {
-    let slots = config.max_executions;
+    let slots = config.max_executions();
     let client = wait(Client::direct(config)).unwrap();
     let mut active = vec![];
     for _ in 0..slots {
-        let (input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+        let (input, mut output, control) = client
+            .start(
+                RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap()
+            .split();
         assert!(matches!(
             wait(output.recv()).unwrap(),
             Some(OutputEvent::StreamInfo(_))
@@ -22,7 +29,11 @@ fn exercises(config: DirectConfig) {
     }
     let (waiting_input, mut waiting_output, waiting_control) = client
         .clone()
-        .start(RequestOptions::default())
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
         .unwrap()
         .split();
     let mut receiving = waiting_output.recv();
@@ -47,7 +58,14 @@ fn exercises(config: DirectConfig) {
     // Other execution slots remain occupied while a freed slot runs new utterances.
     for seed in [20, 80] {
         let bytes = pcm(seed, 1067);
-        let events = collect(&client, RequestOptions::default(), bytes.clone()).unwrap();
+        let events = collect(
+            &client,
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+            bytes.clone(),
+        )
+        .unwrap();
         assert_eq!(returned_pcm(&events), bytes);
     }
     for (input, output, control) in active {
@@ -56,8 +74,10 @@ fn exercises(config: DirectConfig) {
         drop(output);
         assert!(wait(control.closed()).is_err());
     }
-    let mut options = RequestOptions::default();
-    options.timeout = Some(Duration::from_millis(30));
+    let options = RequestOptions::builder(AudioFormat::MONO_16KHZ)
+        .optional_timeout(Some(Duration::from_millis(30)))
+        .build()
+        .unwrap();
     let (input, mut output, control) = client.start(options).unwrap().split();
     loop {
         match wait(output.recv()) {
@@ -71,7 +91,14 @@ fn exercises(config: DirectConfig) {
     }
     assert!(wait(control.closed()).is_err());
     drop(input);
-    let events = collect(&client, RequestOptions::default(), pcm(7, 533)).unwrap();
+    let events = collect(
+        &client,
+        RequestOptions::builder(AudioFormat::MONO_16KHZ)
+            .build()
+            .unwrap(),
+        pcm(7, 533),
+    )
+    .unwrap();
     assert_eq!(returned_pcm(&events), pcm(7, 533));
     wait(client.shutdown()).unwrap();
 }
@@ -79,36 +106,47 @@ fn exercises(config: DirectConfig) {
 #[test]
 fn mock_queues_and_recovers_without_tokio() {
     for n in [1, 2, 4] {
-        exercises(DirectConfig {
-            engine: InferenceConfig {
-                backend: BackendKind::Mock,
-                ..Default::default()
-            },
-            max_executions: n,
-            ..Default::default()
-        });
+        exercises(
+            DirectConfig::builder(InferenceConfig::builder(BackendKind::Mock).build().unwrap())
+                .max_executions(n)
+                .build()
+                .unwrap(),
+        );
     }
 }
 #[cfg(feature = "mock")]
 #[test]
 fn direct_backpressure_cancel_and_shutdown_without_tokio() {
-    let config = DirectConfig {
-        engine: InferenceConfig {
-            backend: BackendKind::Mock,
-            ..Default::default()
-        },
-        limits: Limits {
-            input_queue_items: 1,
-            output_queue_items: 1,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let config =
+        DirectConfig::builder(InferenceConfig::builder(BackendKind::Mock).build().unwrap())
+            .limits(
+                Limits::builder()
+                    .input_queue_items(1)
+                    .output_queue_items(1)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
     let client = wait(Client::direct(config)).unwrap();
     let bytes = pcm(9, 16001);
-    let events = collect(&client, RequestOptions::default(), bytes.clone()).unwrap();
+    let events = collect(
+        &client,
+        RequestOptions::builder(AudioFormat::MONO_16KHZ)
+            .build()
+            .unwrap(),
+        bytes.clone(),
+    )
+    .unwrap();
     assert_eq!(returned_pcm(&events), bytes);
-    let (mut input, output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut input, output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     wait(input.send(InputChunk::new(
         PcmBuffer::from_vec(pcm(4, 1600)).unwrap(),
         vec![],
@@ -128,32 +166,47 @@ fn direct_backpressure_cancel_and_shutdown_without_tokio() {
 fn native_slots_one_two_cancel_recover_without_tokio() {
     let model = std::env::var_os("A2F_MODEL").expect("A2F_MODEL");
     for n in [1, 2] {
-        exercises(DirectConfig {
-            engine: InferenceConfig {
-                backend: BackendKind::Regression,
-                model: Some(model.clone().into()),
-                ..Default::default()
-            },
-            max_executions: n,
-            ..Default::default()
-        });
+        exercises(
+            DirectConfig::builder(
+                InferenceConfig::builder(BackendKind::Regression)
+                    .optional_model(Some(model.clone().into()))
+                    .build()
+                    .unwrap(),
+            )
+            .max_executions(n)
+            .build()
+            .unwrap(),
+        );
     }
 }
 #[cfg(feature = "native")]
 #[test]
 #[ignore = "requires A2F_MODEL and A2E_MODEL"]
 fn native_a2e_without_tokio() {
-    let client = wait(Client::direct(DirectConfig {
-        engine: InferenceConfig {
-            backend: BackendKind::Regression,
-            model: Some(std::env::var_os("A2F_MODEL").expect("A2F_MODEL").into()),
-            emotion_model: Some(std::env::var_os("A2E_MODEL").expect("A2E_MODEL").into()),
-            ..Default::default()
-        },
-        ..Default::default()
-    }))
+    let client = wait(Client::direct(
+        DirectConfig::builder(
+            InferenceConfig::builder(BackendKind::Regression)
+                .optional_model(Some(
+                    std::env::var_os("A2F_MODEL").expect("A2F_MODEL").into(),
+                ))
+                .optional_emotion_model(Some(
+                    std::env::var_os("A2E_MODEL").expect("A2E_MODEL").into(),
+                ))
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap(),
+    ))
     .unwrap();
-    let events = collect(&client, RequestOptions::default(), pcm(3, 1601)).unwrap();
+    let events = collect(
+        &client,
+        RequestOptions::builder(AudioFormat::MONO_16KHZ)
+            .build()
+            .unwrap(),
+        pcm(3, 1601),
+    )
+    .unwrap();
     assert!(events.iter().any(|e| matches!(e, OutputEvent::Emotion(_))));
     wait(client.shutdown()).unwrap();
 }
@@ -161,23 +214,34 @@ fn native_a2e_without_tokio() {
 #[cfg(feature = "mock")]
 #[test]
 fn direct_admission_timeout_and_fifo_do_not_release_occupied_slots() {
-    let client = wait(Client::direct(DirectConfig {
-        engine: InferenceConfig {
-            backend: BackendKind::Mock,
-            ..Default::default()
-        },
-        queue_timeout: Duration::from_millis(40),
-        max_queued: 2,
-        ..Default::default()
-    }))
+    let client = wait(Client::direct(
+        DirectConfig::builder(InferenceConfig::builder(BackendKind::Mock).build().unwrap())
+            .queue_timeout(Duration::from_millis(40))
+            .max_queued(2)
+            .build()
+            .unwrap(),
+    ))
     .unwrap();
-    let (input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     assert!(matches!(
         wait(output.recv()).unwrap(),
         Some(OutputEvent::StreamInfo(_))
     ));
-    let (queued_input, mut queued_output, queued_control) =
-        client.start(RequestOptions::default()).unwrap().split();
+    let (queued_input, mut queued_output, queued_control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     assert_eq!(
         wait(queued_output.recv()).unwrap_err().kind(),
         ErrorKind::DeadlineExceeded
@@ -189,21 +253,38 @@ fn direct_admission_timeout_and_fifo_do_not_release_occupied_slots() {
     drop(output);
     assert!(wait(control.closed()).is_err());
     wait(client.shutdown()).unwrap();
-    let client = wait(Client::direct(DirectConfig {
-        engine: InferenceConfig {
-            backend: BackendKind::Mock,
-            ..Default::default()
-        },
-        max_queued: 2,
-        ..Default::default()
-    }))
+    let client = wait(Client::direct(
+        DirectConfig::builder(InferenceConfig::builder(BackendKind::Mock).build().unwrap())
+            .max_queued(2)
+            .build()
+            .unwrap(),
+    ))
     .unwrap();
-    let (input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     wait(output.recv()).unwrap();
-    let (first_input, mut first_output, first_control) =
-        client.start(RequestOptions::default()).unwrap().split();
-    let (second_input, mut second_output, second_control) =
-        client.start(RequestOptions::default()).unwrap().split();
+    let (first_input, mut first_output, first_control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
+    let (second_input, mut second_output, second_control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     control.cancel();
     drop(input);
     drop(output);

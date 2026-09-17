@@ -51,11 +51,12 @@ impl Fixture {
                 Err(AuthError::InvalidCredential)
             }
         };
-        let server = Server::builder(Config {
-            backend: BackendKind::Mock,
-            max_streams: 1,
-            ..Default::default()
-        })
+        let server = Server::builder(
+            Config::builder(BackendKind::Mock)
+                .max_streams(1)
+                .build()
+                .unwrap(),
+        )
         .context(context)
         .authentication(auth.then_some(verifier))
         .build()
@@ -76,11 +77,13 @@ impl Fixture {
         }
     }
     async fn client(&self, key: Option<&str>) -> Client {
-        let mut config = ServerConfig::new(&self.url);
-        config.api_key = key.map(str::to_owned);
+        let config = ServerConfig::builder(&self.url)
+            .optional_api_key(key.map(str::to_owned))
+            .build()
+            .unwrap();
         let debug = format!("{config:?}");
         assert!(!debug.contains(KEY));
-        assert_eq!(config.clone().api_key, config.api_key);
+        assert_eq!(config.clone().api_key(), config.api_key());
         Client::server_with_context(
             config,
             Audio2Face3DContext::builder()
@@ -107,7 +110,14 @@ impl Fixture {
     }
 }
 async fn success(client: &Client) {
-    let (mut input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     let pcm: Vec<_> = (0i16..1600).flat_map(i16::to_le_bytes).collect();
     input
         .send(InputChunk::new(
@@ -139,7 +149,14 @@ async fn success(client: &Client) {
 }
 async fn rejected(client: &Client, message: &str) {
     // Leave input open: authentication rejection must not wait for audio.
-    let (_input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (_input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     let error = output.recv().await.unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Transport);
     assert!(error.message().contains(message));
@@ -195,9 +212,10 @@ async fn invalid_client_api_keys_fail_before_connecting_and_never_echo_values() 
         "a b".to_owned(),
         "a".repeat(4097),
     ] {
-        let mut config = ServerConfig::new("http://127.0.0.1:1");
-        config.api_key = Some(key);
-        let error = Client::server(config).await.err().unwrap();
+        let error = ServerConfig::builder("http://127.0.0.1:1")
+            .api_key(key)
+            .build()
+            .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert_eq!(error.message(), "invalid API key format");
     }

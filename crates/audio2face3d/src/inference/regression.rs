@@ -498,7 +498,7 @@ mod ownership_profile {
         let config = Config {
             backend: crate::inference::BackendKind::Regression,
             model: Some(std::env::var_os("A2F_MODEL").expect("A2F_MODEL").into()),
-            ..Default::default()
+            ..Config::default()
         };
         let runtime = load_sync(&config, &RequestOptions::default()).unwrap();
         println!(

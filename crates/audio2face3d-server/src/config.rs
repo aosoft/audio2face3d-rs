@@ -17,29 +17,29 @@ pub enum MockPattern {
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    pub backend: BackendKind,
-    pub model: Option<PathBuf>,
+    pub(crate) backend: BackendKind,
+    pub(crate) model: Option<PathBuf>,
     /// Optional Audio2Emotion classifier descriptor (16000 Hz).
-    pub emotion_model: Option<PathBuf>,
-    pub device: usize,
-    pub mock_pattern: MockPattern,
+    pub(crate) emotion_model: Option<PathBuf>,
+    pub(crate) device: usize,
+    pub(crate) mock_pattern: MockPattern,
     /// Select one of the 52 ACE curves instead of the preset pattern (mock only).
-    pub mock_curve: Option<String>,
+    pub(crate) mock_curve: Option<String>,
     /// Hold the selected curve at a constant weight; omit for a one-second pulse.
-    pub mock_value: Option<f32>,
+    pub(crate) mock_value: Option<f32>,
     /// Add a fixed JawOpen baseline to another selected diagnostic curve.
-    pub mock_jaw_open: Option<f32>,
-    pub max_streams: usize,
+    pub(crate) mock_jaw_open: Option<f32>,
+    pub(crate) max_streams: usize,
     /// Maximum requests waiting for an execution slot, excluding active streams.
-    pub request_queue_capacity: usize,
+    pub(crate) request_queue_capacity: usize,
     /// Maximum execution-slot wait in milliseconds; zero waits until cancellation.
-    pub request_queue_timeout_ms: u64,
-    pub max_message_bytes: usize,
-    pub max_audio_seconds: u32,
-    pub output_queue_capacity: usize,
-    pub input_idle_timeout_ms: u64,
-    pub output_timeout_ms: u64,
-    pub shutdown_timeout_ms: u64,
+    pub(crate) request_queue_timeout_ms: u64,
+    pub(crate) max_message_bytes: usize,
+    pub(crate) max_audio_seconds: u32,
+    pub(crate) output_queue_capacity: usize,
+    pub(crate) input_idle_timeout_ms: u64,
+    pub(crate) output_timeout_ms: u64,
+    pub(crate) shutdown_timeout_ms: u64,
 }
 
 impl Config {
@@ -137,8 +137,8 @@ impl From<MockPattern> for audio2face3d::inference::MockPattern {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    pub(crate) fn default() -> Self {
         Self {
             backend: if cfg!(feature = "native") {
                 BackendKind::Regression
@@ -187,5 +187,173 @@ impl std::str::FromStr for MockPattern {
             "mouth-smile-right" => Ok(Self::MouthSmileRight),
             _ => Err("unknown MockPattern".into()),
         }
+    }
+}
+
+/// Consuming builder; validation runs in build before resources are started.
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct ConfigBuilder {
+    config: Config,
+}
+impl Config {
+    pub fn builder(backend: BackendKind) -> ConfigBuilder {
+        ConfigBuilder {
+            config: Config {
+                backend,
+                ..Config::default()
+            },
+        }
+    }
+}
+impl ConfigBuilder {
+    pub fn backend(mut self, value: BackendKind) -> Self {
+        self.config.backend = value;
+        self
+    }
+    pub fn model(mut self, value: impl Into<PathBuf>) -> Self {
+        self.config.model = Some(value.into());
+        self
+    }
+    pub fn optional_model(mut self, value: Option<PathBuf>) -> Self {
+        self.config.model = value;
+        self
+    }
+    pub fn emotion_model(mut self, value: impl Into<PathBuf>) -> Self {
+        self.config.emotion_model = Some(value.into());
+        self
+    }
+    pub fn optional_emotion_model(mut self, value: Option<PathBuf>) -> Self {
+        self.config.emotion_model = value;
+        self
+    }
+    pub fn device(mut self, value: usize) -> Self {
+        self.config.device = value;
+        self
+    }
+    pub fn mock_pattern(mut self, value: MockPattern) -> Self {
+        self.config.mock_pattern = value;
+        self
+    }
+    pub fn mock_curve(mut self, value: impl Into<String>) -> Self {
+        self.config.mock_curve = Some(value.into());
+        self
+    }
+    pub fn optional_mock_curve(mut self, value: Option<String>) -> Self {
+        self.config.mock_curve = value;
+        self
+    }
+    pub fn mock_value(mut self, value: f32) -> Self {
+        self.config.mock_value = Some(value);
+        self
+    }
+    pub fn optional_mock_value(mut self, value: Option<f32>) -> Self {
+        self.config.mock_value = value;
+        self
+    }
+    pub fn mock_jaw_open(mut self, value: f32) -> Self {
+        self.config.mock_jaw_open = Some(value);
+        self
+    }
+    pub fn optional_mock_jaw_open(mut self, value: Option<f32>) -> Self {
+        self.config.mock_jaw_open = value;
+        self
+    }
+    pub fn max_streams(mut self, value: usize) -> Self {
+        self.config.max_streams = value;
+        self
+    }
+    pub fn request_queue_capacity(mut self, value: usize) -> Self {
+        self.config.request_queue_capacity = value;
+        self
+    }
+    pub fn request_queue_timeout_ms(mut self, value: u64) -> Self {
+        self.config.request_queue_timeout_ms = value;
+        self
+    }
+    pub fn max_message_bytes(mut self, value: usize) -> Self {
+        self.config.max_message_bytes = value;
+        self
+    }
+    pub fn max_audio_seconds(mut self, value: u32) -> Self {
+        self.config.max_audio_seconds = value;
+        self
+    }
+    pub fn output_queue_capacity(mut self, value: usize) -> Self {
+        self.config.output_queue_capacity = value;
+        self
+    }
+    pub fn input_idle_timeout_ms(mut self, value: u64) -> Self {
+        self.config.input_idle_timeout_ms = value;
+        self
+    }
+    pub fn output_timeout_ms(mut self, value: u64) -> Self {
+        self.config.output_timeout_ms = value;
+        self
+    }
+    pub fn shutdown_timeout_ms(mut self, value: u64) -> Self {
+        self.config.shutdown_timeout_ms = value;
+        self
+    }
+    pub fn build(self) -> Result<Config, crate::ConfigError> {
+        self.config.validate().map_err(crate::ConfigError)?;
+        Ok(self.config)
+    }
+}
+
+impl Config {
+    pub fn into_builder(self) -> ConfigBuilder {
+        ConfigBuilder { config: self }
+    }
+    pub fn backend(&self) -> BackendKind {
+        self.backend
+    }
+    pub fn model(&self) -> &Option<PathBuf> {
+        &self.model
+    }
+    pub fn emotion_model(&self) -> &Option<PathBuf> {
+        &self.emotion_model
+    }
+    pub fn device(&self) -> usize {
+        self.device
+    }
+    pub fn mock_pattern(&self) -> MockPattern {
+        self.mock_pattern
+    }
+    pub fn mock_curve(&self) -> &Option<String> {
+        &self.mock_curve
+    }
+    pub fn mock_value(&self) -> Option<f32> {
+        self.mock_value
+    }
+    pub fn mock_jaw_open(&self) -> Option<f32> {
+        self.mock_jaw_open
+    }
+    pub fn max_streams(&self) -> usize {
+        self.max_streams
+    }
+    pub fn request_queue_capacity(&self) -> usize {
+        self.request_queue_capacity
+    }
+    pub fn request_queue_timeout_ms(&self) -> u64 {
+        self.request_queue_timeout_ms
+    }
+    pub fn max_message_bytes(&self) -> usize {
+        self.max_message_bytes
+    }
+    pub fn max_audio_seconds(&self) -> u32 {
+        self.max_audio_seconds
+    }
+    pub fn output_queue_capacity(&self) -> usize {
+        self.output_queue_capacity
+    }
+    pub fn input_idle_timeout_ms(&self) -> u64 {
+        self.input_idle_timeout_ms
+    }
+    pub fn output_timeout_ms(&self) -> u64 {
+        self.output_timeout_ms
+    }
+    pub fn shutdown_timeout_ms(&self) -> u64 {
+        self.shutdown_timeout_ms
     }
 }

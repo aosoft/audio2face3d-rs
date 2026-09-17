@@ -73,26 +73,25 @@ fn parse_mock_value(value: &str) -> Result<f32, String> {
 }
 
 impl Args {
-    pub fn config(&self) -> Config {
-        Config {
-            backend: self.backend,
-            model: self.model.clone(),
-            emotion_model: self.emotion_model.clone(),
-            device: self.device,
-            mock_pattern: self.mock_pattern,
-            mock_curve: self.mock_curve.clone(),
-            mock_value: self.mock_value,
-            mock_jaw_open: self.mock_jaw_open,
-            max_streams: self.max_streams,
-            request_queue_capacity: self.request_queue_capacity,
-            request_queue_timeout_ms: self.request_queue_timeout_ms,
-            max_message_bytes: self.max_message_bytes,
-            max_audio_seconds: self.max_audio_seconds,
-            output_queue_capacity: self.output_queue_capacity,
-            input_idle_timeout_ms: self.input_idle_timeout_ms,
-            output_timeout_ms: self.output_timeout_ms,
-            shutdown_timeout_ms: self.shutdown_timeout_ms,
-        }
+    pub fn config(&self) -> Result<Config, audio2face3d_server::ConfigError> {
+        Config::builder(self.backend)
+            .optional_model(self.model.clone())
+            .optional_emotion_model(self.emotion_model.clone())
+            .device(self.device)
+            .mock_pattern(self.mock_pattern)
+            .optional_mock_curve(self.mock_curve.clone())
+            .optional_mock_value(self.mock_value)
+            .optional_mock_jaw_open(self.mock_jaw_open)
+            .max_streams(self.max_streams)
+            .request_queue_capacity(self.request_queue_capacity)
+            .request_queue_timeout_ms(self.request_queue_timeout_ms)
+            .max_message_bytes(self.max_message_bytes)
+            .max_audio_seconds(self.max_audio_seconds)
+            .output_queue_capacity(self.output_queue_capacity)
+            .input_idle_timeout_ms(self.input_idle_timeout_ms)
+            .output_timeout_ms(self.output_timeout_ms)
+            .shutdown_timeout_ms(self.shutdown_timeout_ms)
+            .build()
     }
 }
 

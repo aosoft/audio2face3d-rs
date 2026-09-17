@@ -1,11 +1,17 @@
 //! Compile the public session surface without access to private fake/driver types.
 use audio2face3d::client::{
     Client, Control, Limits,
-    types::{InputChunk, PcmBuffer, RequestOptions, Result},
+    types::{AudioFormat, InputChunk, PcmBuffer, RequestOptions, Result},
 };
 fn require_send<T: Send>(_: T) {}
 fn application(client: &Client) -> Result<()> {
-    let (mut input, mut output, control) = client.start(RequestOptions::default())?.split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )?
+        .split();
     require_send(input.send(InputChunk::new(PcmBuffer::from_vec(vec![0, 0])?, vec![])));
     require_send(output.recv());
     require_send(control.closed());
@@ -19,12 +25,22 @@ fn public_surface_compiles_without_an_adapter_or_async_runtime() {
     fn shared<T: Send + Sync + Clone>() {}
     shared::<Client>();
     shared::<Control>();
-    Limits::default().validate().unwrap();
+    Limits::builder().build().unwrap().validate().unwrap();
     #[cfg(any(feature = "mock", feature = "native"))]
-    require_send(Client::direct(Default::default()));
+    require_send(Client::direct(
+        audio2face3d::client::DirectConfig::builder(
+            audio2face3d::inference::Config::builder(audio2face3d::inference::BackendKind::Mock)
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap(),
+    ));
     #[cfg(feature = "client-grpc")]
-    require_send(Client::server(audio2face3d::client::ServerConfig::new(
-        "http://127.0.0.1:1",
-    )));
+    require_send(Client::server(
+        audio2face3d::client::ServerConfig::builder("http://127.0.0.1:1")
+            .build()
+            .unwrap(),
+    ));
     let _application: fn(&Client) -> Result<()> = application;
 }

@@ -20,18 +20,18 @@ use std::{
 /// request settings and backend input handoffs. This is not an allocator/RSS limit.
 #[derive(Clone, Debug)]
 pub struct Limits {
-    pub max_requests: usize,
-    pub max_request_bytes: usize,
-    pub max_buffered_bytes: usize,
-    pub input_queue_items: usize,
-    pub input_queue_bytes: usize,
-    pub max_input_chunk_bytes: usize,
-    pub output_queue_items: usize,
-    pub output_queue_bytes: usize,
-    pub max_output_event_bytes: usize,
+    pub(crate) max_requests: usize,
+    pub(crate) max_request_bytes: usize,
+    pub(crate) max_buffered_bytes: usize,
+    pub(crate) input_queue_items: usize,
+    pub(crate) input_queue_bytes: usize,
+    pub(crate) max_input_chunk_bytes: usize,
+    pub(crate) output_queue_items: usize,
+    pub(crate) output_queue_bytes: usize,
+    pub(crate) max_output_event_bytes: usize,
 }
-impl Default for Limits {
-    fn default() -> Self {
+impl Limits {
+    pub(crate) fn default() -> Self {
         Self {
             max_requests: 64,
             max_request_bytes: 256 * 1024,
@@ -182,5 +182,94 @@ impl Future for Shutdown {
             return Poll::Ready(result.clone());
         }
         Poll::Pending
+    }
+}
+
+/// Consuming builder; validation runs in build before resources are started.
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct LimitsBuilder {
+    config: Limits,
+}
+impl Limits {
+    pub fn builder() -> LimitsBuilder {
+        LimitsBuilder {
+            config: Limits::default(),
+        }
+    }
+}
+impl LimitsBuilder {
+    pub fn max_requests(mut self, value: usize) -> Self {
+        self.config.max_requests = value;
+        self
+    }
+    pub fn max_request_bytes(mut self, value: usize) -> Self {
+        self.config.max_request_bytes = value;
+        self
+    }
+    pub fn max_buffered_bytes(mut self, value: usize) -> Self {
+        self.config.max_buffered_bytes = value;
+        self
+    }
+    pub fn input_queue_items(mut self, value: usize) -> Self {
+        self.config.input_queue_items = value;
+        self
+    }
+    pub fn input_queue_bytes(mut self, value: usize) -> Self {
+        self.config.input_queue_bytes = value;
+        self
+    }
+    pub fn max_input_chunk_bytes(mut self, value: usize) -> Self {
+        self.config.max_input_chunk_bytes = value;
+        self
+    }
+    pub fn output_queue_items(mut self, value: usize) -> Self {
+        self.config.output_queue_items = value;
+        self
+    }
+    pub fn output_queue_bytes(mut self, value: usize) -> Self {
+        self.config.output_queue_bytes = value;
+        self
+    }
+    pub fn max_output_event_bytes(mut self, value: usize) -> Self {
+        self.config.max_output_event_bytes = value;
+        self
+    }
+    pub fn build(self) -> Result<Limits> {
+        self.config.validate()?;
+        Ok(self.config)
+    }
+}
+
+impl Limits {
+    pub fn into_builder(self) -> LimitsBuilder {
+        LimitsBuilder { config: self }
+    }
+    pub fn max_requests(&self) -> usize {
+        self.max_requests
+    }
+    pub fn max_request_bytes(&self) -> usize {
+        self.max_request_bytes
+    }
+    pub fn max_buffered_bytes(&self) -> usize {
+        self.max_buffered_bytes
+    }
+    pub fn input_queue_items(&self) -> usize {
+        self.input_queue_items
+    }
+    pub fn input_queue_bytes(&self) -> usize {
+        self.input_queue_bytes
+    }
+    pub fn max_input_chunk_bytes(&self) -> usize {
+        self.max_input_chunk_bytes
+    }
+    pub fn output_queue_items(&self) -> usize {
+        self.output_queue_items
+    }
+    pub fn output_queue_bytes(&self) -> usize {
+        self.output_queue_bytes
+    }
+    pub fn max_output_event_bytes(&self) -> usize {
+        self.max_output_event_bytes
     }
 }

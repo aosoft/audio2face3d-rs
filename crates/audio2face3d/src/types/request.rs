@@ -131,16 +131,16 @@ impl EmotionPostProcessing {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct RequestOptions {
-    pub input_format: AudioFormat,
-    pub face: Option<FaceParameters>,
-    pub blendshapes: Option<BlendshapeParameters>,
-    pub emotion: Option<EmotionParameters>,
-    pub emotion_post_processing: Option<EmotionPostProcessing>,
+    pub(crate) input_format: AudioFormat,
+    pub(crate) face: Option<FaceParameters>,
+    pub(crate) blendshapes: Option<BlendshapeParameters>,
+    pub(crate) emotion: Option<EmotionParameters>,
+    pub(crate) emotion_post_processing: Option<EmotionPostProcessing>,
     /// Local request deadline budget, applied separately from the audio header.
-    pub timeout: Option<Duration>,
+    pub(crate) timeout: Option<Duration>,
 }
 impl RequestOptions {
-    pub fn new(input_format: AudioFormat) -> Self {
+    pub(crate) fn new(input_format: AudioFormat) -> Self {
         Self {
             input_format,
             face: None,
@@ -166,8 +166,100 @@ impl RequestOptions {
         Ok(())
     }
 }
-impl Default for RequestOptions {
-    fn default() -> Self {
+#[cfg(any(test, feature = "native"))]
+impl RequestOptions {
+    pub(crate) fn default() -> Self {
         Self::new(AudioFormat::MONO_16KHZ)
+    }
+}
+
+/// Consuming builder; validation runs in build before resources are started.
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct RequestOptionsBuilder {
+    config: RequestOptions,
+}
+impl RequestOptions {
+    pub fn builder(input_format: AudioFormat) -> RequestOptionsBuilder {
+        RequestOptionsBuilder {
+            config: RequestOptions::new(input_format),
+        }
+    }
+}
+impl RequestOptionsBuilder {
+    pub fn input_format(mut self, value: AudioFormat) -> Self {
+        self.config.input_format = value;
+        self
+    }
+    pub fn face(mut self, value: FaceParameters) -> Self {
+        self.config.face = Some(value);
+        self
+    }
+    pub fn optional_face(mut self, value: Option<FaceParameters>) -> Self {
+        self.config.face = value;
+        self
+    }
+    pub fn blendshapes(mut self, value: BlendshapeParameters) -> Self {
+        self.config.blendshapes = Some(value);
+        self
+    }
+    pub fn optional_blendshapes(mut self, value: Option<BlendshapeParameters>) -> Self {
+        self.config.blendshapes = value;
+        self
+    }
+    pub fn emotion(mut self, value: EmotionParameters) -> Self {
+        self.config.emotion = Some(value);
+        self
+    }
+    pub fn optional_emotion(mut self, value: Option<EmotionParameters>) -> Self {
+        self.config.emotion = value;
+        self
+    }
+    pub fn emotion_post_processing(mut self, value: EmotionPostProcessing) -> Self {
+        self.config.emotion_post_processing = Some(value);
+        self
+    }
+    pub fn optional_emotion_post_processing(
+        mut self,
+        value: Option<EmotionPostProcessing>,
+    ) -> Self {
+        self.config.emotion_post_processing = value;
+        self
+    }
+    pub fn timeout(mut self, value: Duration) -> Self {
+        self.config.timeout = Some(value);
+        self
+    }
+    pub fn optional_timeout(mut self, value: Option<Duration>) -> Self {
+        self.config.timeout = value;
+        self
+    }
+    pub fn build(self) -> Result<RequestOptions> {
+        self.config.validate()?;
+        Ok(self.config)
+    }
+}
+
+impl RequestOptions {
+    pub fn into_builder(self) -> RequestOptionsBuilder {
+        RequestOptionsBuilder { config: self }
+    }
+    pub fn input_format(&self) -> AudioFormat {
+        self.input_format
+    }
+    pub fn face(&self) -> &Option<FaceParameters> {
+        &self.face
+    }
+    pub fn blendshapes(&self) -> &Option<BlendshapeParameters> {
+        &self.blendshapes
+    }
+    pub fn emotion(&self) -> &Option<EmotionParameters> {
+        &self.emotion
+    }
+    pub fn emotion_post_processing(&self) -> &Option<EmotionPostProcessing> {
+        &self.emotion_post_processing
+    }
+    pub fn timeout(&self) -> Option<Duration> {
+        self.timeout
     }
 }

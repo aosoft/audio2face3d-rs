@@ -70,26 +70,39 @@ fn report(name: &str, start: (usize, usize)) {
     );
 }
 fn config() -> DirectConfig {
-    DirectConfig {
-        max_queued: 32,
-        limits: Limits {
-            max_requests: 33,
-            max_buffered_bytes: 8 * 1024 * 1024,
-            input_queue_items: 2,
-            output_queue_items: 2,
-            max_input_chunk_bytes: 128 * 1024,
-            input_queue_bytes: 256 * 1024,
-            ..Default::default()
-        },
-        ..Default::default()
-    }
+    DirectConfig::builder(
+        audio2face3d::inference::Config::builder(audio2face3d::inference::BackendKind::Mock)
+            .build()
+            .unwrap(),
+    )
+    .max_queued(32)
+    .limits(
+        Limits::builder()
+            .max_requests(33)
+            .max_buffered_bytes(8 * 1024 * 1024)
+            .input_queue_items(2)
+            .output_queue_items(2)
+            .max_input_chunk_bytes(128 * 1024)
+            .input_queue_bytes(256 * 1024)
+            .build()
+            .unwrap(),
+    )
+    .build()
+    .unwrap()
 }
 fn profile(mut make: impl FnMut() -> Client, remote: bool) {
     let client = make();
     let baseline = begin();
     let mut held = vec![];
     for _ in 0..33 {
-        let (mut input, output, control) = client.start(RequestOptions::default()).unwrap().split();
+        let (mut input, output, control) = client
+            .start(
+                RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap()
+            .split();
         for _ in 0..2 {
             wait(input.send(InputChunk::new(
                 PcmBuffer::from_vec(vec![0; 65536]).unwrap(),
@@ -99,7 +112,15 @@ fn profile(mut make: impl FnMut() -> Client, remote: bool) {
         }
         held.push((input, output, control));
     }
-    assert!(client.start(RequestOptions::default()).is_err());
+    assert!(
+        client
+            .start(
+                RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                    .build()
+                    .unwrap()
+            )
+            .is_err()
+    );
     let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline.0);
     assert!(
         peak < if remote {
@@ -122,7 +143,14 @@ fn profile(mut make: impl FnMut() -> Client, remote: bool) {
     let client = make();
     let baseline = begin();
     let start = Instant::now();
-    let (mut input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     let chunks = std::env::var("A2F_PROFILE_CHUNKS")
         .map(|v| v.parse::<usize>().unwrap())
         .unwrap_or(64);
@@ -203,9 +231,11 @@ fn server_waiting_requests_and_slow_stream() {
     ));
     profile(
         || {
-            let mut settings = ServerConfig::new(&url);
-            settings.runtime = Some(runtime.handle().clone());
-            settings.limits = config().limits;
+            let settings = ServerConfig::builder(&url)
+                .optional_runtime(Some(runtime.handle().clone()))
+                .limits(config().limits().clone())
+                .build()
+                .unwrap();
             wait(Client::server(settings)).unwrap()
         },
         true,

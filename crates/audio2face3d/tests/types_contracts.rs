@@ -85,23 +85,35 @@ fn dynamic_layout_is_shared_and_weights_are_moved() {
 
 #[test]
 fn options_preserve_absence_empty_zero_and_false() {
-    let mut request = RequestOptions::default();
-    assert!(request.face.is_none());
-    request.face = Some(FaceParameters::default());
-    assert_eq!(request.face.as_ref().unwrap().upper_face_strength, None);
-    request.face.as_mut().unwrap().upper_face_strength = Some(0.0);
+    let mut request = RequestOptions::builder(AudioFormat::MONO_16KHZ)
+        .build()
+        .unwrap();
+    assert!(request.face().is_none());
+    request = request
+        .into_builder()
+        .face(FaceParameters::default())
+        .build()
+        .unwrap();
+    assert_eq!(request.face().as_ref().unwrap().upper_face_strength, None);
+    let mut face = request.face().clone().unwrap();
+    face.upper_face_strength = Some(0.0);
+    request = request.into_builder().face(face.clone()).build().unwrap();
     let mut blend = BlendshapeParameters::default();
     blend.clamp = Some(false);
     blend.multipliers.insert("JawOpen".into(), 0.0);
-    request.blendshapes = Some(blend);
+    request = request.into_builder().blendshapes(blend).build().unwrap();
     let mut post = EmotionPostProcessing::default();
     post.use_preferred = Some(false);
     post.strength = Some(0.0);
-    request.emotion_post_processing = Some(post);
+    request = request
+        .into_builder()
+        .emotion_post_processing(post)
+        .build()
+        .unwrap();
     request.validate().unwrap();
-    assert_eq!(request.blendshapes.as_ref().unwrap().clamp, Some(false));
-    request.face.as_mut().unwrap().upper_face_strength = Some(f32::NAN);
-    assert!(request.validate().is_err());
+    assert_eq!(request.blendshapes().as_ref().unwrap().clamp, Some(false));
+    face.upper_face_strength = Some(f32::NAN);
+    assert!(request.into_builder().face(face).build().is_err());
 }
 
 #[test]

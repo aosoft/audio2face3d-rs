@@ -27,8 +27,9 @@ fn wait<F: Future>(future: F) -> F::Output {
 
 // Both modes use this function unchanged. A separate sender prevents bounded-queue deadlocks.
 fn stream(client: &Client, bytes: Vec<u8>) -> Result<()> {
-    let mut options = RequestOptions::default();
-    options.timeout = Some(Duration::from_secs(120));
+    let options = RequestOptions::builder(AudioFormat::MONO_16KHZ)
+        .timeout(Duration::from_secs(120))
+        .build()?;
     let (mut input, mut output, control) = client.start(options)?.split();
     std::thread::scope(|scope| {
         let sender = scope.spawn(move || -> Result<()> {
@@ -81,25 +82,36 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let runtime;
     let client = match mode.as_str() {
         #[cfg(feature = "native")]
-        "direct" => wait(Client::direct(audio2face3d::client::DirectConfig {
-            engine: audio2face3d::client::InferenceConfig {
-                backend: audio2face3d::client::BackendKind::Regression,
-                model: Some(args.get(2).ok_or("model required")?.into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        }))?,
+        "direct" => wait(Client::direct(
+            audio2face3d::client::DirectConfig::builder(
+                audio2face3d::client::InferenceConfig::builder(
+                    audio2face3d::client::BackendKind::Regression,
+                )
+                .model(args.get(2).ok_or("model required")?)
+                .build()?,
+            )
+            .build()?,
+        ))?,
         #[cfg(feature = "mock")]
-        "mock" => wait(Client::direct(Default::default()))?,
+        "mock" => wait(Client::direct(
+            audio2face3d::client::DirectConfig::builder(
+                audio2face3d::client::InferenceConfig::builder(
+                    audio2face3d::client::BackendKind::Mock,
+                )
+                .build()?,
+            )
+            .build()?,
+        ))?,
         #[cfg(feature = "client-grpc")]
         "server" => {
             // Only server initialization creates Tokio. It outlives client shutdown below.
             runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            let mut config =
-                audio2face3d::client::ServerConfig::new(args.get(2).ok_or("URL required")?);
-            config.runtime = Some(runtime.handle().clone());
+            let config =
+                audio2face3d::client::ServerConfig::builder(args.get(2).ok_or("URL required")?)
+                    .runtime(runtime.handle().clone())
+                    .build()?;
             wait(Client::server(config))?
         }
         _ => return Err("unknown mode or required feature not enabled".into()),

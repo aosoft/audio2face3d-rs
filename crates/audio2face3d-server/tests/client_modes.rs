@@ -8,12 +8,16 @@ use support::*;
 fn cases() -> Vec<(RequestOptions, Vec<u8>)> {
     let mut cases = vec![];
     for rate in [16000, 44100, 48000] {
-        let mut options = RequestOptions::new(AudioFormat::pcm16(rate, 1).unwrap());
-        options.timeout = Some(Duration::from_secs(120));
+        let options = RequestOptions::builder(AudioFormat::pcm16(rate, 1).unwrap())
+            .optional_timeout(Some(Duration::from_secs(120)))
+            .build()
+            .unwrap();
         cases.push((options, pcm(31, (rate / 10 + 7) as usize)));
     }
-    let mut short = RequestOptions::default();
-    short.timeout = Some(Duration::from_secs(120));
+    let mut short = RequestOptions::builder(AudioFormat::MONO_16KHZ)
+        .optional_timeout(Some(Duration::from_secs(120)))
+        .build()
+        .unwrap();
     cases.push((short.clone(), pcm(31, 1)));
     let mut face = FaceParameters::default();
     face.upper_face_strength = Some(0.0);
@@ -25,10 +29,14 @@ fn cases() -> Vec<(RequestOptions, Vec<u8>)> {
     let mut post = EmotionPostProcessing::default();
     post.use_preferred = Some(false);
     post.preferred_strength = Some(0.0);
-    short.face = Some(face);
-    short.blendshapes = Some(blendshapes);
-    short.emotion = Some(emotion);
-    short.emotion_post_processing = Some(post);
+    short = short
+        .into_builder()
+        .optional_face(Some(face))
+        .optional_blendshapes(Some(blendshapes))
+        .optional_emotion(Some(emotion))
+        .optional_emotion_post_processing(Some(post))
+        .build()
+        .unwrap();
     cases.push((short, pcm(42, 1607)));
     cases
 }
@@ -50,9 +58,11 @@ fn compare(direct_config: DirectConfig, args: Vec<String>) {
         let _ = rx.await;
     }));
     // The native server prepares its engine before accepting requests; connect is bounded.
-    let mut remote_config = ServerConfig::new(url);
-    remote_config.runtime = Some(rt.handle().clone());
-    remote_config.connect_timeout = Duration::from_secs(120);
+    let remote_config = ServerConfig::builder(url)
+        .optional_runtime(Some(rt.handle().clone()))
+        .connect_timeout(Duration::from_secs(120))
+        .build()
+        .unwrap();
     let remote = wait(Client::server(remote_config)).unwrap();
     for ((options, bytes), a) in cases().into_iter().zip(expected) {
         let b = collect(&remote, options, bytes).unwrap();
@@ -131,13 +141,9 @@ fn compare(direct_config: DirectConfig, args: Vec<String>) {
 #[test]
 fn common_application_matches_real_mock_server() {
     compare(
-        DirectConfig {
-            engine: InferenceConfig {
-                backend: BackendKind::Mock,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        DirectConfig::builder(InferenceConfig::builder(BackendKind::Mock).build().unwrap())
+            .build()
+            .unwrap(),
         vec!["test".into()],
     );
 }
@@ -147,14 +153,14 @@ fn common_application_matches_real_mock_server() {
 fn native_direct_matches_server() {
     let model = std::env::var("A2F_MODEL").expect("A2F_MODEL");
     compare(
-        DirectConfig {
-            engine: InferenceConfig {
-                backend: BackendKind::Regression,
-                model: Some(model.clone().into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        DirectConfig::builder(
+            InferenceConfig::builder(BackendKind::Regression)
+                .optional_model(Some(model.clone().into()))
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap(),
         vec![
             "test".into(),
             "--backend".into(),
@@ -171,15 +177,15 @@ fn native_emotion_matches_server() {
     let model = std::env::var("A2F_MODEL").expect("A2F_MODEL");
     let emotion = std::env::var("A2E_MODEL").expect("A2E_MODEL");
     compare(
-        DirectConfig {
-            engine: InferenceConfig {
-                backend: BackendKind::Regression,
-                model: Some(model.clone().into()),
-                emotion_model: Some(emotion.clone().into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        DirectConfig::builder(
+            InferenceConfig::builder(BackendKind::Regression)
+                .optional_model(Some(model.clone().into()))
+                .optional_emotion_model(Some(emotion.clone().into()))
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap(),
         vec![
             "test".into(),
             "--backend".into(),

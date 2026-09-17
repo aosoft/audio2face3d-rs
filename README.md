@@ -375,8 +375,8 @@ The executables provide a synchronous stderr logger. `RUST_LOG` accepts levels a
 
 ### Remote client authentication
 
-With `client-grpc`, set `audio2face3d::client::ServerConfig::api_key` to
-`Some(key)` when initializing `Client::server`. The default `None` sends no
+With `client-grpc`, use `ServerConfig::builder(endpoint).api_key(key).build()?`
+when initializing `Client::server`. Omitting the key sends no
 authorization header. Each inference RPC carries `authorization: Bearer <key>`;
 authentication is performed per RPC, not when the transport connects.
 The same setting applies to cloned clients. Create a new client to change the key.
@@ -388,7 +388,32 @@ Authentication rejections currently surface as `ErrorKind::Transport`.
 Use HTTPS or a trusted local transport when sending credentials.
 
 ```rust,ignore
-let mut config = audio2face3d::client::ServerConfig::new(endpoint);
-config.api_key = Some(api_key);
+let config = audio2face3d::client::ServerConfig::builder(endpoint)
+    .api_key(api_key)
+    .build()?;
 let client = audio2face3d::client::Client::server(config).await?;
 ```
+
+## Configuration builders
+
+Use consuming builders to specify optional settings and validate before starting work.
+Configuration fields are private outside their package. Construct these types
+through their builders; public `new`, `Default`, and struct-literal construction
+are not supported. Read values through accessors. To revise a configuration,
+use `into_builder()`, change the desired options, then call `build()` again.
+
+| Configuration | Builder entry |
+|---|---|
+| Remote client | `client::ServerConfig::builder(endpoint)` |
+| Direct client | `client::DirectConfig::builder(engine_config)` |
+| Client limits | `client::Limits::builder()` |
+| Inference engine | `inference::Config::builder(backend)` |
+| Inference request | `types::RequestOptions::builder(input_format)` |
+| Server service | `audio2face3d_server::ServerConfig::builder(backend)` |
+
+Setters consume and return the builder. `build()` returns a validated configuration
+or an error, without connecting or loading inference engines. Optional fields have
+both `field(value)` and `optional_field(Option<T>)` setters, so callers can supply
+runtime options or reset a value to `None`. Unset, zero and false remain distinct.
+The backend is explicit at builder construction, avoiding feature-dependent defaults.
+Builder support introduces no dependency or asynchronous runtime requirement.

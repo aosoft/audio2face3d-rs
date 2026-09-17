@@ -252,7 +252,13 @@ impl Fixture {
     }
 }
 async fn collect_async(client: &Client) -> Result<Vec<OutputEvent>> {
-    let (mut input, mut output, control) = client.start(RequestOptions::default())?.split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )?
+        .split();
     let send = async {
         for _ in 0..4 {
             input
@@ -301,7 +307,7 @@ async fn current_thread_runtime_validates_stream_terminals_and_recovers() {
         (Mode::ReverseTime, Some(ErrorKind::Protocol)),
     ] {
         let server = Fixture::start(mode).await;
-        let client = Client::server(ServerConfig::new(&server.url))
+        let client = Client::server(ServerConfig::builder(&server.url).build().unwrap())
             .await
             .unwrap();
         let result = tokio::time::timeout(Duration::from_secs(5), collect_async(&client))
@@ -327,18 +333,29 @@ async fn current_thread_runtime_validates_stream_terminals_and_recovers() {
 #[test]
 fn server_requires_runtime_and_runs_on_explicit_runtime_from_standard_executor() {
     assert_eq!(
-        wait(Client::server(ServerConfig::new("http://127.0.0.1:1")))
-            .err()
-            .unwrap()
-            .kind(),
+        wait(Client::server(
+            ServerConfig::builder("http://127.0.0.1:1").build().unwrap()
+        ))
+        .err()
+        .unwrap()
+        .kind(),
         ErrorKind::RuntimeUnavailable
     );
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(Fixture::start(Mode::Normal));
-    let mut config = ServerConfig::new(&server.url);
-    config.runtime = Some(rt.handle().clone());
+    let config = ServerConfig::builder(&server.url)
+        .optional_runtime(Some(rt.handle().clone()))
+        .build()
+        .unwrap();
     let client = wait(Client::server(config)).unwrap();
-    let events = collect(&client, RequestOptions::default(), pcm(2, 128000)).unwrap();
+    let events = collect(
+        &client,
+        RequestOptions::builder(AudioFormat::MONO_16KHZ)
+            .build()
+            .unwrap(),
+        pcm(2, 128000),
+    )
+    .unwrap();
     assert_eq!(returned_pcm(&events), pcm(2, 128000));
     wait(client.shutdown()).unwrap();
     rt.block_on(server.close());
@@ -347,10 +364,19 @@ fn server_requires_runtime_and_runs_on_explicit_runtime_from_standard_executor()
 fn stopping_runtime_completes_pending_handles() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(Fixture::start(Mode::Hold));
-    let mut config = ServerConfig::new(&server.url);
-    config.runtime = Some(rt.handle().clone());
+    let config = ServerConfig::builder(&server.url)
+        .optional_runtime(Some(rt.handle().clone()))
+        .build()
+        .unwrap();
     let client = wait(Client::server(config)).unwrap();
-    let (mut input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     wait(input.send(InputChunk::new(
         PcmBuffer::from_vec(vec![0, 0]).unwrap(),
         vec![],
@@ -369,11 +395,13 @@ fn stopping_runtime_completes_pending_handles() {
 #[tokio::test]
 async fn deadline_closes_rpc_with_no_response() {
     let fixture = Fixture::start(Mode::Hold).await;
-    let client = Client::server(ServerConfig::new(&fixture.url))
+    let client = Client::server(ServerConfig::builder(&fixture.url).build().unwrap())
         .await
         .unwrap();
-    let mut options = RequestOptions::default();
-    options.timeout = Some(Duration::from_millis(50));
+    let options = RequestOptions::builder(AudioFormat::MONO_16KHZ)
+        .optional_timeout(Some(Duration::from_millis(50)))
+        .build()
+        .unwrap();
     let (input, mut output, control) = client.start(options).unwrap().split();
     input.finish().await.unwrap();
     assert_eq!(
@@ -393,9 +421,18 @@ fn stopped_current_thread_runtime_wakes_a_backpressured_sender() {
         .unwrap();
     let fixture = rt.block_on(Fixture::start(Mode::Normal));
     let client = rt
-        .block_on(Client::server(ServerConfig::new(&fixture.url)))
+        .block_on(Client::server(
+            ServerConfig::builder(&fixture.url).build().unwrap(),
+        ))
         .unwrap();
-    let (mut input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     for _ in 0..16 {
         wait(input.send(InputChunk::new(
             PcmBuffer::from_vec(vec![0, 0]).unwrap(),
@@ -422,10 +459,30 @@ fn stopped_current_thread_runtime_wakes_a_backpressured_sender() {
 #[tokio::test]
 async fn full_response_queue_cancels_without_consumer_polling() {
     let fixture = Fixture::start(Mode::Normal).await;
-    let mut config = ServerConfig::new(&fixture.url);
-    config.limits.output_queue_items = 1;
+    let mut config = ServerConfig::builder(&fixture.url).build().unwrap();
+    config = config
+        .clone()
+        .into_builder()
+        .limits(
+            config
+                .limits()
+                .clone()
+                .into_builder()
+                .output_queue_items(1)
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
     let client = Client::server(config).await.unwrap();
-    let (mut input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     input
         .send(InputChunk::new(
             PcmBuffer::from_vec(vec![1, 2]).unwrap(),
@@ -456,14 +513,18 @@ fn unavailable_or_disabled_runtime_fails_initialization() {
         .build()
         .unwrap();
     let error = rt
-        .block_on(Client::server(ServerConfig::new("http://127.0.0.1:1")))
+        .block_on(Client::server(
+            ServerConfig::builder("http://127.0.0.1:1").build().unwrap(),
+        ))
         .err()
         .unwrap();
     assert_eq!(error.kind(), ErrorKind::RuntimeUnavailable);
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let mut config = ServerConfig::new("http://127.0.0.1:1");
-    config.runtime = Some(rt.handle().clone());
-    config.connect_timeout = Duration::from_millis(100);
+    let config = ServerConfig::builder("http://127.0.0.1:1")
+        .optional_runtime(Some(rt.handle().clone()))
+        .connect_timeout(Duration::from_millis(100))
+        .build()
+        .unwrap();
     assert_eq!(
         wait(Client::server(config)).err().unwrap().kind(),
         ErrorKind::Transport
@@ -487,8 +548,17 @@ async fn tcp_disconnect_during_response_is_not_success_and_next_request_recovers
         let mut upstream_next = tokio::net::TcpStream::connect(&upstream).await.unwrap();
         let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream_next).await;
     });
-    let client = Client::server(ServerConfig::new(url)).await.unwrap();
-    let (mut input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let client = Client::server(ServerConfig::builder(url).build().unwrap())
+        .await
+        .unwrap();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     input
         .send(InputChunk::new(
             PcmBuffer::from_vec(vec![1, 2]).unwrap(),
@@ -547,9 +617,18 @@ async fn tcp_disconnect_during_upload_wakes_input_and_output() {
         connected.send(()).unwrap();
         tokio::select! {_ = tokio::io::copy_bidirectional(&mut a,&mut b)=>{},_ = cut_rx=>{}}
     });
-    let client = Client::server(ServerConfig::new(url)).await.unwrap();
+    let client = Client::server(ServerConfig::builder(url).build().unwrap())
+        .await
+        .unwrap();
     ready.await.unwrap();
-    let (mut input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
     input
         .send(InputChunk::new(
             PcmBuffer::from_vec(vec![0; 32000]).unwrap(),
@@ -586,10 +665,12 @@ async fn tcp_disconnect_during_upload_wakes_input_and_output() {
 #[test]
 fn transport_windows_reject_values_outside_http2_range() {
     for value in [0, 65534, 0x80000000, u32::MAX] {
-        let mut config = ServerConfig::new("http://127.0.0.1:1");
-        config.http2_window_bytes = value;
         assert_eq!(
-            wait(Client::server(config)).err().unwrap().kind(),
+            ServerConfig::builder("http://127.0.0.1:1")
+                .http2_window_bytes(value)
+                .build()
+                .unwrap_err()
+                .kind(),
             ErrorKind::InvalidInput
         );
     }

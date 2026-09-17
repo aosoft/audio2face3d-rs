@@ -90,12 +90,12 @@ fn all_named_parameters_and_optional_zero_false_round_trip() {
     });
     let decoded = decode_request(h.clone()).unwrap();
     assert_eq!(
-        decoded.face.as_ref().unwrap().upper_face_smoothing,
+        decoded.face().as_ref().unwrap().upper_face_smoothing,
         Some(0.0)
     );
     assert_eq!(
         decoded
-            .emotion_post_processing
+            .emotion_post_processing()
             .as_ref()
             .unwrap()
             .use_preferred,
@@ -106,11 +106,13 @@ fn all_named_parameters_and_optional_zero_false_round_trip() {
 
 #[test]
 fn deadline_is_carried_separately_without_being_lost() {
-    let mut request = RequestOptions::default();
-    request.timeout = Some(Duration::from_secs(3));
+    let request = RequestOptions::builder(AudioFormat::MONO_16KHZ)
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
     let encoded = encode_request(request).unwrap();
     assert_eq!(encoded.timeout, Some(Duration::from_secs(3)));
-    assert_eq!(decode_request(encoded.header).unwrap().timeout, None);
+    assert_eq!(decode_request(encoded.header).unwrap().timeout(), None);
 }
 
 #[test]
