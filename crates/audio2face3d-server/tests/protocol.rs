@@ -175,15 +175,9 @@ async fn protocol_errors_are_finite_and_do_not_succeed() {
 }
 
 #[tokio::test]
-async fn idle_timeout_concurrency_limit_and_shutdown_release_sessions() {
+async fn idle_timeout_and_shutdown_release_sessions() {
     let mut running = Running::start(&[]).await;
     let (_tx, mut stream) = running.stream().await;
-    let error = running
-        .client
-        .process_audio_stream(tokio_stream::iter([header()]))
-        .await
-        .unwrap_err();
-    assert_eq!(error.code(), Code::ResourceExhausted);
     let error = loop {
         if let Err(error) = stream.message().await {
             break error;
@@ -443,5 +437,196 @@ fn diagnostic_jaw_baseline_rejects_ambiguous_or_invalid_settings() {
         ])
         .validate()
         .is_err()
+    );
+}
+
+#[tokio::test]
+async fn queued_rpc_runs_after_failure_and_returns_its_own_audio() {
+    let mut running = Running::start(&[]).await;
+    let (_tx, mut active) = running.stream().await;
+    let mut client = running.client.clone();
+    let queued = tokio::spawn(async move {
+        let response = client
+            .process_audio_stream(tokio_stream::iter([header(), audio(vec![29; 1066]), end()]))
+            .await
+            .unwrap();
+        let mut stream = response.into_inner();
+        let mut pcm = Vec::new();
+        while let Some(message) = stream.message().await.unwrap() {
+            if let Some(proto::controller::animation_data_stream::StreamPart::AnimationData(
+                frame,
+            )) = message.stream_part
+            {
+                pcm.extend(frame.audio.unwrap().audio_buffer);
+            }
+        }
+        pcm
+    });
+    loop {
+        if let Err(error) = active.message().await {
+            assert_eq!(error.code(), Code::DeadlineExceeded);
+            break;
+        }
+    }
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), queued)
+            .await
+            .unwrap()
+            .unwrap(),
+        vec![29; 1066]
+    );
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn cancelling_queued_rpc_frees_waiting_capacity_before_active_finishes() {
+    let mut running = Running::start(&["--request-queue-capacity", "1"]).await;
+    let (tx, active) = running.stream().await;
+    // Continuously feed the active stream so its input timeout cannot release it.
+    let feeder = tokio::spawn(async move {
+        loop {
+            if tx.send(audio(vec![0; 2])).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    let mut client = running.client.clone();
+    let waiting = tokio::spawn(async move {
+        client
+            .process_audio_stream(tokio_stream::iter([header(), audio(vec![1; 2]), end()]))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Queue saturation demonstrates that the preceding RPC was admitted to wait.
+    let error = running
+        .client
+        .process_audio_stream(tokio_stream::iter([header()]))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::ResourceExhausted);
+    waiting.abort();
+    let _ = waiting.await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut client = running.client.clone();
+    let next = tokio::spawn(async move {
+        client
+            .process_audio_stream(tokio_stream::iter([header(), audio(vec![2; 2]), end()]))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !next.is_finished(),
+        "replacement must queue, not be rejected"
+    );
+    drop(active);
+    feeder.abort();
+    let response = tokio::time::timeout(Duration::from_secs(2), next)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let mut output = response.into_inner();
+    while output.message().await.unwrap().is_some() {}
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn queue_timeout_and_shutdown_return_distinct_statuses() {
+    let mut running = Running::start(&["--request-queue-timeout-ms", "30"]).await;
+    let (_tx, _active) = running.stream().await;
+    let error = running
+        .client
+        .process_audio_stream(tokio_stream::iter([header()]))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Code::DeadlineExceeded);
+    assert_eq!(error.message(), "request queue wait timed out");
+    let mut client = running.client.clone();
+    let queued = tokio::spawn(async move {
+        client
+            .process_audio_stream(tokio_stream::iter([header()]))
+            .await
+    });
+    tokio::task::yield_now().await;
+    running.stop.send(()).unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), queued)
+        .await
+        .unwrap()
+        .unwrap();
+    // Shutdown may reach transport before admission; either way it must not hang.
+    assert_eq!(result.unwrap_err().code(), Code::Unavailable);
+    tokio::time::timeout(Duration::from_secs(3), running.task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn two_active_streams_allow_next_rpc_when_either_slot_is_released() {
+    let mut running = Running::start(&["--max-streams", "2"]).await;
+    let (first_tx, mut first) = running.stream().await;
+    let feeder = tokio::spawn(async move {
+        loop {
+            if first_tx.send(audio(vec![0; 2])).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    let (_second_tx, second) = running.stream().await;
+    let mut client = running.client.clone();
+    let mut queued = tokio::spawn(async move {
+        client
+            .process_audio_stream(tokio_stream::iter([header(), audio(vec![41; 2]), end()]))
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut queued)
+            .await
+            .is_err()
+    );
+    drop(second);
+    let mut next = tokio::time::timeout(Duration::from_secs(1), queued)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .into_inner();
+    let mut returned = Vec::new();
+    while let Some(message) = next.message().await.unwrap() {
+        if let Some(proto::controller::animation_data_stream::StreamPart::AnimationData(frame)) =
+            message.stream_part
+        {
+            returned.extend(frame.audio.unwrap().audio_buffer);
+        }
+    }
+    assert_eq!(returned, vec![41; 2]);
+    // The first stream is still open while the queued one has already finished.
+    assert!(first.message().await.unwrap().is_some());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), first.message())
+            .await
+            .is_err()
+    );
+    drop(first);
+    feeder.abort();
+    running.stop().await;
+}
+
+#[test]
+fn request_queue_limits_are_validated() {
+    for capacity in ["0".to_owned(), usize::MAX.to_string()] {
+        assert!(
+            Config::parse_from(["test", "--request-queue-capacity", &capacity])
+                .validate()
+                .is_err()
+        );
+    }
+    assert!(
+        Config::parse_from(["test", "--request-queue-timeout-ms", "0"])
+            .validate()
+            .is_ok()
     );
 }

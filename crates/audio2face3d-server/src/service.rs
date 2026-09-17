@@ -1,4 +1,5 @@
 use crate::{
+    admission::Admission,
     audio::validate_header,
     backend::Factory,
     config::Config,
@@ -12,14 +13,14 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::Instrument;
 
 pub struct Service {
     config: Config,
-    slots: Arc<Semaphore>,
+    admission: Admission,
     shutdown: CancellationToken,
     workers: TaskTracker,
     next_id: AtomicU64,
@@ -33,7 +34,11 @@ impl Service {
         factory: Arc<Factory>,
     ) -> Self {
         Self {
-            slots: Arc::new(Semaphore::new(config.max_streams)),
+            admission: Admission::new(
+                config.max_streams,
+                config.request_queue_capacity,
+                std::time::Duration::from_millis(config.request_queue_timeout_ms),
+            ),
             config,
             shutdown,
             workers,
@@ -52,11 +57,7 @@ impl A2fControllerService for Service {
         if self.shutdown.is_cancelled() {
             return Err(Status::unavailable("server shutting down"));
         }
-        let permit = self
-            .slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Status::resource_exhausted("concurrent stream limit reached"))?;
+        let permit = self.admission.acquire(&self.shutdown).await?;
         let permit = Arc::new(permit);
         let stream_permit = permit.clone();
         let mut input = request.into_inner();

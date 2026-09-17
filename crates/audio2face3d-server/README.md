@@ -62,14 +62,30 @@ shutdown timeouts result in a process error.
   parameters and unsupported forms are rejected. Mock ignores these settings.
 - Standard gRPC health Check/Watch supports the empty service name and
   `nvidia_ace.services.a2f_controller.v1.A2FControllerService`.
-- Invalid input returns INVALID_ARGUMENT; concurrency/duration limits return
-  RESOURCE_EXHAUSTED; idle/output-queue timeout returns DEADLINE_EXCEEDED.
+- Invalid input returns INVALID_ARGUMENT; a full request queue or duration
+  limit returns RESOURCE_EXHAUSTED; request-wait/idle/output-queue timeout
+  returns DEADLINE_EXCEEDED.
   Failed streams do not emit SUCCESS.
 
-Use `--help` for all options. Defaults are one active stream, a 1 MiB message
-limit, 600 seconds of audio, 16 queued output messages, 30 seconds of input
+Use `--help` for all options. Defaults are one active stream, 64 waiting
+requests, a 1 MiB message limit, 600 seconds of audio, 16 queued output messages, 30 seconds of input
 idle time, 10 seconds of output queue wait, and 5 seconds of shutdown wait.
 Output queue timeout is not a deadline for actual client playback.
+
+Requests exceeding `--max-streams` wait FIFO for an execution slot. With
+`--max-streams 1`, requests execute sequentially. Ordering is the order in
+which the server registers waiters, not client wall-clock send timestamps.
+`--request-queue-capacity` bounds waiting requests separately from active
+streams. `--request-queue-timeout-ms` defaults to 0 (no server-imposed wait
+limit); client deadlines still apply. Cancellation removes a waiting request,
+and shutdown wakes waiters with UNAVAILABLE.
+
+Waiting does not start inference or read the audio stream into an application
+buffer; HTTP/2 flow control can block uploads until execution starts. Input
+idle timeout starts after admission. An execution slot is retained until the
+worker has cleaned up and its response stream has drained or been cancelled.
+This queues RPC processing, not playback on a remote device. The request queue
+is in memory and is not preserved across server restarts.
 
 ## Development: mock backend and curve diagnostics
 
