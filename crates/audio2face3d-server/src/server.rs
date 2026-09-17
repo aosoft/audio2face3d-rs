@@ -11,8 +11,9 @@ use tonic::transport::Server;
 use tonic_health::ServingStatus;
 
 /// Serve a pre-bound listener; tests can bind port zero and inject shutdown.
-pub(crate) async fn serve_typed(
+pub(crate) async fn serve_typed<A: crate::auth::Authenticator>(
     config: Config,
+    authenticator: Option<Arc<A>>,
     listener: TcpListener,
     stop: impl Future<Output = ()> + Send,
 ) -> Result<(), ServerError> {
@@ -31,12 +32,14 @@ pub(crate) async fn serve_typed(
     health
         .set_service_status(SERVICE_NAME, ServingStatus::Serving)
         .await;
+    let gate = Arc::new(crate::auth::gate::AuthGate::new(authenticator));
     let service = A2fControllerServiceServer::new(
         Service::new(
             config.clone(),
             shutdown.clone(),
             workers.clone(),
             factory.clone(),
+            gate,
         )
         .map_err(ServerError::Prepare)?,
     )
@@ -56,6 +59,7 @@ pub(crate) async fn serve_typed(
     };
     tracing::info!(address = %listener.local_addr()?, backend = ?config.backend, "serving");
     let result = Server::builder()
+        .http2_max_header_list_size(16 * 1024)
         .add_service(health_service)
         .add_service(service)
         .serve_with_incoming_shutdown(TcpListenerStream::new(listener), stopping);
@@ -110,7 +114,7 @@ pub async fn serve(
     listener: TcpListener,
     stop: impl Future<Output = ()> + Send,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    serve_typed(config, listener, stop)
+    serve_typed::<crate::auth::NoAuth>(config, None, listener, stop)
         .await
         .map_err(|e| Box::new(e) as _)
 }

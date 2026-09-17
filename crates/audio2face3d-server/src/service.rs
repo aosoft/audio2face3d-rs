@@ -1,3 +1,4 @@
+use crate::auth::{Authenticator, RpcMethod, gate::AuthGate};
 use crate::{
     admission::Admission,
     audio::validate_header,
@@ -10,31 +11,29 @@ use crate::{
     session::{self, ResponseStream},
 };
 use audio2face3d::logging::integration::LogScope;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::Instrument;
 
-pub struct Service {
+pub struct Service<A> {
     scope: LogScope,
     config: Config,
     admission: Admission,
     shutdown: CancellationToken,
     workers: TaskTracker,
-    next_id: AtomicU64,
+    gate: Arc<AuthGate<A>>,
     factory: Arc<Factory>,
 }
-impl Service {
+impl<A: Authenticator> Service<A> {
     pub fn new(
         config: Config,
         shutdown: CancellationToken,
         workers: TaskTracker,
         factory: Arc<Factory>,
+        gate: Arc<AuthGate<A>>,
     ) -> Result<Self, Status> {
         Ok(Self {
             scope: LogScope::capture(),
@@ -46,12 +45,12 @@ impl Service {
             config,
             shutdown,
             workers,
-            next_id: AtomicU64::new(1),
+            gate,
             factory,
         })
     }
 }
-impl A2fControllerService for Service {
+impl<A: Authenticator> A2fControllerService for Service<A> {
     type ProcessAudioStreamStream = ResponseStream;
     fn process_audio_stream<'borrow, 'future>(
         &'borrow self,
@@ -62,31 +61,51 @@ impl A2fControllerService for Service {
         Self: 'future,
     {
         let scope = self.scope.clone();
-        Box::pin(scope.wrap_future(async move {
-            if self.shutdown.is_cancelled() {
-                return Err(Status::unavailable("server shutting down"));
-            }
-            let permit = self.admission.acquire(&self.shutdown).await?;
-            let permit = Arc::new(permit);
-            let stream_permit = permit.clone();
-            let mut input = request.into_inner();
-            let first = session::read_input(&mut input, &self.config, &self.shutdown).await?;
-            let Some(StreamPart::AudioStreamHeader(header)) = first.stream_part else {
-                return Err(Status::invalid_argument(
-                    "first message must be AudioStreamHeader",
-                ));
-            };
-            validate_header(header.audio_header.as_ref())?;
-            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let span = tracing::error_span!("rpc", id);
-            let factory = self.factory.clone();
-            let (tx, rx) = mpsc::channel(self.config.output_queue_capacity);
-            let (terminal_tx, terminal_rx) = oneshot::channel();
-            let config = self.config.clone();
-            let stream_cancel = self.shutdown.child_token();
-            let shutdown = stream_cancel.clone();
-            let worker_scope = LogScope::capture();
-            self.workers.spawn(worker_scope.wrap_future(
+        let request_context =
+            crate::request::RequestContext::new(self.gate.next_id(), request.metadata());
+        let id = request_context.as_ref().map(|c| c.id.0).unwrap_or(0);
+        let span = scope.in_scope(|| tracing::error_span!("rpc", id));
+        let handler_span = span.clone();
+        Box::pin(
+            scope.wrap_future(
+                async move {
+                    let request_context = request_context?;
+                    request_context
+                        .run(async move {
+                            if self.shutdown.is_cancelled() {
+                                return Err(Status::unavailable("server shutting down"));
+                            }
+                            let _principal = self
+                                .gate
+                                .authorize(
+                                    &request,
+                                    request_context.id,
+                                    RpcMethod::ProcessAudioStream,
+                                    &self.shutdown,
+                                )
+                                .await?;
+                            let mut input = request.into_inner();
+                            let permit = self.admission.acquire(&self.shutdown).await?;
+                            let permit = Arc::new(permit);
+                            let stream_permit = permit.clone();
+                            let first =
+                                session::read_input(&mut input, &self.config, &self.shutdown)
+                                    .await?;
+                            let Some(StreamPart::AudioStreamHeader(header)) = first.stream_part
+                            else {
+                                return Err(Status::invalid_argument(
+                                    "first message must be AudioStreamHeader",
+                                ));
+                            };
+                            validate_header(header.audio_header.as_ref())?;
+                            let factory = self.factory.clone();
+                            let (tx, rx) = mpsc::channel(self.config.output_queue_capacity);
+                            let (terminal_tx, terminal_rx) = oneshot::channel();
+                            let config = self.config.clone();
+                            let stream_cancel = self.shutdown.child_token();
+                            let shutdown = stream_cancel.clone();
+                            let worker_scope = LogScope::capture();
+                            self.workers.spawn(worker_scope.wrap_future(
                 async move {
                     let _permit = permit;
                     tracing::info!("started");
@@ -107,9 +126,14 @@ impl A2fControllerService for Service {
                 }
                 .instrument(span.clone()),
             ));
-            Ok(Response::new(span.in_scope(|| {
-                ResponseStream::new(rx, terminal_rx, stream_permit, stream_cancel)
-            })))
-        }))
+                            Ok(Response::new(span.in_scope(|| {
+                                ResponseStream::new(rx, terminal_rx, stream_permit, stream_cancel)
+                            })))
+                        })
+                        .await
+                }
+                .instrument(handler_span),
+            ),
+        )
     }
 }
