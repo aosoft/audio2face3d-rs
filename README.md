@@ -364,3 +364,11 @@ cargo install audio2face3d --features cli,native
 cargo install audio2face3d-server --features cli
 cargo run -p audio2face3d-server --no-default-features --features cli,mock -- --backend mock
 ```
+
+## Shared context and logging
+
+`Audio2Face3DContext` owns shared application resources. Build it with an `Arc<dyn Logger>` and pass it to `Client::direct_with_context`, `Client::server_with_context`, `inference::Factory::prepare_with_context`, a low-level `load_with_context` factory, or `Server::builder(config).context(context)`. Clones share the same resources. Context drop does not stop consumers or flush the logger.
+
+The public `logging::Logger` trait uses only standard Rust types. `log(level, || message)` calls its closure only when the level passes the logger threshold; `Off` never generates an event. An explicit default Context is silent. Legacy constructors without a Context retain the calling tracing subscriber for compatibility. Internal scope propagation covers standard threads, future poll/drop, native job tasks and cleanup. Native SDK output outside Rust is separate.
+
+The executables provide a synchronous stderr logger. `RUST_LOG` accepts levels and target directives (default: info); span/field expressions are rejected. Level filtering occurs before message generation. CLI target filtering occurs on the formatted target-prefixed message, so a target-specific rejection can still incur formatting when the global minimum threshold allows that level.

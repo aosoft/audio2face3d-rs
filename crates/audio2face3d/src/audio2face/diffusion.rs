@@ -131,6 +131,7 @@ impl DiffusionGeometryInteractiveExecutorFactory {
 /// post-processor types.
 #[cfg(feature = "tensorrt")]
 pub struct DiffusionGeometryExecutor {
+    scope: crate::logging::integration::LogScope,
     execution: DiffusionScheduler,
     backend: TensorRtDiffusionBackend,
     postprocessors: Vec<DiffusionPostprocessor>,
@@ -159,6 +160,7 @@ pub struct DiffusionGeometryExecutor {
 /// `audio2face-sdk/include/audio2face/interactive_executor.h`.
 #[cfg(feature = "tensorrt")]
 pub struct DiffusionGeometryInteractiveExecutor {
+    scope: crate::logging::integration::LogScope,
     execution:
         DiffusionGeometryInteractiveExecution<TensorRtDiffusionBackend, DiffusionPostprocessor>,
     contract: DiffusionContract,
@@ -300,6 +302,7 @@ impl DiffusionGeometryInteractiveExecutor {
         let eyes = device.allocate(6)?;
         let core_interrupt = execution.interrupt_handle();
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             execution,
             contract,
             audio,
@@ -317,12 +320,15 @@ impl DiffusionGeometryInteractiveExecutor {
     }
 
     pub fn total_frames(&self) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         self.execution.total_frames()
     }
     pub fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.execution.sampling_rate()
     }
     pub fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         FrameRate::new(
             self.contract.frame_rate_numerator,
             self.contract.frame_rate_denominator,
@@ -330,46 +336,59 @@ impl DiffusionGeometryInteractiveExecutor {
         .expect("validated model frame rate")
     }
     pub fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        let _scope = self.scope.activate();
         self.execution.frame_timestamp(frame)
     }
     pub fn batch_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.batch_size
     }
     pub fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        let _scope = self.scope.activate();
         self.interrupt_handle.clone()
     }
     pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        let _scope = self.scope.activate();
         &self.stream
     }
     pub fn audio_accumulator(&self) -> &Arc<crate::audio2x::AudioAccumulator> {
+        let _scope = self.scope.activate();
         &self.audio
     }
     pub fn emotion_accumulator(&self) -> &Arc<crate::audio2x::EmotionAccumulator> {
+        let _scope = self.scope.activate();
         &self.emotions
     }
     pub fn invalidate(
         &mut self,
         layer: crate::audio2face::GeometryInvalidationLayer,
     ) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         self.execution.invalidate(map_invalidation_layer(layer));
         Ok(())
     }
     pub fn is_valid(&self, layer: crate::audio2face::GeometryInvalidationLayer) -> bool {
+        let _scope = self.scope.activate();
         self.execution.is_valid(map_invalidation_layer(layer))
     }
     pub fn set_input_strength(&mut self, value: f32) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         self.execution.set_input_strength(value)
     }
     pub fn skin_geometry_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.contract.result_layout.skin
     }
     pub fn tongue_geometry_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.contract.result_layout.tongue
     }
     pub fn jaw_transform_size(&self) -> usize {
+        let _scope = self.scope.activate();
         16
     }
     pub fn eyes_rotation_size(&self) -> usize {
+        let _scope = self.scope.activate();
         6
     }
 
@@ -436,6 +455,7 @@ impl DiffusionGeometryInteractiveExecutor {
         generation: u64,
         stateful: bool,
     ) -> crate::Result<crate::audio2x::InteractiveExecutionReport> {
+        let _scope = self.scope.activate();
         let mut callback_error = None;
         let mut emitted_frames = 0;
         let stream = &self.stream;
@@ -501,16 +521,20 @@ impl DiffusionGeometryInteractiveExecutor {
                         + Send
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
-        Box::pin(async move {
-            let generation = self.interrupt_handle.generation();
-            YieldOnce(false).await;
-            if self.interrupt_handle.is_interrupted_since(generation) {
-                return Ok(crate::audio2x::InteractiveExecutionReport {
-                    status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                    emitted_frames: 0,
-                });
-            }
-            self.compute_frame_sync_with_generation(frame, callback, generation, false)
+        let _scope = self.scope.activate();
+        Box::pin({
+            let scope = self.scope.for_current();
+            scope.wrap_future(async move {
+                let generation = self.interrupt_handle.generation();
+                YieldOnce(false).await;
+                if self.interrupt_handle.is_interrupted_since(generation) {
+                    return Ok(crate::audio2x::InteractiveExecutionReport {
+                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                        emitted_frames: 0,
+                    });
+                }
+                self.compute_frame_sync_with_generation(frame, callback, generation, false)
+            })
         })
     }
 
@@ -521,39 +545,43 @@ impl DiffusionGeometryInteractiveExecutor {
                         + Send
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
-        Box::pin(async move {
-            let generation = self.interrupt_handle.generation();
-            YieldOnce(false).await;
-            let total = self.total_frames()?;
-            if self.interrupt_handle.is_interrupted_since(generation) {
-                return Ok(crate::audio2x::InteractiveExecutionReport {
-                    status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                    emitted_frames: 0,
-                });
-            }
-            self.execution.prepare_all()?;
-            let mut emitted_frames = 0;
-            for frame in 0..total {
+        let _scope = self.scope.activate();
+        Box::pin({
+            let scope = self.scope.for_current();
+            scope.wrap_future(async move {
+                let generation = self.interrupt_handle.generation();
+                YieldOnce(false).await;
+                let total = self.total_frames()?;
                 if self.interrupt_handle.is_interrupted_since(generation) {
                     return Ok(crate::audio2x::InteractiveExecutionReport {
                         status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                        emitted_frames,
+                        emitted_frames: 0,
                     });
                 }
-                let report =
-                    self.compute_frame_sync_with_generation(frame, callback, generation, true)?;
-                emitted_frames += report.emitted_frames;
-                if report.status == crate::audio2x::InteractiveExecutionStatus::Interrupted {
-                    return Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                        emitted_frames,
-                    });
+                self.execution.prepare_all()?;
+                let mut emitted_frames = 0;
+                for frame in 0..total {
+                    if self.interrupt_handle.is_interrupted_since(generation) {
+                        return Ok(crate::audio2x::InteractiveExecutionReport {
+                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                            emitted_frames,
+                        });
+                    }
+                    let report =
+                        self.compute_frame_sync_with_generation(frame, callback, generation, true)?;
+                    emitted_frames += report.emitted_frames;
+                    if report.status == crate::audio2x::InteractiveExecutionStatus::Interrupted {
+                        return Ok(crate::audio2x::InteractiveExecutionReport {
+                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                            emitted_frames,
+                        });
+                    }
+                    YieldOnce(false).await;
                 }
-                YieldOnce(false).await;
-            }
-            Ok(crate::audio2x::InteractiveExecutionReport {
-                status: crate::audio2x::InteractiveExecutionStatus::Complete,
-                emitted_frames,
+                Ok(crate::audio2x::InteractiveExecutionReport {
+                    status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                    emitted_frames,
+                })
             })
         })
     }
@@ -571,30 +599,37 @@ pub fn create_diffusion_geometry_interactive_executor(
 #[cfg(feature = "tensorrt")]
 impl crate::audio2x::InteractiveExecutor for DiffusionGeometryInteractiveExecutor {
     fn invalidate_all(&mut self) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         self.invalidate(crate::audio2face::GeometryInvalidationLayer::All)
     }
 
     fn is_fully_valid(&self) -> bool {
+        let _scope = self.scope.activate();
         self.is_valid(crate::audio2face::GeometryInvalidationLayer::All)
     }
 
     fn total_frame_count(&self) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         self.total_frames()
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.sample_rate()
     }
 
     fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate()
     }
 
     fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        let _scope = self.scope.activate();
         self.frame_timestamp(frame)
     }
 
     fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        let _scope = self.scope.activate();
         self.interrupt_handle()
     }
 }
@@ -605,26 +640,32 @@ impl crate::audio2face::GeometryInteractiveExecutor for DiffusionGeometryInterac
         &mut self,
         layer: crate::audio2face::GeometryInvalidationLayer,
     ) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         self.invalidate(layer)
     }
 
     fn is_geometry_valid(&self, layer: crate::audio2face::GeometryInvalidationLayer) -> bool {
+        let _scope = self.scope.activate();
         self.is_valid(layer)
     }
 
     fn skin_geometry_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.skin_geometry_size()
     }
 
     fn tongue_geometry_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tongue_geometry_size()
     }
 
     fn jaw_transform_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.jaw_transform_size()
     }
 
     fn eyes_rotation_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.eyes_rotation_size()
     }
 
@@ -636,6 +677,7 @@ impl crate::audio2face::GeometryInteractiveExecutor for DiffusionGeometryInterac
                         + Send
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
+        let _scope = self.scope.activate();
         DiffusionGeometryInteractiveExecutor::compute_frame(self, frame, callback)
     }
 
@@ -646,6 +688,7 @@ impl crate::audio2face::GeometryInteractiveExecutor for DiffusionGeometryInterac
                         + Send
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
+        let _scope = self.scope.activate();
         DiffusionGeometryInteractiveExecutor::compute_all_frames(self, callback)
     }
 }
@@ -682,10 +725,12 @@ fn map_invalidation_layer(
 #[cfg(feature = "tensorrt")]
 impl DiffusionGeometryExecutor {
     pub(crate) fn device_arc(&self) -> Arc<GpuDevice> {
+        let _scope = self.scope.activate();
         Arc::clone(&self.device)
     }
 
     pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        let _scope = self.scope.activate();
         &self.result_stream
     }
 
@@ -693,6 +738,7 @@ impl DiffusionGeometryExecutor {
         &self,
         track: usize,
     ) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        let _scope = self.scope.activate();
         self.tracks
             .get(track)
             .map(|resources| &resources.audio)
@@ -707,6 +753,7 @@ impl DiffusionGeometryExecutor {
         &self,
         track: usize,
     ) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        let _scope = self.scope.activate();
         self.tracks
             .get(track)
             .map(|resources| &resources.emotions)
@@ -718,6 +765,7 @@ impl DiffusionGeometryExecutor {
     }
 
     pub fn set_input_strength(&mut self, value: f32) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         if !value.is_finite() {
             return Err(crate::Error::InvalidArgument {
                 field: "input_strength",
@@ -729,6 +777,7 @@ impl DiffusionGeometryExecutor {
     }
 
     pub fn set_identity_index(&mut self, value: usize) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         if value >= self.contract.identity_size {
             return Err(crate::Error::OutOfBounds {
                 field: "identity_index",
@@ -748,6 +797,7 @@ impl DiffusionGeometryExecutor {
         crate::audio2face::HostBlendshapeSolveExecutor,
         crate::audio2x::TransferError<Self>,
     > {
+        let _scope = self.scope.activate();
         match crate::audio2face::HostBlendshapeSolveExecutor::from_source(
             crate::audio2face::GeometrySource::Diffusion(self),
             parameters,
@@ -768,6 +818,7 @@ impl DiffusionGeometryExecutor {
         crate::audio2face::DeviceBlendshapeSolveExecutor,
         crate::audio2x::TransferError<Self>,
     > {
+        let _scope = self.scope.activate();
         match crate::audio2face::DeviceBlendshapeSolveExecutor::from_source(
             crate::audio2face::GeometrySource::Diffusion(self),
             parameters,
@@ -865,6 +916,7 @@ impl DiffusionGeometryExecutor {
         let emotion_output = device.allocate(owned_contract.emotion_size)?;
         let result_stream = device.create_stream()?;
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             execution,
             backend,
             postprocessors,
@@ -888,21 +940,27 @@ impl DiffusionGeometryExecutor {
     }
 
     pub fn track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tracks.len()
     }
     pub fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.sample_rate
     }
     pub fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
     pub fn execution_option(&self) -> crate::audio2face::GeometryExecutionOption {
+        let _scope = self.scope.activate();
         self.execution_option
     }
     pub fn set_execution_option(&mut self, value: crate::audio2face::GeometryExecutionOption) {
+        let _scope = self.scope.activate();
         self.execution_option = value;
     }
     pub fn audio(&self, track: usize) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        let _scope = self.scope.activate();
         self.tracks
             .get(track)
             .map(|value| &value.audio)
@@ -916,6 +974,7 @@ impl DiffusionGeometryExecutor {
         &self,
         track: usize,
     ) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        let _scope = self.scope.activate();
         self.tracks
             .get(track)
             .map(|value| &value.emotions)
@@ -927,6 +986,7 @@ impl DiffusionGeometryExecutor {
     }
 
     pub fn reset_track(&mut self, track: usize) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         <Self as crate::audio2x::Executor>::reset_track(self, track)
     }
     pub const fn constant_noise(&self) -> bool {
@@ -946,10 +1006,12 @@ pub fn create_diffusion_geometry_executor(
 #[cfg(feature = "tensorrt")]
 impl crate::audio2x::Executor for DiffusionGeometryExecutor {
     fn track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tracks.len()
     }
 
     fn reset_track(&mut self, track: usize) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         if track >= self.tracks.len() {
             return Err(crate::Error::OutOfBounds {
                 field: "track",
@@ -976,6 +1038,7 @@ impl crate::audio2x::Executor for DiffusionGeometryExecutor {
     }
 
     fn has_execution_started(&self, track: usize) -> crate::Result<bool> {
+        let _scope = self.scope.activate();
         if track >= self.tracks.len() {
             return Err(crate::Error::OutOfBounds {
                 field: "track",
@@ -987,6 +1050,7 @@ impl crate::audio2x::Executor for DiffusionGeometryExecutor {
     }
 
     fn available_execution_count(&self, track: usize) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         let audio = self.audio(track)?;
         Ok(self
             .contract
@@ -999,6 +1063,7 @@ impl crate::audio2x::Executor for DiffusionGeometryExecutor {
     }
 
     fn ready_track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tracks
             .iter()
             .enumerate()
@@ -1010,6 +1075,7 @@ impl crate::audio2x::Executor for DiffusionGeometryExecutor {
     }
 
     fn total_frame_count(&self, track: usize) -> crate::Result<Option<usize>> {
+        let _scope = self.scope.activate();
         let audio = self.audio(track)?;
         if !audio.is_closed() {
             return Ok(None);
@@ -1027,12 +1093,15 @@ impl crate::audio2x::Executor for DiffusionGeometryExecutor {
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.sample_rate
     }
     fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
     fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        let _scope = self.scope.activate();
         // Scheduler frames include negative-time context. Public frames, like
         // the interactive facade, start at the first nonnegative timestamp.
         let internal = self
@@ -1048,12 +1117,14 @@ impl crate::audio2x::Executor for DiffusionGeometryExecutor {
 #[cfg(feature = "tensorrt")]
 impl crate::audio2face::FaceExecutor for DiffusionGeometryExecutor {
     fn next_audio_sample_to_read(&self, track: usize) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         self.audio(track)?;
         let inference = self.execution.next_inference_index(track)?;
         Ok(self.contract.progress.window(inference)?.start.max(0) as usize)
     }
 
     fn next_emotion_timestamp_to_read(&self, track: usize) -> crate::Result<i64> {
+        let _scope = self.scope.activate();
         self.audio(track)?;
         let inference = self.execution.next_inference_index(track)?;
         Ok(self.contract.progress.window(inference)?.target)
@@ -1063,6 +1134,7 @@ impl crate::audio2face::FaceExecutor for DiffusionGeometryExecutor {
 #[cfg(feature = "tensorrt")]
 impl crate::audio2face::GeometryExecutor for DiffusionGeometryExecutor {
     fn execution_option(&self) -> crate::audio2face::GeometryExecutionOption {
+        let _scope = self.scope.activate();
         self.execution_option
     }
 
@@ -1070,20 +1142,25 @@ impl crate::audio2face::GeometryExecutor for DiffusionGeometryExecutor {
         &mut self,
         value: crate::audio2face::GeometryExecutionOption,
     ) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         self.execution_option = value;
         Ok(())
     }
 
     fn skin_geometry_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.contract.result_layout.skin
     }
     fn tongue_geometry_size(&self) -> usize {
+        let _scope = self.scope.activate();
         self.contract.result_layout.tongue
     }
     fn jaw_transform_size(&self) -> usize {
+        let _scope = self.scope.activate();
         16
     }
     fn eyes_rotation_size(&self) -> usize {
+        let _scope = self.scope.activate();
         6
     }
 
@@ -1091,6 +1168,7 @@ impl crate::audio2face::GeometryExecutor for DiffusionGeometryExecutor {
         &mut self,
         callbacks: crate::audio2face::GeometryCallbacks<'_>,
     ) -> crate::Result<crate::audio2x::Execution> {
+        let _scope = self.scope.activate();
         let crate::audio2face::GeometryCallbacks {
             results,
             mut emotions,
@@ -1214,5 +1292,27 @@ impl crate::audio2face::GeometryExecutor for DiffusionGeometryExecutor {
                 emitted_frames,
             },
         ))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl DiffusionGeometryExecutorFactory {
+    pub fn load_with_context(
+        parameters: DiffusionGeometryExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryExecutor> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl DiffusionGeometryInteractiveExecutorFactory {
+    pub fn load_with_context(
+        parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryInteractiveExecutor> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
     }
 }

@@ -7,6 +7,7 @@ use std::{
 };
 
 pub(crate) struct Core {
+    pub scope: crate::logging::integration::LogScope,
     pub limits: Limits,
     pub state: Mutex<Global>,
     pub notify: Notify,
@@ -22,6 +23,7 @@ pub(crate) struct Global {
 impl Core {
     pub fn new(limits: Limits) -> Result<Arc<Self>> {
         let core = Arc::new(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             limits,
             state: Mutex::new(Global {
                 closing: false,
@@ -33,10 +35,12 @@ impl Core {
             notify: Notify::default(),
             timer: OnceLock::new(),
         });
+        let scope = core.scope.clone();
         let weak = Arc::downgrade(&core);
         let worker = thread::Builder::new()
             .name("a2f-client-deadlines".into())
             .spawn(move || {
+                let _scope = scope.enter();
                 loop {
                     let Some(core) = weak.upgrade() else {
                         break;

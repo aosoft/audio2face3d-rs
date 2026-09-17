@@ -416,3 +416,25 @@ impl GeometryExecutorBundle {
         }
     }
 }
+
+#[cfg(feature = "tensorrt")]
+impl InteractiveGeometryExecutorBundleFactory {
+    pub fn load_with_context(
+        parameters: InteractiveGeometryBundleCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> ExecutorFuture<'static, InteractiveGeometryExecutorBundle> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl GeometryExecutorBundleFactory {
+    pub fn load_with_context(
+        parameters: GeometryExecutorBundleCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> ExecutorFuture<'static, GeometryExecutorBundle> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+    }
+}

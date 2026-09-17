@@ -22,6 +22,7 @@ pub enum ModelParameters {
 /// Parsed model descriptor with all relative paths resolved against model.json.
 #[derive(Clone, Debug)]
 pub struct Model {
+    scope: crate::logging::integration::LogScope,
     descriptor_path: PathBuf,
     engine_path: PathBuf,
     network: NetworkDocument,
@@ -33,6 +34,7 @@ pub struct Model {
 
 impl Model {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        tracing::debug!("loading model descriptor");
         let descriptor_path = path.as_ref().to_owned();
         let descriptor = load_model(&descriptor_path)?;
         let (network_path, engine_path, config_paths, model_data_paths, blendshape_paths) =
@@ -83,6 +85,7 @@ impl Model {
             )));
         }
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             descriptor_path,
             engine_path,
             network,
@@ -98,28 +101,34 @@ impl Model {
     }
 
     pub fn descriptor_path(&self) -> &Path {
+        let _scope = self.scope.activate();
         &self.descriptor_path
     }
 
     pub fn engine_path(&self) -> &Path {
+        let _scope = self.scope.activate();
         &self.engine_path
     }
 
     pub fn network(&self) -> &NetworkDocument {
+        let _scope = self.scope.activate();
         &self.network
     }
 
     pub fn parameters(&self, index: usize) -> Result<&ModelParameters> {
+        let _scope = self.scope.activate();
         self.parameters
             .get(index)
             .ok_or_else(|| invalid("model parameter index is out of range"))
     }
 
     pub fn parameter_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.parameters.len()
     }
 
     pub fn model_data_path(&self, index: usize) -> Result<&Path> {
+        let _scope = self.scope.activate();
         self.model_data_paths
             .get(index)
             .map(PathBuf::as_path)
@@ -127,12 +136,14 @@ impl Model {
     }
 
     pub fn blendshape_paths(&self, index: usize) -> Result<&HashMap<String, ModelDataPaths>> {
+        let _scope = self.scope.activate();
         self.blendshape_paths
             .get(index)
             .ok_or_else(|| invalid("blendshape paths are unavailable"))
     }
 
     pub fn set_parameters(&mut self, index: usize, parameters: ModelParameters) -> Result<()> {
+        let _scope = self.scope.activate();
         let matches = matches!(
             (self.kind, &parameters),
             (
@@ -152,6 +163,7 @@ impl Model {
     }
 
     pub fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         match &self.network {
             NetworkDocument::Geometry(network) => match &network.audio_params {
                 GeometryAudioParameters::Regression(value) => value.samplerate,
@@ -217,6 +229,19 @@ fn validate_parameters(parameters: &ModelParameters) -> Result<()> {
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidSchema(message.into())
+}
+
+impl Model {
+    pub fn load_with_context(
+        path: impl AsRef<Path>,
+        context: crate::Audio2Face3DContext,
+    ) -> Result<Self> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        scope.in_scope(|| Self::load(path))
+    }
+    pub fn context(&self) -> &crate::Audio2Face3DContext {
+        self.scope.context()
+    }
 }
 
 #[cfg(test)]

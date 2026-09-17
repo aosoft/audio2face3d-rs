@@ -3,6 +3,7 @@ mod async_util;
 #[cfg(feature = "native")]
 mod benchmark_command;
 mod library;
+mod logging;
 mod progress;
 mod raw_engine;
 #[cfg(feature = "native")]
@@ -433,7 +434,15 @@ struct EngineOptions {
 }
 
 pub fn run() {
-    if let Err(error) = execute(Cli::parse()) {
+    let cli = Cli::parse();
+    let result = (|| {
+        let logger = logging::StderrLogger::from_env()?;
+        let context = audio2face3d::Audio2Face3DContext::builder()
+            .logger(std::sync::Arc::new(logger))
+            .build();
+        audio2face3d::logging::integration::LogScope::new(context).in_scope(|| execute(cli))
+    })();
+    if let Err(error) = result {
         eprintln!("audio2face3d: {error}");
         std::process::exit(1);
     }

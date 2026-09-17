@@ -1,5 +1,6 @@
 use crate::client::{Client, Limits, driver::*, executor, types::*};
 use crate::inference::{self as engine, admission::Admission};
+use crate::{Audio2Face3DContext, logging::integration::LogScope};
 use std::{
     future::{Future, poll_fn},
     pin::pin,
@@ -36,7 +37,7 @@ struct Direct {
     gate: Mutex<bool>,
 }
 impl Client {
-    pub async fn direct(config: DirectConfig) -> Result<Self> {
+    async fn direct_inner(config: DirectConfig) -> Result<Self> {
         config.limits.validate()?;
         config.engine.validate()?;
         let admission = Admission::new(
@@ -190,4 +191,18 @@ async fn emit_batch(
         .await?;
     }
     Ok(())
+}
+
+impl Client {
+    pub async fn direct(config: DirectConfig) -> Result<Self> {
+        let scope = LogScope::capture();
+        scope.wrap_future(Self::direct_inner(config)).await
+    }
+    pub async fn direct_with_context(
+        config: DirectConfig,
+        context: Audio2Face3DContext,
+    ) -> Result<Self> {
+        let scope = LogScope::new(context);
+        scope.wrap_future(Self::direct_inner(config)).await
+    }
 }

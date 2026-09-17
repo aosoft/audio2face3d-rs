@@ -50,6 +50,7 @@ fn check(code: CUresult, operation: &'static str) -> Result<()> {
 
 #[derive(Debug)]
 pub struct GpuDevice {
+    scope: crate::logging::integration::LogScope,
     id: DeviceId,
     raw_device: CUdevice,
     context: CUcontext,
@@ -79,6 +80,7 @@ impl GpuDevice {
         }
         tracing::debug!(device = ordinal, "retained CUDA primary context");
         Ok(Arc::new(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             id,
             raw_device,
             context,
@@ -90,11 +92,13 @@ impl GpuDevice {
     }
 
     pub(crate) fn make_current(&self) -> Result<CurrentContextGuard> {
+        let _scope = self.scope.activate();
         CurrentContextGuard::enter(self.context)
     }
 
     #[cfg(all(feature = "animation", feature = "tensorrt"))]
     pub(crate) fn synchronize_borrowed_stream(&self, stream: CudaStreamRef<'_>) -> Result<()> {
+        let _scope = self.scope.activate();
         ensure_same_device(self.id(), stream.device_id())?;
         let _context = self.make_current()?;
         // SAFETY: the callback-scoped descriptor guarantees that the stream
@@ -171,6 +175,7 @@ impl GpuDevice {
 
 impl Drop for GpuDevice {
     fn drop(&mut self) {
+        let _scope = self.scope.activate();
         let _context = self.make_current();
         // SAFETY: this object owns one primary-context retain count. All child
         // resources hold an Arc and therefore outlive this final release.
@@ -1098,6 +1103,15 @@ impl<'a, T> DeviceView<'a, T> {
             )?;
         }
         stream.synchronize()
+    }
+}
+
+impl GpuDevice {
+    pub fn new_with_context(
+        ordinal: i32,
+        context: crate::Audio2Face3DContext,
+    ) -> Result<Arc<Self>> {
+        crate::logging::integration::LogScope::new(context).in_scope(|| Self::new(ordinal))
     }
 }
 

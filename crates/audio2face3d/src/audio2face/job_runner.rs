@@ -21,6 +21,7 @@ type JobAction = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
 /// in the task's private completion state, so an execution cannot remain
 /// pending forever when a custom runner rejects or silently drops work.
 pub struct JobRunnerTask {
+    scope: crate::logging::integration::LogScope,
     action: Option<JobAction>,
     completion: Option<Arc<ExecutionCompletion>>,
     track: usize,
@@ -29,6 +30,7 @@ pub struct JobRunnerTask {
 impl JobRunnerTask {
     /// Runs this task at most once, consuming it.
     pub fn run(mut self) {
+        let _scope = self.scope.activate();
         let Some(action) = self.action.take() else {
             return;
         };
@@ -53,6 +55,7 @@ impl JobRunnerTask {
         F: FnOnce() -> Result<()> + Send + 'static,
     {
         Self {
+            scope: crate::logging::integration::LogScope::capture(),
             action: Some(Box::new(action)),
             completion: Some(completion),
             track,
@@ -62,6 +65,7 @@ impl JobRunnerTask {
 
 impl Drop for JobRunnerTask {
     fn drop(&mut self) {
+        let _scope = self.scope.activate();
         if self.action.take().is_some()
             && let Some(completion) = &self.completion
         {
@@ -128,6 +132,7 @@ impl SerialJobQueue {
             armed: true,
         };
         runner.enqueue(JobRunnerTask {
+            scope: crate::logging::integration::LogScope::capture(),
             action: Some(Box::new(move || guard.run())),
             completion: None,
             track: 0,
@@ -198,6 +203,7 @@ struct PoolInner {
 /// owned by the task supplied by an executor. Drop signals shutdown, drains
 /// queued work, and joins workers; it never stops an external/shared runner.
 pub struct ThreadPoolJobRunner {
+    scope: crate::logging::integration::LogScope,
     inner: Arc<PoolInner>,
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -221,10 +227,11 @@ impl ThreadPoolJobRunner {
         });
         let mut workers = Vec::with_capacity(thread_count);
         for index in 0..thread_count {
+            let scope = crate::logging::integration::LogScope::capture();
             let worker_inner = Arc::clone(&inner);
             let worker = thread::Builder::new()
                 .name(format!("audio2face-job-{index}"))
-                .spawn(move || worker_loop(worker_inner))
+                .spawn(move || scope.in_scope(|| worker_loop(worker_inner)))
                 .map_err(|error| Error::Io {
                     operation: "spawn job runner worker",
                     message: error.to_string(),
@@ -242,6 +249,7 @@ impl ThreadPoolJobRunner {
         }
 
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             inner,
             workers: Mutex::new(workers),
         })
@@ -308,6 +316,7 @@ pub fn create_thread_pool_job_runner(thread_count: usize) -> Result<Arc<ThreadPo
 
 impl Drop for ThreadPoolJobRunner {
     fn drop(&mut self) {
+        let _scope = self.scope.activate();
         request_shutdown(&self.inner);
         if let Ok(mut workers) = self.workers.lock() {
             while let Some(worker) = workers.pop() {
@@ -345,6 +354,15 @@ fn worker_loop(inner: Arc<PoolInner>) {
         if let Some(task) = task {
             task.run();
         }
+    }
+}
+
+impl ThreadPoolJobRunner {
+    pub fn new_with_context(
+        thread_count: usize,
+        context: crate::Audio2Face3DContext,
+    ) -> Result<Self> {
+        crate::logging::integration::LogScope::new(context).in_scope(|| Self::new(thread_count))
     }
 }
 
@@ -662,6 +680,53 @@ mod tests {
                 Poll::Ready(result) => return result,
                 Poll::Pending => thread::yield_now(),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+    use crate::{
+        Audio2Face3DContext,
+        logging::{LogLevel, Logger, integration::LogScope},
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Sink(AtomicUsize);
+    impl Logger for Sink {
+        fn log_level(&self) -> LogLevel {
+            LogLevel::Trace
+        }
+        fn write_log(&self, _: LogLevel, _: String) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct Resource;
+    impl Drop for Resource {
+        fn drop(&mut self) {
+            tracing::info!("resource dropped");
+        }
+    }
+    #[test]
+    fn task_run_and_unexecuted_drop_retain_original_context() {
+        for run in [false, true] {
+            let sink = Arc::new(Sink(AtomicUsize::new(0)));
+            let context = Audio2Face3DContext::builder().logger(sink.clone()).build();
+            let scope = LogScope::new(context);
+            let task = scope.in_scope(|| {
+                let (_, completion) = crate::audio2x::Execution::pending(1);
+                completion.add_task(0).unwrap();
+                let resource = Resource;
+                JobRunnerTask::new(completion, 0, move || {
+                    drop(resource);
+                    Ok(())
+                })
+            });
+            drop(scope);
+            std::thread::spawn(move || if run { task.run() } else { drop(task) })
+                .join()
+                .unwrap();
+            assert!(sink.0.load(Ordering::SeqCst) >= 1);
         }
     }
 }

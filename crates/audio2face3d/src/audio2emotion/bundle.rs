@@ -141,3 +141,14 @@ pub fn create_post_process_bundle(
 ) -> ExecutorFuture<'static, EmotionExecutorBundle> {
     EmotionExecutorBundleFactory::post_process(parameters)
 }
+
+#[cfg(feature = "cuda")]
+impl EmotionExecutorBundleFactory {
+    pub fn load_with_context(
+        parameters: EmotionExecutorBundleCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> ExecutorFuture<'static, EmotionExecutorBundle> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+    }
+}

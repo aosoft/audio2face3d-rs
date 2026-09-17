@@ -1,5 +1,6 @@
 //! A bounded-by-session-count task set on one standard control thread.
 use crate::client::types::*;
+use crate::logging::integration::LogScope;
 use std::{
     future::Future,
     pin::Pin,
@@ -68,12 +69,16 @@ impl Executor {
         })
     }
     pub fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) -> Result<()> {
-        self.tx.send(Message::Run(Box::pin(task))).map_err(|_| {
-            Error::new(
-                ErrorKind::RuntimeUnavailable,
-                "direct control worker stopped",
-            )
-        })?;
+        self.tx
+            .send(Message::Run(Box::pin(
+                LogScope::capture().wrap_future(task),
+            )))
+            .map_err(|_| {
+                Error::new(
+                    ErrorKind::RuntimeUnavailable,
+                    "direct control worker stopped",
+                )
+            })?;
         self.thread.unpark();
         Ok(())
     }
@@ -84,7 +89,9 @@ impl Executor {
         {
             return;
         }
-        let _ = self.tx.send(Message::Stop(Box::pin(task)));
+        let _ = self.tx.send(Message::Stop(Box::pin(
+            LogScope::capture().wrap_future(task),
+        )));
         self.thread.unpark();
     }
 }

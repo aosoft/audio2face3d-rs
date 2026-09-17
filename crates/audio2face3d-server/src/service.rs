@@ -9,6 +9,7 @@ use crate::{
     },
     session::{self, ResponseStream},
 };
+use audio2face3d::logging::integration::LogScope;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -20,6 +21,7 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::Instrument;
 
 pub struct Service {
+    scope: LogScope,
     config: Config,
     admission: Admission,
     shutdown: CancellationToken,
@@ -35,6 +37,7 @@ impl Service {
         factory: Arc<Factory>,
     ) -> Result<Self, Status> {
         Ok(Self {
+            scope: LogScope::capture(),
             admission: Admission::new(
                 config.max_streams,
                 config.request_queue_capacity,
@@ -58,7 +61,8 @@ impl A2fControllerService for Service {
         'borrow: 'future,
         Self: 'future,
     {
-        Box::pin(async move {
+        let scope = self.scope.clone();
+        Box::pin(scope.wrap_future(async move {
             if self.shutdown.is_cancelled() {
                 return Err(Status::unavailable("server shutting down"));
             }
@@ -74,14 +78,15 @@ impl A2fControllerService for Service {
             };
             validate_header(header.audio_header.as_ref())?;
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let span = tracing::info_span!("rpc", id);
+            let span = tracing::error_span!("rpc", id);
             let factory = self.factory.clone();
             let (tx, rx) = mpsc::channel(self.config.output_queue_capacity);
             let (terminal_tx, terminal_rx) = oneshot::channel();
             let config = self.config.clone();
             let stream_cancel = self.shutdown.child_token();
             let shutdown = stream_cancel.clone();
-            self.workers.spawn(
+            let worker_scope = LogScope::capture();
+            self.workers.spawn(worker_scope.wrap_future(
                 async move {
                     let _permit = permit;
                     tracing::info!("started");
@@ -100,14 +105,11 @@ impl A2fControllerService for Service {
                     }
                     let _ = terminal_tx.send(result);
                 }
-                .instrument(span),
-            );
-            Ok(Response::new(ResponseStream::new(
-                rx,
-                terminal_rx,
-                stream_permit,
-                stream_cancel,
-            )))
-        })
+                .instrument(span.clone()),
+            ));
+            Ok(Response::new(span.in_scope(|| {
+                ResponseStream::new(rx, terminal_rx, stream_permit, stream_cancel)
+            })))
+        }))
     }
 }

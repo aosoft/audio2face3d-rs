@@ -17,17 +17,19 @@ all-features = false
 default-features = true
 
 [features]
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
 default = []
-animation = ["dep:thiserror", "dep:tracing", "dep:serde", "dep:serde_json", "dep:zip"]
+animation = ["dep:thiserror", "tracing", "dep:serde", "dep:serde_json", "dep:zip"]
 emotion = ["animation"]
 cuda = ["animation", "dep:cudarc", "dep:cc"]
 tensorrt = ["cuda"]
-mock = ["dep:tracing"]
+mock = ["tracing"]
 native = ["animation", "emotion", "tensorrt"]
-client-grpc = ["dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tokio", "dep:tokio-stream", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
-grpc-server = ["dep:tracing", "dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
-cli = ["dep:clap", "dep:hf-hub", "dep:sha2", "dep:thiserror", "dep:serde", "dep:serde_json", "dep:tracing", "dep:zip"]
+client-grpc = ["tracing", "dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tokio", "dep:tokio-stream", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
+grpc-server = ["tracing", "dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
+cli = ["dep:clap", "dep:hf-hub", "dep:sha2", "dep:thiserror", "dep:serde", "dep:serde_json", "tracing", "dep:zip"]
 [dependencies]
+tracing-subscriber = { version = "0.3.23", optional = true, default-features = false, features = ["registry"] }
 thiserror = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

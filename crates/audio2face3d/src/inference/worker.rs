@@ -1,4 +1,5 @@
 //! Standard-Future completions and a native-owner control worker.
+use crate::logging::integration::LogScope;
 use crate::types::{Error, ErrorKind, Result};
 use std::{
     future::Future,
@@ -112,9 +113,11 @@ impl<T: Send + 'static> Worker<T> {
     pub(crate) async fn start(init: impl FnOnce() -> Result<T> + Send + 'static) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<Job<T>>();
         let (ready_tx, ready) = channel();
+        let scope = LogScope::capture();
         thread::Builder::new()
             .name("a2f-control".into())
             .spawn(move || {
+                let _scope = scope.enter();
                 let mut state = match init() {
                     Ok(state) => {
                         ready_tx.finish(Ok(()));
@@ -149,7 +152,9 @@ impl<T: Send + 'static> Worker<T> {
     ) -> Completion<R> {
         let (tx, result) = channel();
         // A disconnected worker drops tx and completes result with an error.
+        let scope = LogScope::capture();
         let _ = self.tx.send(Box::new(move |state| {
+            let _scope = scope.enter();
             let (result, failed) =
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| op(state))) {
                     Ok(result) => (result, false),

@@ -6,6 +6,7 @@ use crate::client::{
     session::Session,
     types::*,
 };
+use crate::logging::integration::LogScope;
 use std::{
     future::Future,
     pin::Pin,
@@ -75,11 +76,13 @@ pub struct Client {
     owner: Arc<Owner>,
 }
 struct Owner {
+    scope: LogScope,
     core: Arc<Core>,
     driver: Arc<dyn Driver>,
 }
 impl Owner {
     fn shutdown(&self) {
+        let _scope = self.scope.enter();
         if self.core.begin_shutdown() {
             let completion = crate::client::driver::DriverShutdown::new(self.core.clone());
             let driver = self.driver.clone();
@@ -101,6 +104,7 @@ impl Client {
         limits.validate()?;
         Ok(Self {
             owner: Arc::new(Owner {
+                scope: LogScope::capture(),
                 core: Core::new(limits)?,
                 driver,
             }),
@@ -108,6 +112,7 @@ impl Client {
     }
     /// Local registration only. Does not wait for a response, model load or execution slot.
     pub fn start(&self, options: RequestOptions) -> Result<Session> {
+        let _scope = self.owner.scope.enter();
         options.validate()?;
         if options.input_format.channels() != 1
             || ![16000, 44100, 48000].contains(&options.input_format.sample_rate())
@@ -131,6 +136,10 @@ impl Client {
             deadline,
             bytes,
         )?;
+        #[cfg(feature = "tracing")]
+        let span = tracing::error_span!("client_request", id = request.id.0);
+        #[cfg(feature = "tracing")]
+        let _span = span.enter();
         let session = Session::new(request.clone());
         let worker = WorkerSession::new(request.clone(), lease);
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

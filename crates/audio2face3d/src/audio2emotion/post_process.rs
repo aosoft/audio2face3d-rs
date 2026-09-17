@@ -203,6 +203,7 @@ impl PostProcessor {
 /// `audio2emotion-sdk/include/audio2emotion/executor.h`.
 #[cfg(feature = "cuda")]
 pub struct PostProcessEmotionExecutor {
+    scope: crate::logging::integration::LogScope,
     execution: crate::emotion::PostProcessEmotionExecutor,
     contract: crate::emotion::PostProcessEmotionContract,
     tracks: Vec<crate::audio2emotion::EmotionTrackResources>,
@@ -221,6 +222,7 @@ pub struct PostProcessEmotionExecutor {
 /// implementation details remain private at the facade boundary.
 #[cfg(feature = "cuda")]
 pub struct PostProcessEmotionInteractiveExecutor {
+    scope: crate::logging::integration::LogScope,
     inner: crate::emotion::InteractivePostProcessEmotionExecutor,
     contract: crate::emotion::PostProcessEmotionContract,
     audio: Arc<crate::audio2x::AudioAccumulator>,
@@ -273,6 +275,7 @@ impl PostProcessEmotionExecutor {
         let stream = device.create_stream()?;
         let output = device.allocate(output_len)?;
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             execution,
             contract,
             tracks: parameters.common.tracks,
@@ -285,6 +288,7 @@ impl PostProcessEmotionExecutor {
     }
 
     fn audio(&self, track: usize) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        let _scope = self.scope.activate();
         self.tracks
             .get(track)
             .map(|resources| &resources.audio)
@@ -297,6 +301,7 @@ impl PostProcessEmotionExecutor {
 
     /// Returns the stream used for device result copies.
     pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        let _scope = self.scope.activate();
         &self.stream
     }
 
@@ -305,6 +310,7 @@ impl PostProcessEmotionExecutor {
         &self,
         track: usize,
     ) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        let _scope = self.scope.activate();
         self.audio(track)
     }
 
@@ -313,6 +319,7 @@ impl PostProcessEmotionExecutor {
         &self,
         track: usize,
     ) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        let _scope = self.scope.activate();
         self.preferred_emotions
             .get(track)
             .ok_or(crate::Error::OutOfBounds {
@@ -326,10 +333,12 @@ impl PostProcessEmotionExecutor {
 #[cfg(feature = "cuda")]
 impl crate::audio2x::Executor for PostProcessEmotionExecutor {
     fn track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tracks.len()
     }
 
     fn reset_track(&mut self, track: usize) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         if self.audio(track)?.nb_dropped_samples() != 0
             || self
                 .preferred_emotions
@@ -342,6 +351,7 @@ impl crate::audio2x::Executor for PostProcessEmotionExecutor {
     }
 
     fn has_execution_started(&self, track: usize) -> crate::Result<bool> {
+        let _scope = self.scope.activate();
         if track >= self.tracks.len() {
             return Err(crate::Error::OutOfBounds {
                 field: "track",
@@ -353,6 +363,7 @@ impl crate::audio2x::Executor for PostProcessEmotionExecutor {
     }
 
     fn available_execution_count(&self, track: usize) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         let audio = self.audio(track)?;
         if !audio.is_closed() {
             return Ok(0);
@@ -364,6 +375,7 @@ impl crate::audio2x::Executor for PostProcessEmotionExecutor {
     }
 
     fn ready_track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tracks
             .iter()
             .enumerate()
@@ -381,6 +393,7 @@ impl crate::audio2x::Executor for PostProcessEmotionExecutor {
     }
 
     fn total_frame_count(&self, track: usize) -> crate::Result<Option<usize>> {
+        let _scope = self.scope.activate();
         let audio = self.audio(track)?;
         if audio.is_closed() {
             self.contract.frame_count(audio).map(Some)
@@ -390,14 +403,17 @@ impl crate::audio2x::Executor for PostProcessEmotionExecutor {
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.contract.sample_rate
     }
 
     fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
 
     fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        let _scope = self.scope.activate();
         self.contract.frame_timestamp(frame)
     }
 }
@@ -405,10 +421,12 @@ impl crate::audio2x::Executor for PostProcessEmotionExecutor {
 #[cfg(feature = "cuda")]
 impl crate::audio2emotion::EmotionExecutor for PostProcessEmotionExecutor {
     fn emotion_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.execution.output_emotion_length()
     }
 
     fn next_audio_sample_to_read(&self, track: usize) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         self.audio(track)?;
         Ok(self
             .contract
@@ -422,6 +440,7 @@ impl crate::audio2emotion::EmotionExecutor for PostProcessEmotionExecutor {
             crate::audio2emotion::EmotionResults<'r>,
         ) -> ControlFlow<()>,
     ) -> crate::Result<crate::audio2x::Execution> {
+        let _scope = self.scope.activate();
         let tracks = self
             .tracks
             .iter()
@@ -517,6 +536,7 @@ impl PostProcessEmotionInteractiveExecutor {
         let stream = device.create_stream()?;
         let output = device.allocate(data.output_emotion_length)?;
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             inner,
             contract,
             audio: parameters.common.audio,
@@ -532,16 +552,19 @@ impl PostProcessEmotionInteractiveExecutor {
 
     /// Returns the stream used for device result copies.
     pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        let _scope = self.scope.activate();
         &self.stream
     }
 
     /// Borrows the closed audio timeline retained by this executor.
     pub fn audio_accumulator(&self) -> &Arc<crate::audio2x::AudioAccumulator> {
+        let _scope = self.scope.activate();
         &self.audio
     }
 
     /// Borrows the optional preferred-emotion timeline, when configured.
     pub fn emotion_accumulator(&self) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        let _scope = self.scope.activate();
         self.preferred_emotions
             .as_ref()
             .ok_or(crate::Error::InvalidState {
@@ -559,6 +582,7 @@ impl PostProcessEmotionInteractiveExecutor {
                      + Send
              ),
     ) -> crate::Result<crate::emotion::InteractiveEmotionStatus> {
+        let _scope = self.scope.activate();
         let interrupt = self.interrupt.clone();
         let core_interrupt = self.inner.interrupt_handle();
         let output = &mut self.output;
@@ -603,6 +627,7 @@ impl PostProcessEmotionInteractiveExecutor {
 #[cfg(feature = "cuda")]
 impl crate::audio2x::InteractiveExecutor for PostProcessEmotionInteractiveExecutor {
     fn invalidate_all(&mut self) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         self.inner
             .invalidate(crate::emotion::PostProcessEmotionLayer::All);
         self.post_processing_valid = false;
@@ -610,12 +635,14 @@ impl crate::audio2x::InteractiveExecutor for PostProcessEmotionInteractiveExecut
     }
 
     fn is_fully_valid(&self) -> bool {
+        let _scope = self.scope.activate();
         self.inner
             .is_valid(crate::emotion::PostProcessEmotionLayer::All)
             && self.post_processing_valid
     }
 
     fn total_frame_count(&self) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         validate_interactive_inputs(
             &self.audio,
             self.preferred_emotions.as_deref(),
@@ -625,15 +652,19 @@ impl crate::audio2x::InteractiveExecutor for PostProcessEmotionInteractiveExecut
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.contract.sample_rate
     }
     fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
     fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        let _scope = self.scope.activate();
         self.contract.frame_timestamp(frame)
     }
     fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        let _scope = self.scope.activate();
         self.interrupt.clone()
     }
 }
@@ -644,6 +675,7 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for PostProcessEmotionInte
         &mut self,
         layer: crate::audio2emotion::EmotionInvalidationLayer,
     ) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         let layer = match layer {
             crate::audio2emotion::EmotionInvalidationLayer::None => {
                 crate::emotion::PostProcessEmotionLayer::None
@@ -666,6 +698,7 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for PostProcessEmotionInte
     }
 
     fn is_emotion_valid(&self, layer: crate::audio2emotion::EmotionInvalidationLayer) -> bool {
+        let _scope = self.scope.activate();
         let layer = match layer {
             crate::audio2emotion::EmotionInvalidationLayer::None => {
                 crate::emotion::PostProcessEmotionLayer::None
@@ -686,6 +719,7 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for PostProcessEmotionInte
     }
 
     fn emotion_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.inner.output_emotion_length()
     }
 
@@ -697,33 +731,37 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for PostProcessEmotionInte
                         + Send
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
-        Box::pin(async move {
-            self.post_processing_valid = false;
-            let total = self.total_frame_count()?;
-            if frame >= total {
-                return Err(crate::Error::OutOfBounds {
-                    field: "frame",
-                    index: frame,
-                    len: total,
-                });
-            }
-            let generation = self.interrupt.generation();
-            match self.compute_one(frame, generation, callback)? {
-                crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
-                    self.post_processing_valid = false;
-                    Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Complete,
-                        emitted_frames: frames,
-                    })
+        let _scope = self.scope.activate();
+        Box::pin({
+            let scope = self.scope.for_current();
+            scope.wrap_future(async move {
+                self.post_processing_valid = false;
+                let total = self.total_frame_count()?;
+                if frame >= total {
+                    return Err(crate::Error::OutOfBounds {
+                        field: "frame",
+                        index: frame,
+                        len: total,
+                    });
                 }
-                crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
-                    self.post_processing_valid = false;
-                    Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                        emitted_frames: frames,
-                    })
+                let generation = self.interrupt.generation();
+                match self.compute_one(frame, generation, callback)? {
+                    crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
+                        self.post_processing_valid = false;
+                        Ok(crate::audio2x::InteractiveExecutionReport {
+                            status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                            emitted_frames: frames,
+                        })
+                    }
+                    crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
+                        self.post_processing_valid = false;
+                        Ok(crate::audio2x::InteractiveExecutionReport {
+                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                            emitted_frames: frames,
+                        })
+                    }
                 }
-            }
+            })
         })
     }
 
@@ -734,33 +772,37 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for PostProcessEmotionInte
                         + Send
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
-        Box::pin(async move {
-            self.post_processing_valid = false;
-            let total = self.total_frame_count()?;
-            let generation = self.interrupt.generation();
-            let mut emitted = 0;
-            for frame in 0..total {
-                match self.compute_one(frame, generation, callback)? {
-                    crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
-                        emitted += frames;
+        let _scope = self.scope.activate();
+        Box::pin({
+            let scope = self.scope.for_current();
+            scope.wrap_future(async move {
+                self.post_processing_valid = false;
+                let total = self.total_frame_count()?;
+                let generation = self.interrupt.generation();
+                let mut emitted = 0;
+                for frame in 0..total {
+                    match self.compute_one(frame, generation, callback)? {
+                        crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
+                            emitted += frames;
+                        }
+                        crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
+                            emitted += frames;
+                            self.post_processing_valid = false;
+                            return Ok(crate::audio2x::InteractiveExecutionReport {
+                                status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                                emitted_frames: emitted,
+                            });
+                        }
                     }
-                    crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
-                        emitted += frames;
-                        self.post_processing_valid = false;
-                        return Ok(crate::audio2x::InteractiveExecutionReport {
-                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                            emitted_frames: emitted,
-                        });
+                    if frame + 1 < total {
+                        yield_once().await;
                     }
                 }
-                if frame + 1 < total {
-                    yield_once().await;
-                }
-            }
-            self.post_processing_valid = true;
-            Ok(crate::audio2x::InteractiveExecutionReport {
-                status: crate::audio2x::InteractiveExecutionStatus::Complete,
-                emitted_frames: emitted,
+                self.post_processing_valid = true;
+                Ok(crate::audio2x::InteractiveExecutionReport {
+                    status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                    emitted_frames: emitted,
+                })
             })
         })
     }
@@ -830,4 +872,26 @@ async fn yield_once() {
         }
     })
     .await;
+}
+
+#[cfg(feature = "cuda")]
+impl PostProcessEmotionExecutorFactory {
+    pub fn load_with_context(
+        parameters: PostProcessEmotionExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> crate::audio2x::ExecutorFuture<'static, PostProcessEmotionExecutor> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl PostProcessEmotionInteractiveExecutorFactory {
+    pub fn load_with_context(
+        parameters: PostProcessEmotionInteractiveExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> crate::audio2x::ExecutorFuture<'static, PostProcessEmotionInteractiveExecutor> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+    }
 }

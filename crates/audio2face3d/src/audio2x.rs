@@ -76,10 +76,12 @@ where
             waker: None,
         }),
     });
+    let scope = crate::logging::integration::LogScope::capture();
     let worker_state = Arc::clone(&state);
     if let Err(error) = std::thread::Builder::new()
         .name("audio2face3d-factory".into())
         .spawn(move || {
+            let _scope = scope.enter();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(load))
                 .unwrap_or_else(|panic| {
                     let message = panic
@@ -406,6 +408,7 @@ impl Drop for Execution {
 /// their state transition, so a completion racing with `poll` cannot lose a
 /// wakeup.
 pub(crate) struct ExecutionCompletion {
+    scope: crate::logging::integration::LogScope,
     state: Mutex<CompletionState>,
     changed: Condvar,
 }
@@ -424,6 +427,7 @@ struct CompletionState {
 impl ExecutionCompletion {
     fn new(track_count: usize) -> Self {
         Self {
+            scope: crate::logging::integration::LogScope::capture(),
             state: Mutex::new(CompletionState {
                 pending_by_track: vec![0; track_count],
                 errors_by_track: vec![None; track_count],
@@ -438,6 +442,7 @@ impl ExecutionCompletion {
     }
 
     pub(crate) fn add_task(&self, track: usize) -> Result<()> {
+        let _scope = self.scope.activate();
         let mut state = self.lock()?;
         if track >= state.pending_by_track.len() {
             return Err(Error::OutOfBounds {
@@ -453,6 +458,7 @@ impl ExecutionCompletion {
     /// Marks enqueueing complete. The report is held until all accepted tasks
     /// complete, allowing a task to finish before the scheduler returns.
     pub(crate) fn finish_schedule(&self, report: ExecutionReport) {
+        let _scope = self.scope.activate();
         let (all, tracks) = {
             let mut state = self
                 .state
@@ -466,6 +472,8 @@ impl ExecutionCompletion {
     }
 
     pub(crate) fn complete_task(&self, track: usize, result: Result<()>) {
+        let _scope = self.scope.activate();
+        let mut detached_error = None;
         let (all, tracks) = {
             let mut state = self
                 .state
@@ -482,8 +490,8 @@ impl ExecutionCompletion {
             }
             *pending -= 1;
             if let Err(error) = result {
-                if state.detached {
-                    tracing::warn!(track, error = %error, "detached execution worker failed");
+                if state.detached && tracing::enabled!(tracing::Level::WARN) {
+                    detached_error = Some(error.to_string());
                 }
                 if state.errors_by_track[track].is_none() {
                     state.errors_by_track[track] = Some(error);
@@ -491,11 +499,15 @@ impl ExecutionCompletion {
             }
             self.ready_wakers_locked(&mut state)
         };
+        if let Some(error) = detached_error {
+            tracing::warn!(track,error=%error,"detached execution worker failed");
+        }
         self.changed.notify_all();
         wake_all(all, tracks);
     }
 
     fn poll_all(&self, cx: &mut Context<'_>) -> Poll<Result<ExecutionReport>> {
+        let _scope = self.scope.activate();
         let mut state = self.lock().expect("completion mutex poisoned");
         if all_ready(&state) {
             state.all_observed = true;
@@ -515,6 +527,7 @@ impl ExecutionCompletion {
     }
 
     fn detach(&self) {
+        let _scope = self.scope.activate();
         let mut state = self
             .state
             .lock()
@@ -523,14 +536,24 @@ impl ExecutionCompletion {
             return;
         }
         state.detached = true;
-        for (track, error) in state.errors_by_track.iter().enumerate() {
-            if let Some(error) = error {
-                tracing::warn!(track, error = %error, "execution dropped with an unobserved worker error");
-            }
+        let errors = if tracing::enabled!(tracing::Level::WARN) {
+            state
+                .errors_by_track
+                .iter()
+                .enumerate()
+                .filter_map(|(track, error)| error.as_ref().map(|e| (track, e.to_string())))
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+        drop(state);
+        for (track, error) in errors {
+            tracing::warn!(track,error=%error,"execution dropped with an unobserved worker error");
         }
     }
 
     pub(crate) fn track_pending(&self, track: usize) -> Result<bool> {
+        let _scope = self.scope.activate();
         let state = self.lock()?;
         state
             .pending_by_track
@@ -544,6 +567,7 @@ impl ExecutionCompletion {
     }
 
     pub(crate) fn wait_blocking(&self) {
+        let _scope = self.scope.activate();
         let mut state = self
             .state
             .lock()
@@ -557,6 +581,7 @@ impl ExecutionCompletion {
     }
 
     fn poll_track(&self, track: usize, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        let _scope = self.scope.activate();
         let mut state = self.lock().expect("completion mutex poisoned");
         if track >= state.pending_by_track.len() {
             return Poll::Ready(Err(Error::OutOfBounds {
@@ -580,12 +605,14 @@ impl ExecutionCompletion {
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, CompletionState>> {
+        let _scope = self.scope.activate();
         self.state.lock().map_err(|_| Error::Poisoned {
             resource: "execution completion",
         })
     }
 
     fn ready_wakers_locked(&self, state: &mut CompletionState) -> (Vec<Waker>, Vec<Waker>) {
+        let _scope = self.scope.activate();
         let mut all = Vec::new();
         let mut tracks = Vec::new();
         if all_ready(state) {

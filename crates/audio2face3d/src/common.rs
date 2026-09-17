@@ -1,7 +1,8 @@
 //! Shared errors, checked conversions, and tensor metadata.
 //!
-//! Library crates emit structured [`tracing`] events but never install a
-//! subscriber. Applications own subscriber selection and filtering. Logs may
+//! Explicit Audio2Face3DContext injection routes structured [`tracing`] events
+//! to the application Logger. Legacy constructors preserve the calling subscriber;
+//! the library never installs a global subscriber. Logs may
 //! include operation names, device ordinals, tensor names, dtypes, and shapes;
 //! device pointers, model contents, audio samples, and credentials are never
 //! logged.

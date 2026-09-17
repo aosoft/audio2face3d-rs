@@ -113,3 +113,7 @@ pub mod inference;
 #[cfg(any(feature = "client-grpc", feature = "grpc-server"))]
 pub mod protocol;
 pub mod types;
+
+mod context;
+pub mod logging;
+pub use context::{Audio2Face3DContext, Audio2Face3DContextBuilder};

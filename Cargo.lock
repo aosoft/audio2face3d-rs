@@ -129,6 +129,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
+ "tracing-subscriber",
  "trybuild",
  "zip",
 ]
@@ -147,7 +148,6 @@ dependencies = [
  "tonic",
  "tonic-health",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

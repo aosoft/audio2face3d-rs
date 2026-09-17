@@ -76,6 +76,7 @@ impl<'a> DeviceBindings<'a> {
 }
 
 pub struct TensorRtSession {
+    scope: crate::logging::integration::LogScope,
     handle: NonNull<ffi::TrtSessionHandle>,
     device: Arc<GpuDevice>,
     schema: BindingSchema,
@@ -128,6 +129,7 @@ impl TensorRtSession {
         let handle = NonNull::new(raw).ok_or_else(|| native_error("create", &error))?;
         match read_metadata(handle) {
             Ok((schema, profile_count)) => Ok(Self {
+                scope: crate::logging::integration::LogScope::capture(),
                 handle,
                 device,
                 schema,
@@ -142,6 +144,7 @@ impl TensorRtSession {
         }
     }
     pub fn metadata(&self) -> &BindingSchema {
+        let _scope = self.scope.activate();
         &self.schema
     }
     pub const fn profile_count(&self) -> usize {
@@ -152,6 +155,7 @@ impl TensorRtSession {
     /// TensorRT uses one process-wide logger; concurrent sessions can therefore
     /// observe the same messages. ErrorRecorder messages also remain session-local.
     pub fn logs(&self) -> Result<Vec<TensorRtLogMessage>, InferenceError> {
+        let _scope = self.scope.activate();
         let device = Arc::clone(&self.device);
         let _context = device.make_current().map_err(InferenceError::Cuda)?;
         // SAFETY: the session handle is live and log_count is read-only.
@@ -168,6 +172,7 @@ impl TensorRtSession {
     }
 
     pub fn environment(&self) -> Result<EngineEnvironment, InferenceError> {
+        let _scope = self.scope.activate();
         let device = Arc::clone(&self.device);
         let _context = device.make_current().map_err(InferenceError::Cuda)?;
         let (info, gpu_name) = environment(self.handle)?;
@@ -195,6 +200,7 @@ impl TensorRtSession {
         bindings: &DeviceBindings<'_>,
         stream: &CudaStream,
     ) -> Result<Vec<RuntimeTensorShape>, InferenceError> {
+        let _scope = self.scope.activate();
         self.validate_profile_stream(profile, stream)?;
         let device = Arc::clone(&self.device);
         let _context = device.make_current().map_err(InferenceError::Cuda)?;
@@ -242,6 +248,7 @@ impl TensorRtSession {
         profile: usize,
         stream: &CudaStream,
     ) -> Result<(), InferenceError> {
+        let _scope = self.scope.activate();
         if stream.device_id() != self.device.id() {
             return Err(InferenceError::DeviceMismatch {
                 name: "stream".into(),
@@ -258,6 +265,7 @@ impl TensorRtSession {
     }
 
     fn apply_input_shapes(&mut self, bindings: &DeviceBindings<'_>) -> Result<(), InferenceError> {
+        let _scope = self.scope.activate();
         for binding in self.schema.bindings().iter().filter(|binding| {
             binding.mode == IoMode::Input
                 && binding
@@ -297,6 +305,7 @@ impl TensorRtSession {
         bindings: &'b DeviceBindings<'b>,
         stream: &'b CudaStream,
     ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
+        let _scope = self.scope.activate();
         self.enqueue_with_postprocess(profile, bindings, stream, |_| Ok(()))
     }
 
@@ -309,6 +318,7 @@ impl TensorRtSession {
         stream: &'b CudaStream,
         postprocess: impl FnOnce(&CudaStream) -> Result<(), InferenceError>,
     ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
+        let _scope = self.scope.activate();
         self.validate_profile_stream(profile, stream)?;
         let device = Arc::clone(&self.device);
         let _context = device.make_current().map_err(InferenceError::Cuda)?;
@@ -414,6 +424,7 @@ impl TensorRtSession {
 }
 impl Drop for TensorRtSession {
     fn drop(&mut self) {
+        let _scope = self.scope.activate();
         let _context = self.device.make_current();
         // SAFETY: this object exclusively owns the live native handle.
         unsafe { ffi::trt_shim_destroy(self.handle.as_ptr()) }
@@ -739,6 +750,16 @@ fn read_metadata(
         BindingSchema::new(bindings).map_err(InferenceError::Cuda)?,
         profiles as usize,
     ))
+}
+
+impl TensorRtSession {
+    pub fn load_with_context(
+        device: Arc<GpuDevice>,
+        engine: &Path,
+        context: crate::Audio2Face3DContext,
+    ) -> Result<Self, InferenceError> {
+        crate::logging::integration::LogScope::new(context).in_scope(|| Self::load(device, engine))
+    }
 }
 
 #[cfg(test)]

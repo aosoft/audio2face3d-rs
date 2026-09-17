@@ -6,6 +6,7 @@ use crate::protocol::{
         nvidia_ace::services::a2f_controller::v1::a2f_controller_service_client::A2fControllerServiceClient,
     },
 };
+use crate::{Audio2Face3DContext, logging::integration::LogScope};
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
@@ -45,7 +46,8 @@ struct Server {
     max_message_bytes: usize,
 }
 impl Client {
-    pub async fn server(config: ServerConfig) -> Result<Self> {
+    async fn server_inner(config: ServerConfig) -> Result<Self> {
+        tracing::info!("connecting remote inference client");
         config.limits.validate()?;
         if config.connect_timeout.is_zero()
             || config.max_message_bytes == 0
@@ -64,7 +66,7 @@ impl Client {
             })?;
         let selected = handle.clone();
         handle
-            .spawn(async move {
+            .spawn(LogScope::capture().wrap_future(async move {
                 let endpoint = Endpoint::from_shared(config.endpoint)
                     .map_err(|e| Error::invalid(e.to_string()))?
                     .connect_timeout(config.connect_timeout)
@@ -76,6 +78,7 @@ impl Client {
                     .connect()
                     .await
                     .map_err(|e| Error::new(ErrorKind::Transport, e.to_string()))?;
+                tracing::info!("remote inference client connected");
                 Self::with_driver(
                     config.limits,
                     Arc::new(Server {
@@ -84,7 +87,7 @@ impl Client {
                         max_message_bytes: config.max_message_bytes,
                     }),
                 )
-            })
+            }))
             .await
             .map_err(|e| Error::new(ErrorKind::RuntimeUnavailable, e.to_string()))?
     }
@@ -100,13 +103,18 @@ impl Driver for Server {
         let max = self.max_message_bytes;
         let (reader, mut writer, mut guard) = session.split();
         guard.runtime_owned();
-        self.handle.spawn(async move {
-            let result = tokio::select! {biased;
-                error=guard.cancelled()=>Err(error),
-                result=run(channel,max,options,reader,&mut writer)=>result,
-            };
-            guard.finish(result);
-        });
+        self.handle
+            .spawn(LogScope::capture().wrap_future(async move {
+                let result = tokio::select! {biased;
+                    error=guard.cancelled()=>Err(error),
+                    result=run(channel,max,options,reader,&mut writer)=>result,
+                };
+                tracing::debug!(
+                    success = result.is_ok(),
+                    "remote inference request finished"
+                );
+                guard.finish(result);
+            }));
         Ok(())
     }
     fn shutdown(&self, completion: DriverShutdown) {
@@ -300,4 +308,18 @@ async fn run(
         ));
     }
     Ok(())
+}
+
+impl Client {
+    pub async fn server(config: ServerConfig) -> Result<Self> {
+        let scope = LogScope::capture();
+        scope.wrap_future(Self::server_inner(config)).await
+    }
+    pub async fn server_with_context(
+        config: ServerConfig,
+        context: Audio2Face3DContext,
+    ) -> Result<Self> {
+        let scope = LogScope::new(context);
+        scope.wrap_future(Self::server_inner(config)).await
+    }
 }

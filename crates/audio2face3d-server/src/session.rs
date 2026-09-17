@@ -24,6 +24,7 @@ use tonic::{Status, Streaming};
 
 /// A separate terminal channel makes errors observable even when data is backed up.
 pub struct ResponseStream {
+    scope: audio2face3d::logging::integration::LogScope,
     data: mpsc::Receiver<controller::AnimationDataStream>,
     terminal: Option<oneshot::Receiver<Result<(), Status>>>,
     ended: bool,
@@ -38,6 +39,7 @@ impl ResponseStream {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            scope: audio2face3d::logging::integration::LogScope::capture(),
             data,
             terminal: Some(terminal),
             ended: false,
@@ -48,12 +50,14 @@ impl ResponseStream {
 }
 impl Drop for ResponseStream {
     fn drop(&mut self) {
+        let _scope = self.scope.activate();
         self.cancel.cancel();
     }
 }
 impl Stream for ResponseStream {
     type Item = Result<controller::AnimationDataStream, Status>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let _scope = self.scope.activate();
         if self.ended {
             return Poll::Ready(None);
         }
