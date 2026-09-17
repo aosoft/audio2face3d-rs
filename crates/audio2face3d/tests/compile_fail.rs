@@ -1,3 +1,4 @@
+#![cfg(feature = "animation")]
 #[test]
 fn new_api_is_a_compile_pass_contract() {
     let tests = trybuild::TestCases::new();

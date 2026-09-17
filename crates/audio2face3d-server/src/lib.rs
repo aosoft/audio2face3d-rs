@@ -8,3 +8,9 @@ pub mod proto;
 pub mod server;
 mod service;
 mod session;
+
+mod api;
+pub use api::{ConfigError, Server, ServerBuilder};
+pub use server::ServerError;
+
+pub use config::Config as ServerConfig;

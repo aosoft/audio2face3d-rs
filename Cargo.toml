@@ -2,12 +2,7 @@
 resolver = "2"
 members = [
     "crates/audio2face3d",
-    "crates/audio2face3d-cli",
     "crates/audio2face3d-server",
-    "crates/audio2face3d-types",
-    "crates/audio2face3d-protocol",
-    "crates/audio2face3d-inference",
-    "crates/audio2face3d-client",
 ]
 
 [workspace.package]

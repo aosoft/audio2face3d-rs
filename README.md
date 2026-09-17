@@ -8,7 +8,7 @@ The workspace is organized as two publishable packages:
 | Package | Purpose |
 |---|---|
 | `audio2face3d` | Library containing the common, CUDA, TensorRT, animation, emotion, and unified pipeline modules |
-| `audio2face3d-cli` | Single `audio2face3d` executable for model management, samples, and benchmarks |
+| `audio2face3d-server` | Embeddable gRPC server and optional executable |
 
 The Rust modules correspond to the original SDK as follows:
 
@@ -30,7 +30,7 @@ experimental. The minimum supported Rust version is 1.91.
 
 | Feature | Contents | Required tier |
 |---|---|---|
-| default | CPU animation and emotion processing | `portable` |
+| default | Shared Rust data and client control; no external dependencies | `portable` |
 | `animation` | geometry, BlendShape, Teeth, and interactive APIs | `portable` |
 | `emotion` | Audio2Emotion post-processing; also enables `animation` | `portable` |
 | `cuda` | CUDA buffers, streams, solvers, and lifetime tests | `cuda-lifetime` |
@@ -178,15 +178,15 @@ export LD_LIBRARY_PATH="$CUDA_PATH/lib64:$TENSORRT_ROOT_DIR/lib:$LD_LIBRARY_PATH
 Check runtime discovery before loading a model:
 
 ```sh
-cargo run -p audio2face3d-cli -- doctor
+cargo run -p audio2face3d --features cli -- doctor
 ```
 
 The model tool uses `clap` for argument parsing. Top-level help, command-specific options, accepted values, defaults, and the package version are available directly from the CLI:
 
 ```sh
-cargo run -p audio2face3d-cli -- --help
-cargo run -p audio2face3d-cli -- model engine --help
-cargo run -p audio2face3d-cli -- --version
+cargo run -p audio2face3d --features cli -- --help
+cargo run -p audio2face3d --features cli -- model engine --help
+cargo run -p audio2face3d --features cli -- --version
 ```
 
 ## Explicit model acquisition
@@ -197,9 +197,9 @@ or model loading:
 
 ```sh
 export HF_TOKEN=...
-cargo run -p audio2face3d-cli -- model list
-cargo run -p audio2face3d-cli -- model download mark
-cargo run -p audio2face3d-cli -- model download all
+cargo run -p audio2face3d --features cli -- model list
+cargo run -p audio2face3d --features cli -- model download mark
+cargo run -p audio2face3d --features cli -- model download all
 ```
 
 The built-in catalog covers `diffusion`, `claire`, `james`, `mark`, and `emotion`.
@@ -213,7 +213,7 @@ through `download-revision <owner/repository> <revision> <output> [token-env]`.
 When an output already exists, the tool verifies its repository, revision, required files, and actual `network.onnx` SHA-256 against `.audio2x-source.json`. A matching snapshot is skipped without network access. A mismatch is preserved and reported; pass `--force` to download, validate, and safely replace it:
 
 ```sh
-cargo run -p audio2face3d-cli -- model download diffusion --force
+cargo run -p audio2face3d --features cli -- model download diffusion --force
 ```
 
 The dedicated Rust tool uses the Hugging Face Hub API directly; it does not launch Python or the `hf` CLI. An absent token is reported before any network request. HTTP 401/403, gated-repository, revision, and rate-limit failures are reported as structured download errors.
@@ -227,10 +227,10 @@ Each download is staged in a sibling temporary directory, checked for the requir
 Generate an environment-specific TensorRT engine from a downloaded preset with the same Rust tool. It expands the optimization profiles in the model's `trt_info.json` and invokes `TRTEXEC` or `trtexec` directly:
 
 ```sh
-cargo run -p audio2face3d-cli -- model engine mark
-cargo run -p audio2face3d-cli -- model engine mark --precision=fp16
-cargo run -p audio2face3d-cli -- model engine mark --precision=fp32 --device=0
-cargo run -p audio2face3d-cli -- model engine emotion --max-batch=32
+cargo run -p audio2face3d --features cli -- model engine mark
+cargo run -p audio2face3d --features cli -- model engine mark --precision=fp16
+cargo run -p audio2face3d --features cli -- model engine mark --precision=fp32 --device=0
+cargo run -p audio2face3d --features cli -- model engine emotion --max-batch=32
 ```
 
 `default` matches the original SDK's standard build: FP32 is available and TensorRT may use TF32. `fp16` enables mixed FP16/FP32 execution. Explicit `fp32` disables TF32. The generated artifacts are:
@@ -252,8 +252,8 @@ An engine created by an earlier tool version with `--max-batch=N` remains verifi
 Download/verification and engine generation can be combined. For `prepare`, `--force` replaces both a mismatched downloaded snapshot and the selected engine artifacts, while preserving both until their respective replacements validate:
 
 ```sh
-cargo run -p audio2face3d-cli -- model prepare mark --precision=fp16
-cargo run -p audio2face3d-cli -- model prepare all --device=0
+cargo run -p audio2face3d --features cli -- model prepare mark --precision=fp16
+cargo run -p audio2face3d --features cli -- model prepare all --device=0
 ```
 
 Engine generation can take several minutes per model. `trtexec` output is streamed to the console. Set an explicit executable when it is not on `PATH`:
@@ -267,10 +267,10 @@ $env:TRTEXEC = 'C:\SDK\TensorRT-10.16.1.11\bin\trtexec.exe'
 The samples accept a resolved `model.json`, track count, and optional number of zero-valued audio samples:
 
 ```sh
-cargo run -p audio2face3d-cli --features runtime -- run regression ./models/mark/model.json 1 16000
-cargo run -p audio2face3d-cli --features runtime -- run regression ./models/mark/model_fp16.json 1 16000
-cargo run -p audio2face3d-cli --features runtime -- run diffusion ./models/diffusion/model.json 1 16000
-cargo run -p audio2face3d-cli --features runtime -- run emotion ./models/emotion/model.json 1 16000
+cargo run -p audio2face3d --features cli,native -- run regression ./models/mark/model.json 1 16000
+cargo run -p audio2face3d --features cli,native -- run regression ./models/mark/model_fp16.json 1 16000
+cargo run -p audio2face3d --features cli,native -- run diffusion ./models/diffusion/model.json 1 16000
+cargo run -p audio2face3d --features cli,native -- run emotion ./models/emotion/model.json 1 16000
 ```
 
 The `audio2face3d` facade resolves model-relative paths, constructs per-track accumulators, owns the selected TensorRT backend, exposes callback metadata, and validates track parameter updates.
@@ -280,12 +280,12 @@ The `audio2face3d` facade resolves model-relative paths, constructs per-track ac
 The benchmark command separates build, descriptor-cache, warm-up, steady-state inference, post-process, and end-to-end phases. It reports P50/P95/P99 nanoseconds and peak process GPU memory when `nvidia-smi` exposes it. On Windows WDDM, where per-process accounting can be unavailable, it labels and reports device-wide used memory instead:
 
 ```sh
-cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100
-cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model_fp16.json 2 fp16 100
-cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100 --scope blendshape-cpu
-cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100 --scope blendshape-gpu
-cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100 --scope interactive-gpu-replay
-cargo run --release -p audio2face3d-cli --features runtime -- benchmark ./models/mark/model.json 1 fp32 100 --output reference/compatible_test/benchmarks/mark.json
+cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100
+cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model_fp16.json 2 fp16 100
+cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --scope blendshape-cpu
+cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --scope blendshape-gpu
+cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --scope interactive-gpu-replay
+cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --output reference/compatible_test/benchmarks/mark.json
 ```
 
 JSON output records the model and engine SHA-256, execution environment,
@@ -294,7 +294,7 @@ against the tracked hardware baseline independently from reference-value
 parity:
 
 ```sh
-cargo run -p audio2face3d-cli -- release benchmark-compare reference/benchmark-baseline.json reference/compatible_test/benchmarks/mark.json
+cargo run -p audio2face3d --features cli -- release benchmark-compare reference/benchmark-baseline.json reference/compatible_test/benchmarks/mark.json
 ```
 
 For geometry models, the isolated post-process phase currently measures the device-result consumption boundary; full animator and blendshape timing must be reported separately from raw TensorRT inference. Compare C++ and Rust only with identical model/engine, batch, precision, GPU, driver, CUDA, and TensorRT versions.
@@ -352,3 +352,15 @@ and how to use them.
 
 Externally installed CUDA and TensorRT SDK binaries, headers, and components
 remain subject to their respective NVIDIA license terms.
+
+## Package and feature migration
+
+The workspace contains two packages: `audio2face3d` and `audio2face3d-server`. Both expose a library and an executable enabled by `cli`. The base package has no default features; `mock` enables local diagnostic inference, `native` enables CUDA/TensorRT inference, and `client-grpc` enables the remote client. Local inference does not require Tokio. The server depends on the base package and defaults to `native`; its executable defaults to Regression, which requires an explicit model. Use `--no-default-features --features cli,mock` for a diagnostic server.
+
+The former types/client/inference/protocol packages are modules under `audio2face3d::{types,client,inference,protocol}`. The former CLI package is now the base package binary. The old `direct`/`runtime`/remote `server` feature selections become `mock` or `native`, `native`, and `client-grpc`, respectively. Wire types are separate from common Rust request/result types. `grpc-server` is a technical wire integration feature used by the server dependency; it provides shared inference plumbing but does not compile a backend.
+
+```powershell
+cargo install audio2face3d --features cli,native
+cargo install audio2face3d-server --features cli
+cargo run -p audio2face3d-server --no-default-features --features cli,mock -- --backend mock
+```

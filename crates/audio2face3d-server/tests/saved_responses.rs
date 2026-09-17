@@ -1,7 +1,7 @@
 //! Optional real-model compatibility replay of independently captured wire data.
-#![cfg(feature = "runtime")]
-use audio2face3d_server::{config::Config, proto, server};
-use clap::Parser;
+#![cfg(feature = "native")]
+use audio2face3d_server::{proto, server};
+mod settings;
 use prost::Message;
 use proto::nvidia_ace::{
     emotion_aggregate::v1::EmotionAggregate, emotion_with_timecode::v1::EmotionWithTimeCode,
@@ -105,7 +105,7 @@ async fn saved_real_model_responses_match_after_protocol_extraction() {
                 arg.to_owned()
             }
         }));
-        let config = Config::parse_from(args);
+        let config = settings::config(args);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (stop, stopped) = oneshot::channel();

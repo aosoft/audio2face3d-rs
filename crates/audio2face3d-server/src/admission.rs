@@ -1,4 +1,4 @@
-use audio2face3d_inference::{
+use audio2face3d::inference::{
     Cancellation,
     admission::{Admission as Queue, Permit},
 };

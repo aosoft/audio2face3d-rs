@@ -1,5 +1,4 @@
 use audio2face3d_server::{
-    config::Config,
     proto::{
         self,
         controller::{
@@ -10,7 +9,7 @@ use audio2face3d_server::{
     },
     server,
 };
-use clap::Parser;
+mod settings;
 use std::time::Duration;
 use tokio::{
     net::TcpListener,
@@ -64,7 +63,7 @@ impl Running {
             "1",
         ];
         args.extend_from_slice(extra);
-        let config = Config::parse_from(args);
+        let config = settings::config(args);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (stop, stopped) = oneshot::channel();
@@ -217,7 +216,7 @@ async fn rejects_bad_first_header_and_unsupported_backend() {
             .unwrap_err();
         assert_eq!(error.code(), Code::InvalidArgument);
     }
-    let config = Config::parse_from(["test", "--backend", "regression"]);
+    let config = settings::config(["test", "--backend", "regression"]);
     assert!(config.validate().unwrap_err().contains("regression"));
     running.stop().await;
 }
@@ -306,9 +305,9 @@ fn diagnostic_cli_rejects_invalid_inputs() {
         vec!["test", "--mock-curve", "JawOpen", "--mock-value", "NaN"],
         vec!["test", "--mock-curve", "JawOpen", "--mock-value", "1.1"],
     ] {
-        assert!(Config::try_parse_from(args).is_err());
+        assert!(settings::config(args).validate().is_err());
     }
-    let config = Config::parse_from(["test", "--backend", "regression", "--mock-curve", "JawOpen"]);
+    let config = settings::config(["test", "--backend", "regression", "--mock-curve", "JawOpen"]);
     assert_eq!(
         config.validate().unwrap_err(),
         "mock-curve/mock-value require the mock backend"
@@ -418,15 +417,15 @@ fn diagnostic_jaw_baseline_rejects_ambiguous_or_invalid_settings() {
             "1.1",
         ],
     ] {
-        assert!(Config::try_parse_from(args).is_err());
+        assert!(settings::config(args).validate().is_err());
     }
     assert!(
-        Config::parse_from(["test", "--mock-curve", "JawOpen", "--mock-jaw-open", "0.5"])
+        settings::config(["test", "--mock-curve", "JawOpen", "--mock-jaw-open", "0.5"])
             .validate()
             .is_err()
     );
     assert!(
-        Config::parse_from([
+        settings::config([
             "test",
             "--backend",
             "regression",
@@ -619,13 +618,13 @@ async fn two_active_streams_allow_next_rpc_when_either_slot_is_released() {
 fn request_queue_limits_are_validated() {
     for capacity in ["0".to_owned(), usize::MAX.to_string()] {
         assert!(
-            Config::parse_from(["test", "--request-queue-capacity", &capacity])
+            settings::config(["test", "--request-queue-capacity", &capacity])
                 .validate()
                 .is_err()
         );
     }
     assert!(
-        Config::parse_from(["test", "--request-queue-timeout-ms", "0"])
+        settings::config(["test", "--request-queue-timeout-ms", "0"])
             .validate()
             .is_ok()
     );

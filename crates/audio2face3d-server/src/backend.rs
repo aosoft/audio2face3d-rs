@@ -3,9 +3,9 @@ use crate::{
     config::{BackendKind, Config},
     proto::{a2f::AudioWithEmotion, animation::AnimationData, controller::AudioStreamHeader},
 };
-use audio2face3d_inference as inference;
-use audio2face3d_protocol::convert;
-use audio2face3d_types::{AudioFormat, Error, ErrorKind, RequestOptions};
+use audio2face3d::inference;
+use audio2face3d::protocol::convert;
+use audio2face3d::types::{AudioFormat, Error, ErrorKind, RequestOptions};
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
 
@@ -136,7 +136,7 @@ fn prepare_input(
     format: AudioFormat,
     kind: BackendKind,
     max_seconds: f64,
-) -> Result<audio2face3d_types::InputChunk, Status> {
+) -> Result<audio2face3d::types::InputChunk, Status> {
     if kind == BackendKind::Mock {
         if !input.emotions.is_empty() {
             tracing::debug!("mock ignores input emotion keyframes");
@@ -218,8 +218,7 @@ mod tests {
     }
     #[tokio::test]
     async fn mock_keeps_ignoring_unsupported_settings_and_emotion_keys() {
-        use clap::Parser;
-        let config = Config::parse_from(["test"]);
+        let config = Config::default();
         let factory = Factory::prepare(&config).await.unwrap();
         let mut header = AudioStreamHeader {
             audio_header: Some(crate::proto::audio::AudioHeader {

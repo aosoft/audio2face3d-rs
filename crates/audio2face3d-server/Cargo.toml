@@ -5,27 +5,35 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+publish.workspace = true
 description = "Audio2Face-3D compatible gRPC server"
 
 [features]
-default = []
-runtime = ["audio2face3d-inference/runtime"]
+default = ["native"]
+native = ["audio2face3d/native"]
+mock = ["audio2face3d/mock"]
+cli = ["dep:clap", "dep:tracing-subscriber", "tokio/signal"]
 
 [dependencies]
-audio2face3d-protocol = { path = "../audio2face3d-protocol", features = ["client", "server"] }
-audio2face3d-inference = { path = "../audio2face3d-inference" }
-audio2face3d-types = { path = "../audio2face3d-types" }
-clap.workspace = true
+audio2face3d = { version = "0.1.0", path = "../audio2face3d", default-features = false, features = ["grpc-server"] }
+clap = { workspace = true, optional = true }
 tracing.workspace = true
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tokio-util = { version = "0.7.18", features = ["rt"] }
 tonic = "=0.14.6"
 tonic-health = "=0.14.6"
 prost = "=0.14.4"
 prost-types = "=0.14.4"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "audio2face3d-server"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dev-dependencies]
+audio2face3d = { path = "../audio2face3d", default-features = false, features = ["client-grpc"] }

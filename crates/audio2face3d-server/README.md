@@ -2,7 +2,7 @@
 
 Generate facial animation from audio through the ACE
 `A2FControllerService/ProcessAudioStream` bidirectional RPC. The server uses
-the workspace's [shared inference layer](../audio2face3d-inference/README.md) for Regression inference and the
+the workspace's [shared inference layer](../../README.md) for Regression inference and the
 host BlendShape solver, returning 52 face curves together with audio.
 Audio2Emotion classifier inference is optional.
 
@@ -22,12 +22,11 @@ Run commands from the workspace root. Requirements:
   Model files and native SDKs are separate downloads.
 
 Set `CUDA_PATH` and `TENSORRT_ROOT_DIR` to your installations, then add their
-`bin` directories to `PATH`. Build with the `runtime` feature and explicitly
-select the `regression` backend:
+`bin` directories to `PATH`. The default `native` feature provides Regression inference. Enable `cli` to build the executable:
 
 ```powershell
 $env:PATH = "$env:CUDA_PATH\bin;$env:TENSORRT_ROOT_DIR\bin;$env:PATH"
-cargo build --release --locked -p audio2face3d-server --features runtime
+cargo build --release --locked -p audio2face3d-server --features cli
 .\target\release\audio2face3d-server.exe --backend regression --model models/mark/model.json
 ```
 
@@ -93,20 +92,19 @@ The mock backend is for protocol and face-mapping diagnostics without model
 inference. It requires neither CUDA nor TensorRT:
 
 ```powershell
-cargo run --locked -p audio2face3d-server -- --backend mock
+cargo run --locked -p audio2face3d-server --no-default-features --features cli,mock -- --backend mock
 ```
 
-For compatibility, the CLI currently selects mock when `--backend` is
-omitted, and the default Cargo features do not include the inference runtime.
-Use `--features runtime` and `--backend regression` as shown above for real
-inference.
+Mock is the default backend only for a mock-only build. The default Cargo
+feature is native, and native builds default to Regression even when mock is
+also enabled. Regression requires an explicit model; failures never fall back to mock.
 
 The default mock pattern emits a one-second triangular `JawOpen` pulse and returns
 the supplied PCM. Existing presets remain available through `--mock-pattern`:
 `jaw-open-pulse`, `eye-blink-left`, `eye-blink-right`, `mouth-smile-left`,
 `mouth-smile-right`.
 
-Select any of the [52 case-sensitive ACE names](../audio2face3d-inference/src/animation.rs) with
+Select any of the [52 case-sensitive ACE names](../audio2face3d/src/inference/animation.rs) with
 `--mock-curve`. It overrides the preset's curve selection. Add `--mock-value`
 to hold that curve at a finite weight in [0, 1] while audio is streamed;
 without it, the selected curve pulses. Other weights are zero unless a jaw baseline is specified.
@@ -135,13 +133,13 @@ audio or emotion and do not test lip synchronization or model quality.
 ```powershell
 cargo fmt --all --check
 cargo check --locked -p audio2face3d-server
-cargo test --locked -p audio2face3d-server
-cargo clippy --locked -p audio2face3d-server --all-targets -- -D warnings
-cargo test --release --locked -p audio2face3d-server --features runtime
+cargo test --locked -p audio2face3d-server --no-default-features --features mock
+cargo clippy --locked -p audio2face3d-server --no-default-features --features cli,mock --all-targets -- -D warnings
+cargo test --release --locked -p audio2face3d-server --features cli
 ```
 
 The protocol tests include all 52 isolated curves, PCM/time preservation,
-invalid input, cancellation, limits and shutdown. Enabling `runtime` in
+invalid input, cancellation, limits and shutdown. Enabling `native` in
 cargo test checks native compilation and available tests; it does not by
 itself prove real-model inference. Test inference with a prepared model and
 an actual client.
@@ -152,10 +150,13 @@ tongue output and model pooling are not implemented by this server. It emits
 Long-running production stability and perceptual lip-sync quality are not
 established by the short integration tests.
 
-Inference, resampling and FIFO admission use the shared inference crate. Native
+Inference, resampling and FIFO admission use the shared inference module. Native
 work runs on standard control workers; gRPC transport remains on Tokio.
 
 The NVIDIA protocol definitions are maintained in
-[audio2face3d-protocol](../audio2face3d-protocol/README.md). They retain their
+[protocol module](../audio2face3d/proto). They retain their
 upstream notices and are covered by [LICENSE-APACHE](LICENSE-APACHE).
 See the workspace license for the Rust implementation.
+## Embedded use
+
+Construct `Config` directly and pass an already bound Tokio listener to `Server::builder(config).build()?.serve(listener, stop)`. The calling application owns its runtime, listener and shutdown signal. The library does not parse arguments or install a global logger.

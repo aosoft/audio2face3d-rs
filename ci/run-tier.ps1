@@ -31,12 +31,12 @@ function Require-Environment {
 switch ($Tier) {
     "portable" {
         Invoke-Checked @("cargo", "fmt", "--all", "--", "--check")
-        Invoke-Checked @("cargo", "check", "--workspace")
+        Invoke-Checked @("cargo", "check", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock")
         Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features")
         Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features", "--features", "animation")
         Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features", "--features", "emotion")
-        Invoke-Checked @("cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
-        Invoke-Checked @("cargo", "test", "--workspace")
+        Invoke-Checked @("cargo", "clippy", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock", "--all-targets", "--", "-D", "warnings")
+        Invoke-Checked @("cargo", "test", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock")
         foreach ($features in @("", "animation", "emotion")) {
             $arguments = @("cargo", "test", "-p", "audio2face3d", "--no-default-features")
             if ($features) { $arguments += @("--features", $features) }
@@ -45,7 +45,7 @@ switch ($Tier) {
         $previousRustdocFlags = $env:RUSTDOCFLAGS
         try {
             $env:RUSTDOCFLAGS = "-D warnings"
-            Invoke-Checked @("cargo", "doc", "--workspace", "--no-deps")
+            Invoke-Checked @("cargo", "doc", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock", "--no-deps")
             foreach ($features in @("", "animation", "emotion")) {
                 $arguments = @("cargo", "doc", "-p", "audio2face3d", "--no-deps", "--no-default-features")
                 if ($features) { $arguments += @("--features", $features) }

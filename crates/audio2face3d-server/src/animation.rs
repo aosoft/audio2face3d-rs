@@ -3,7 +3,7 @@ use crate::{
     proto::{animation, audio, controller},
 };
 
-pub use audio2face3d_inference::animation::CURVE_NAMES;
+pub use audio2face3d::inference::animation::CURVE_NAMES;
 
 pub fn header(epoch_seconds: f64) -> controller::AnimationDataStream {
     controller::AnimationDataStream {
@@ -38,8 +38,8 @@ pub fn diagnostic_frame(
     curve: Option<&str>,
     weight: Option<f32>,
 ) -> animation::AnimationData {
-    audio2face3d_protocol::convert::encode_animation(
-        audio2face3d_inference::animation::diagnostic_frame(
+    audio2face3d::protocol::convert::encode_animation(
+        audio2face3d::inference::animation::diagnostic_frame(
             start,
             pcm,
             pattern.into(),

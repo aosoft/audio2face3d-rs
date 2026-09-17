@@ -9,7 +9,7 @@ use crate::{
         status,
     },
 };
-use audio2face3d_inference::admission::Permit;
+use audio2face3d::inference::admission::Permit;
 use std::sync::Arc;
 use std::{
     future::Future,
@@ -184,8 +184,7 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio2face3d_inference::{Cancellation, admission::Admission};
-    use clap::Parser;
+    use audio2face3d::inference::{Cancellation, admission::Admission};
     use tokio_stream::StreamExt;
 
     #[tokio::test]
@@ -205,7 +204,10 @@ mod tests {
 
     #[tokio::test]
     async fn full_queue_times_out_and_error_bypasses_queued_data() {
-        let config = Config::parse_from(["test", "--output-timeout-ms", "20"]);
+        let config = Config {
+            output_timeout_ms: 20,
+            ..Config::default()
+        };
         let shutdown = CancellationToken::new();
         let slots = Admission::new(1, 1, std::time::Duration::ZERO).unwrap();
         let permit = Arc::new(slots.acquire(&Cancellation::new()).await.unwrap());

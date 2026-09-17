@@ -1,3 +1,4 @@
+#![cfg(feature = "animation")]
 use audio2face3d::common::AudioAccumulator;
 use std::sync::Arc;
 

@@ -43,7 +43,7 @@ jobs:
           set -euo pipefail
           metadata="$(cargo metadata --locked --no-deps --format-version 1)"
           package_names="$(jq -r '.packages[].name' <<<"$metadata" | sort)"
-          expected_names=$'audio2face3d\naudio2face3d-cli'
+          expected_names=$'audio2face3d\naudio2face3d-server'
           if [[ "$package_names" != "$expected_names" ]]; then
             printf 'Unexpected publishable packages:\n%s\n' "$package_names" >&2
             exit 1
@@ -63,14 +63,14 @@ jobs:
           fi
 
       - name: Run portable tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-default-features --features audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/mock
 
       - name: Show package contents
-        run: cargo package --workspace --locked --list
+        run: cargo package --workspace --locked --no-default-features --list
 
       - name: Publish dry-run
         if: ${{ inputs.mode == 'dry-run' }}
-        run: cargo publish --workspace --locked --dry-run --registry crates-io
+        run: cargo publish --workspace --locked --no-default-features --dry-run --registry crates-io
 
       - name: Require crates.io token
         if: ${{ inputs.mode == 'publish' }}
