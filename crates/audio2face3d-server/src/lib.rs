@@ -1,4 +1,4 @@
-//! Embeddable inference server for the NVIDIA ACE controller protocol.
+#![doc = include_str!("../README.md")]
 mod admission;
 pub mod animation;
 pub mod audio;

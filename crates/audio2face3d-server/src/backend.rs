@@ -216,9 +216,13 @@ mod tests {
             );
         }
     }
+    #[cfg(feature = "mock")]
     #[tokio::test]
     async fn mock_keeps_ignoring_unsupported_settings_and_emotion_keys() {
-        let config = Config::default();
+        let config = Config {
+            backend: BackendKind::Mock,
+            ..Config::default()
+        };
         let factory = Factory::prepare(&config).await.unwrap();
         let mut header = AudioStreamHeader {
             audio_header: Some(crate::proto::audio::AudioHeader {

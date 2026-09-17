@@ -1,7 +1,9 @@
 use crate::inference::{
     Backend, Cancellation, Config, Factory, admission::Admission, worker::wait,
 };
-use crate::types::{AudioFormat, ErrorKind, InputChunk, PcmBuffer, RequestOptions};
+#[cfg(feature = "mock")]
+use crate::types::AudioFormat;
+use crate::types::{ErrorKind, InputChunk, PcmBuffer, RequestOptions};
 use std::{sync::Arc, time::Duration};
 
 fn pcm(seed: u8, count: usize) -> Vec<u8> {
@@ -28,9 +30,14 @@ fn drain(engine: &mut dyn Backend, output: &mut Vec<u8>, cancel: &Cancellation) 
         output.extend_from_slice(audio.pcm().as_bytes());
     }
 }
+#[cfg(feature = "mock")]
 #[test]
 fn mock_streams_and_flushes_with_only_standard_future_waiting() {
-    let factory = wait(Factory::prepare(Config::default())).unwrap();
+    let factory = wait(Factory::prepare(Config {
+        backend: crate::inference::BackendKind::Mock,
+        ..Config::default()
+    }))
+    .unwrap();
     let cancel = Cancellation::new();
     for rate in [16000, 44100, 48000] {
         let mut engine =
@@ -54,9 +61,11 @@ fn mock_streams_and_flushes_with_only_standard_future_waiting() {
         wait(engine.close()).unwrap();
     }
 }
+#[cfg(feature = "mock")]
 #[test]
 fn shared_input_validation_preserves_empty_finish_and_duration_errors() {
     let factory = wait(Factory::prepare(Config {
+        backend: crate::inference::BackendKind::Mock,
         max_audio_seconds: 1,
         ..Config::default()
     }))
@@ -85,10 +94,17 @@ fn shared_input_validation_preserves_empty_finish_and_duration_errors() {
         wait(factory.start(RequestOptions::new(AudioFormat::pcm16(16000, 2).unwrap()))).is_err()
     );
 }
+#[cfg(feature = "mock")]
 #[test]
 fn mock_admissions_and_sessions_share_any_available_slot() {
     for n in [1, 2, 4] {
-        queue_sessions(Config::default(), n);
+        queue_sessions(
+            Config {
+                backend: crate::inference::BackendKind::Mock,
+                ..Config::default()
+            },
+            n,
+        );
     }
 }
 fn queue_sessions(config: Config, n: usize) {

@@ -48,7 +48,7 @@ $packagedLicense = [IO.File]::ReadAllText((Join-Path $repoRoot 'crates/audio2fac
 if (-not $packagedLicense.Contains($mplText)) {
     throw 'Packaged LICENSE must retain the full root MPL-2.0 text'
 }
-$libraryDependency = $cli.dependencies | Where-Object name -eq "audio2face3d"
+$libraryDependency = $cli.dependencies | Where-Object { $_.name -eq "audio2face3d" -and $null -eq $_.kind }
 if ($null -eq $libraryDependency -or $libraryDependency.req -notin @("^0.1.0", "0.1.0")) {
     throw "audio2face3d-server must depend on audio2face3d 0.1.0"
 }
@@ -72,7 +72,7 @@ foreach ($packageName in @("audio2face3d", "audio2face3d-server")) {
 Invoke-Checked @("cargo", "package", "--workspace", "--locked", "--allow-dirty", "--no-default-features")
 
 if (-not $SkipPublishDryRun) {
-    Invoke-Checked @("cargo", "publish", "--workspace", "--locked", "--allow-dirty", "--dry-run", "--registry", "crates-io")
+    Invoke-Checked @("cargo", "publish", "--workspace", "--locked", "--allow-dirty", "--no-default-features", "--dry-run", "--registry", "crates-io")
 } else {
     Write-Warning "Skipped the networked workspace publish dry-run; this gate is unverified."
 }

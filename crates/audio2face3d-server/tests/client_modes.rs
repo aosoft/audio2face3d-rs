@@ -130,7 +130,16 @@ fn compare(direct_config: DirectConfig, args: Vec<String>) {
 }
 #[test]
 fn common_application_matches_real_mock_server() {
-    compare(DirectConfig::default(), vec!["test".into()]);
+    compare(
+        DirectConfig {
+            engine: InferenceConfig {
+                backend: BackendKind::Mock,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        vec!["test".into()],
+    );
 }
 #[cfg(feature = "native")]
 #[test]

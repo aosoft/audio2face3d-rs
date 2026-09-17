@@ -53,21 +53,32 @@ global logger or handles process signals. The embedding application binds a
 Tokio listener, builds a `Server`, and supplies its stop future:
 
 ```rust,no_run
-use audio2face3d::Audio2Face3DContext;
-use audio2face3d_server::{Server, ServerConfig, ServerError};
+use std::{future::Future, sync::Arc};
+use audio2face3d::{Audio2Face3DContext, logging::Logger};
+use audio2face3d_server::{
+    auth::Authenticator, Server, ServerConfig, ServerError, ShutdownReport,
+};
 
-async fn run(config: ServerConfig, context: Audio2Face3DContext)
-    -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-{
+async fn run<A: Authenticator>(
+    config: ServerConfig,
+    logger: Arc<dyn Logger>,
+    verifier: Option<A>,
+    stop: impl Future<Output = ()> + Send + 'static,
+) -> Result<ShutdownReport, Box<dyn std::error::Error + Send + Sync>> {
+    let context = Audio2Face3DContext::builder().logger(logger).build();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:52000").await?;
-    let result = Server::builder(config).context(context).build()?
-        .serve(listener, async { let _ = tokio::signal::ctrl_c().await; }).await;
-    match result {
-        Ok(_) => (),
-        Err(ServerError::ShutdownTimeout { completion, .. }) => { completion.await?; },
-        Err(error) => return Err(error.into()),
+    let server = Server::builder(config)
+        .context(context)
+        .authentication(verifier)
+        .build()?;
+    match server.serve(listener, stop).await {
+        Ok(report) => Ok(report),
+        Err(ServerError::ShutdownTimeout { completion, .. }) => {
+            completion.await?;
+            Err("shutdown exceeded its deadline; cleanup completed".into())
+        }
+        Err(error) => Err(error.into()),
     }
-    Ok(())
 }
 ```
 
@@ -230,6 +241,3 @@ The NVIDIA protocol definitions are maintained in
 [protocol module](../audio2face3d/proto). They retain their
 upstream notices and are covered by [LICENSE-APACHE](LICENSE-APACHE).
 See the workspace license for the Rust implementation.
-## Embedded use
-
-Construct `Config` directly and pass an already bound Tokio listener to `Server::builder(config).build()?.serve(listener, stop)`. The calling application owns its runtime, listener and shutdown signal. The library does not parse arguments or install a global logger.

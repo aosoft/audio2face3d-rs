@@ -1,3 +1,4 @@
+#![cfg(feature = "mock")]
 use audio2face3d::{
     Audio2Face3DContext,
     client::{Client, DirectConfig, ServerConfig},

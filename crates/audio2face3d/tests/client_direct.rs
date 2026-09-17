@@ -75,18 +75,28 @@ fn exercises(config: DirectConfig) {
     assert_eq!(returned_pcm(&events), pcm(7, 533));
     wait(client.shutdown()).unwrap();
 }
+#[cfg(feature = "mock")]
 #[test]
 fn mock_queues_and_recovers_without_tokio() {
     for n in [1, 2, 4] {
         exercises(DirectConfig {
+            engine: InferenceConfig {
+                backend: BackendKind::Mock,
+                ..Default::default()
+            },
             max_executions: n,
             ..Default::default()
         });
     }
 }
+#[cfg(feature = "mock")]
 #[test]
 fn direct_backpressure_cancel_and_shutdown_without_tokio() {
     let config = DirectConfig {
+        engine: InferenceConfig {
+            backend: BackendKind::Mock,
+            ..Default::default()
+        },
         limits: Limits {
             input_queue_items: 1,
             output_queue_items: 1,
@@ -148,9 +158,14 @@ fn native_a2e_without_tokio() {
     wait(client.shutdown()).unwrap();
 }
 
+#[cfg(feature = "mock")]
 #[test]
 fn direct_admission_timeout_and_fifo_do_not_release_occupied_slots() {
     let client = wait(Client::direct(DirectConfig {
+        engine: InferenceConfig {
+            backend: BackendKind::Mock,
+            ..Default::default()
+        },
         queue_timeout: Duration::from_millis(40),
         max_queued: 2,
         ..Default::default()
@@ -175,6 +190,10 @@ fn direct_admission_timeout_and_fifo_do_not_release_occupied_slots() {
     assert!(wait(control.closed()).is_err());
     wait(client.shutdown()).unwrap();
     let client = wait(Client::direct(DirectConfig {
+        engine: InferenceConfig {
+            backend: BackendKind::Mock,
+            ..Default::default()
+        },
         max_queued: 2,
         ..Default::default()
     }))

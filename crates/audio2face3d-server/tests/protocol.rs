@@ -1,3 +1,4 @@
+#![cfg(feature = "mock")]
 use audio2face3d_server::{
     proto::{
         self,
