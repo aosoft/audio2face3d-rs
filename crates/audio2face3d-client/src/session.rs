@@ -11,6 +11,7 @@ use std::{
     task::{Context, Poll},
 };
 
+/// One admitted request. Split into independent sending, receiving and control handles.
 pub struct Session {
     input: Input,
     output: Output,
@@ -37,6 +38,7 @@ impl Session {
         (self.input, self.output, self.control)
     }
 }
+/// Owned sending endpoint. Dropping without awaiting finish cancels the request.
 pub struct Input {
     pub(crate) request: Arc<Request>,
     finished: bool,
@@ -208,6 +210,7 @@ impl Drop for SendChunk<'_> {
         }
     }
 }
+/// Ordered end-of-input Future. Dropping before it is polled cancels the request.
 pub struct Finish {
     input: Option<Input>,
 }
@@ -227,11 +230,16 @@ impl Future for Finish {
         Poll::Ready(Ok(()))
     }
 }
+/// Receiving endpoint. Dropping before terminal consumption cancels the request.
 pub struct Output {
     pub(crate) request: Arc<Request>,
     ended: bool,
 }
 impl Output {
+    /// Receives one owned event. Failure is reported once, then None.
+    /// Successful output ends with Completed, then None. A pending Future can be
+    /// dropped and recreated without consuming an event; its Waker subscription
+    /// belongs to that Future and must remain alive when awaiting a notification.
     pub fn recv(&mut self) -> Receive<'_> {
         let subscription = self.request.notify.subscribe();
         Receive {
@@ -297,6 +305,7 @@ impl Future for Receive<'_> {
     }
 }
 #[derive(Clone)]
+/// Cloneable cancellation and cleanup handle; dropping it alone does not cancel.
 pub struct Control {
     pub(crate) request: Arc<Request>,
 }
@@ -319,6 +328,7 @@ impl Control {
         }
     }
 }
+/// Owned Future acknowledging backend cleanup, independently of output consumption.
 pub struct Closed {
     request: Arc<Request>,
     subscription: Subscription,

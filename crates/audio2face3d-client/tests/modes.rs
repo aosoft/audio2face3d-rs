@@ -5,13 +5,38 @@ use audio2face3d_server::{config::Config, server};
 use clap::Parser;
 use std::time::Duration;
 use support::*;
-fn compare(direct_config: DirectConfig, args: Vec<String>) {
-    let direct = wait(Client::direct(direct_config)).unwrap();
-    let mut expected = vec![];
+fn cases() -> Vec<(RequestOptions, Vec<u8>)> {
+    let mut cases = vec![];
     for rate in [16000, 44100, 48000] {
         let mut options = RequestOptions::new(AudioFormat::pcm16(rate, 1).unwrap());
         options.timeout = Some(Duration::from_secs(120));
-        expected.push(collect(&direct, options, pcm(31, (rate / 10 + 7) as usize)).unwrap());
+        cases.push((options, pcm(31, (rate / 10 + 7) as usize)));
+    }
+    let mut short = RequestOptions::default();
+    short.timeout = Some(Duration::from_secs(120));
+    cases.push((short.clone(), pcm(31, 1)));
+    let mut face = FaceParameters::default();
+    face.upper_face_strength = Some(0.0);
+    let mut blendshapes = BlendshapeParameters::default();
+    blendshapes.clamp = Some(false);
+    blendshapes.multipliers.insert("JawOpen".into(), 0.0);
+    let mut emotion = EmotionParameters::default();
+    emotion.beginning.insert("joy".into(), 0.0);
+    let mut post = EmotionPostProcessing::default();
+    post.use_preferred = Some(false);
+    post.preferred_strength = Some(0.0);
+    short.face = Some(face);
+    short.blendshapes = Some(blendshapes);
+    short.emotion = Some(emotion);
+    short.emotion_post_processing = Some(post);
+    cases.push((short, pcm(42, 1607)));
+    cases
+}
+fn compare(direct_config: DirectConfig, args: Vec<String>) {
+    let direct = wait(Client::direct(direct_config)).unwrap();
+    let mut expected = vec![];
+    for (options, bytes) in cases() {
+        expected.push(collect(&direct, options, bytes).unwrap());
     }
     wait(direct.shutdown()).unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -29,10 +54,7 @@ fn compare(direct_config: DirectConfig, args: Vec<String>) {
     remote_config.runtime = Some(rt.handle().clone());
     remote_config.connect_timeout = Duration::from_secs(120);
     let remote = wait(Client::server(remote_config)).unwrap();
-    for (rate, a) in [16000, 44100, 48000].into_iter().zip(expected) {
-        let mut options = RequestOptions::new(AudioFormat::pcm16(rate, 1).unwrap());
-        options.timeout = Some(Duration::from_secs(120));
-        let bytes = pcm(31, (rate / 10 + 7) as usize);
+    for ((options, bytes), a) in cases().into_iter().zip(expected) {
         let b = collect(&remote, options, bytes).unwrap();
         assert_eq!(returned_pcm(&a), returned_pcm(&b));
         let ac: Vec<_> = a

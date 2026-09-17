@@ -85,3 +85,20 @@ The server adapter also bounds encoded/decoded gRPC message size through `max_me
 ### Transport holding limits
 
 `ServerConfig::http2_window_bytes` fixes both HTTP/2 receive windows (default 65,535 bytes; valid range 65,535 through 2,147,483,647). Adaptive window growth is disabled. The channel request buffer is bounded by `Limits::max_requests`. These settings complement `max_message_bytes` and common queue accounting; they are not an allocator/RSS or remote-server memory ceiling. Larger windows may help high-latency links at the cost of more buffered data.
+
+## Runnable streaming example
+
+[stream.rs](examples/stream.rs) uses a standard-library Future executor and a sender thread with the same streaming function for both modes. Input is raw signed PCM16 little-endian, mono, 16 kHz (no WAV header). The example counts curve frames and checks successful completion; it does not play audio.
+
+```text
+cargo run -p audio2face3d-client --features runtime --example stream -- direct models/mark/model.json input.pcm
+cargo run -p audio2face3d-client --features direct,server --example stream -- server http://127.0.0.1:52000 input.pcm
+```
+
+The example requires direct to build, but server-only library consumers need only the server feature. In server mode the example owns one multi-thread Tokio runtime, passes its Handle during initialization, and awaits Client shutdown before dropping the runtime. The application's executor is separate. With both features enabled, choosing direct never constructs Tokio. For a current-thread runtime, drive it on another thread or poll the application inside its block_on; blocking its only driving thread on a different executor prevents network progress.
+
+## Embedding and future wrappers
+
+Client and Control are cloneable Send + Sync handles. Input/Output are exclusively owned; their send/receive Futures borrow the endpoint and cannot overlap on that endpoint. Returned PCM/curves own their storage independently of the Client. A wrapper may retain a pinned receive Future with a Waker and poll it without blocking; dropping a pending receive is safe but unregisters its wake subscription. Move notifications to the application's thread instead of accessing application objects from a worker.
+
+Cancel is a nonblocking request, not a resource-destruction acknowledgment. Await closed before releasing per-request backend resources, and shutdown before destroying the server runtime. An eventual C ABI must supply opaque handles, explicit event-buffer release, stable error values, panic containment and a lifetime-safe polling bridge; this crate does not yet provide or validate that ABI. TLS/authentication configuration, automatic retry, runtime pooling and remote capability discovery are not implemented. Remote support is learned from validated responses rather than assumed from a health check.

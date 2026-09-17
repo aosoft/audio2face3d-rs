@@ -20,5 +20,11 @@ fn public_surface_compiles_without_an_adapter_or_async_runtime() {
     shared::<Client>();
     shared::<Control>();
     Limits::default().validate().unwrap();
+    #[cfg(feature = "direct")]
+    require_send(Client::direct(Default::default()));
+    #[cfg(feature = "server")]
+    require_send(Client::server(audio2face3d_client::ServerConfig::new(
+        "http://127.0.0.1:1",
+    )));
     let _application: fn(&Client) -> Result<()> = application;
 }
