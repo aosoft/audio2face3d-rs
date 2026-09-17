@@ -295,23 +295,18 @@ impl RegressionState {
             .ok_or_else(|| internal("runtime unavailable"))?
             .order;
         let clamp = self.runtime.as_ref().unwrap().clamp;
-        let weights = order
-            .iter()
-            .map(|&i| {
-                if clamp {
-                    frame.weights[i].clamp(0.0, 1.0)
-                } else {
-                    frame.weights[i]
-                }
-            })
-            .collect();
+        let weights = crate::animation::ordered_weights(frame.weights, order, clamp);
         let metadata = self
             .runtime
             .as_mut()
             .unwrap()
             .emotion
             .metadata(start as i64)?;
-        let pcm = self.pcm.drain(..bytes).collect();
+        let pcm = if bytes == self.pcm.len() {
+            std::mem::take(&mut self.pcm).into()
+        } else {
+            self.pcm.drain(..bytes).collect()
+        };
         self.emitted = end;
         let mut batch = crate::animation::frame(start, pcm, weights)?;
         batch.emotion = Some(metadata);
@@ -342,7 +337,11 @@ impl RegressionState {
             .emotion
             .push_keys(emotions)?;
         self.received = total;
-        self.pcm.extend(audio_buffer);
+        if self.pcm.is_empty() {
+            self.pcm = audio_buffer.into();
+        } else {
+            self.pcm.extend(audio_buffer);
+        }
         Ok(())
     }
 
@@ -373,26 +372,22 @@ impl RegressionState {
             let has_input = self.fed < self.received;
             if has_input {
                 let count = (self.received - self.fed).min(534) as usize;
-                let bytes = self
-                    .pcm
-                    .iter()
-                    .skip(((self.fed - self.emitted) * 2) as usize)
-                    .take(count * 2)
-                    .copied()
-                    .collect::<Vec<_>>();
-                let samples = bytes
-                    .chunks_exact(2)
-                    .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
-                    .collect::<Vec<_>>();
+                let mut scratch = [0.0f32; 534];
+                let samples = &mut scratch[..count];
+                crate::audio::normalized_samples(
+                    &self.pcm,
+                    ((self.fed - self.emitted) * 2) as usize,
+                    samples,
+                );
                 if let Err(error) = runtime
                     .executor
                     .audio_accumulator(0)
-                    .and_then(|audio| audio.accumulate(&samples))
+                    .and_then(|audio| audio.accumulate(samples))
                 {
                     self.runtime = Some(runtime);
                     return Err(internal(error));
                 }
-                if let Err(error) = runtime.emotion.feed(&samples) {
+                if let Err(error) = runtime.emotion.feed(samples) {
                     self.runtime = Some(runtime);
                     return Err(error);
                 }
@@ -491,5 +486,26 @@ impl Backend for RegressionBackend {
     }
     fn success_message(&self) -> &'static str {
         "Regression audio processing completed successfully."
+    }
+}
+
+#[cfg(test)]
+mod ownership_profile {
+    use super::*;
+    #[test]
+    #[ignore = "requires A2F_MODEL and CUDA/TensorRT"]
+    fn native_weight_order() {
+        let config = Config {
+            backend: crate::BackendKind::Regression,
+            model: Some(std::env::var_os("A2F_MODEL").expect("A2F_MODEL").into()),
+            ..Default::default()
+        };
+        let runtime = load_sync(&config, &RequestOptions::default()).unwrap();
+        println!(
+            "NATIVE_ORDER channels={} identity={}",
+            runtime.order.len(),
+            runtime.order.iter().copied().eq(0..52)
+        );
+        assert_eq!(runtime.order.len(), 52);
     }
 }

@@ -21,8 +21,8 @@ impl MockBackend {
 impl Backend for MockBackend {
     fn push(&mut self, input: InputChunk) -> EngineFuture<'_, ()> {
         Box::pin(async move {
-            self.buffer.push(
-                input.pcm().as_bytes(),
+            self.buffer.push_owned(
+                input.into_parts().0.into_vec(),
                 u64::from(self.config.max_audio_seconds) * SAMPLE_RATE,
             )
         })

@@ -126,7 +126,7 @@ impl Backend for ResamplingBackend {
             }
             input.validate(self.format)?;
             let (pcm, emotions) = input.into_parts();
-            let pcm = PcmBuffer::from_vec(self.resampler.push(pcm.as_bytes())?)?;
+            let pcm = PcmBuffer::from_vec(self.resampler.push_owned(pcm.into_vec())?)?;
             self.inner.push(InputChunk::new(pcm, emotions)).await
         })
     }

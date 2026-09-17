@@ -24,6 +24,8 @@ pub struct ServerConfig {
     pub limits: Limits,
     pub connect_timeout: Duration,
     pub max_message_bytes: usize,
+    /// Fixed HTTP/2 connection and stream receive windows; adaptive growth is disabled.
+    pub http2_window_bytes: u32,
 }
 impl ServerConfig {
     pub fn new(endpoint: impl Into<String>) -> Self {
@@ -33,6 +35,7 @@ impl ServerConfig {
             limits: Limits::default(),
             connect_timeout: Duration::from_secs(10),
             max_message_bytes: 4 * 1024 * 1024,
+            http2_window_bytes: 65_535,
         }
     }
 }
@@ -44,7 +47,10 @@ struct Server {
 impl Client {
     pub async fn server(config: ServerConfig) -> Result<Self> {
         config.limits.validate()?;
-        if config.connect_timeout.is_zero() || config.max_message_bytes == 0 {
+        if config.connect_timeout.is_zero()
+            || config.max_message_bytes == 0
+            || !(65_535..=0x7fff_ffff).contains(&config.http2_window_bytes)
+        {
             return Err(Error::invalid("invalid server transport limits"));
         }
         let handle = config
@@ -61,7 +67,11 @@ impl Client {
             .spawn(async move {
                 let endpoint = Endpoint::from_shared(config.endpoint)
                     .map_err(|e| Error::invalid(e.to_string()))?
-                    .connect_timeout(config.connect_timeout);
+                    .connect_timeout(config.connect_timeout)
+                    .buffer_size(config.limits.max_requests)
+                    .initial_stream_window_size(config.http2_window_bytes)
+                    .initial_connection_window_size(config.http2_window_bytes)
+                    .http2_adaptive_window(false);
                 let channel = endpoint
                     .connect()
                     .await

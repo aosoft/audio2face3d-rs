@@ -21,7 +21,15 @@ impl Resampler {
             limit: u64::from(rate) * u64::from(seconds),
         }
     }
-    pub fn push(&mut self, pcm: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn push_owned(&mut self, pcm: Vec<u8>) -> Result<Vec<u8>, Error> {
+        if self.rate == 16_000 {
+            self.accept(&pcm)?;
+            Ok(pcm)
+        } else {
+            self.push(&pcm)
+        }
+    }
+    fn accept(&mut self, pcm: &[u8]) -> Result<(), Error> {
         if !pcm.len().is_multiple_of(2) {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
@@ -36,6 +44,10 @@ impl Resampler {
             ));
         }
         self.received += count;
+        Ok(())
+    }
+    pub fn push(&mut self, pcm: &[u8]) -> Result<Vec<u8>, Error> {
+        self.accept(pcm)?;
         if self.rate == 16_000 {
             return Ok(pcm.to_vec());
         }

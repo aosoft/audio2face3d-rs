@@ -13,14 +13,27 @@ pub struct FrameBuffer {
 }
 
 impl FrameBuffer {
-    pub fn push(&mut self, bytes: &[u8], max_samples: u64) -> Result<(), Error> {
-        if !bytes.len().is_multiple_of(2) {
+    #[cfg(test)]
+    pub(crate) fn first_pointer(&self) -> *const u8 {
+        self.bytes.as_slices().0.as_ptr()
+    }
+    pub fn push_owned(&mut self, bytes: Vec<u8>, max_samples: u64) -> Result<(), Error> {
+        self.accept(bytes.len(), max_samples)?;
+        if self.bytes.is_empty() {
+            self.bytes = bytes.into();
+        } else {
+            self.bytes.extend(bytes);
+        }
+        Ok(())
+    }
+    fn accept(&mut self, len: usize, max_samples: u64) -> Result<(), Error> {
+        if !len.is_multiple_of(2) {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 "PCM chunk must contain whole 16-bit samples",
             ));
         }
-        let new_total = self.received_samples + (bytes.len() / 2) as u64;
+        let new_total = self.received_samples + (len / 2) as u64;
         if new_total > max_samples {
             return Err(Error::new(
                 ErrorKind::LimitExceeded,
@@ -28,6 +41,10 @@ impl FrameBuffer {
             ));
         }
         self.received_samples = new_total;
+        Ok(())
+    }
+    pub fn push(&mut self, bytes: &[u8], max_samples: u64) -> Result<(), Error> {
+        self.accept(bytes.len(), max_samples)?;
         self.bytes.extend(bytes);
         Ok(())
     }
@@ -43,7 +60,11 @@ impl FrameBuffer {
         }
         let start = self.emitted_samples;
         let count = ((end - start) * 2) as usize;
-        let pcm = self.bytes.drain(..count).collect();
+        let pcm = if count == self.bytes.len() {
+            std::mem::take(&mut self.bytes).into()
+        } else {
+            self.bytes.drain(..count).collect()
+        };
         self.emitted_samples = end;
         self.frame += 1;
         Some((start, pcm))
@@ -51,6 +72,18 @@ impl FrameBuffer {
 
     pub fn is_empty(&self) -> bool {
         self.received_samples == 0
+    }
+}
+
+/// Converts directly into reusable caller storage without a temporary PCM vector.
+#[cfg(any(feature = "runtime", test))]
+pub(crate) fn normalized_samples(bytes: &VecDeque<u8>, offset: usize, output: &mut [f32]) {
+    let mut bytes = bytes.iter().skip(offset);
+    for value in output {
+        *value = f32::from(i16::from_le_bytes([
+            *bytes.next().expect("PCM range"),
+            *bytes.next().expect("PCM range"),
+        ])) / 32768.0;
     }
 }
 

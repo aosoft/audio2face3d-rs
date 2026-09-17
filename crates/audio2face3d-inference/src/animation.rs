@@ -115,3 +115,26 @@ pub fn diagnostic_frame(
     }
     frame(start, pcm, values)
 }
+
+#[cfg(any(feature = "runtime", test))]
+pub(crate) fn ordered_weights(mut weights: Vec<f32>, order: &[usize], clamp: bool) -> Vec<f32> {
+    if order.iter().copied().eq(0..weights.len()) {
+        if clamp {
+            for value in &mut weights {
+                *value = value.clamp(0.0, 1.0);
+            }
+        }
+        weights
+    } else {
+        order
+            .iter()
+            .map(|&i| {
+                if clamp {
+                    weights[i].clamp(0.0, 1.0)
+                } else {
+                    weights[i]
+                }
+            })
+            .collect()
+    }
+}

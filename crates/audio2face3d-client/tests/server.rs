@@ -338,8 +338,8 @@ fn server_requires_runtime_and_runs_on_explicit_runtime_from_standard_executor()
     let mut config = ServerConfig::new(&server.url);
     config.runtime = Some(rt.handle().clone());
     let client = wait(Client::server(config)).unwrap();
-    let events = collect(&client, RequestOptions::default(), pcm(2, 100)).unwrap();
-    assert_eq!(returned_pcm(&events), pcm(2, 100));
+    let events = collect(&client, RequestOptions::default(), pcm(2, 128000)).unwrap();
+    assert_eq!(returned_pcm(&events), pcm(2, 128000));
     wait(client.shutdown()).unwrap();
     rt.block_on(server.close());
 }
@@ -581,4 +581,16 @@ async fn tcp_disconnect_during_upload_wakes_input_and_output() {
     drop(input);
     client.shutdown().await.unwrap();
     fixture.close().await;
+}
+
+#[test]
+fn transport_windows_reject_values_outside_http2_range() {
+    for value in [0, 65534, 0x80000000, u32::MAX] {
+        let mut config = ServerConfig::new("http://127.0.0.1:1");
+        config.http2_window_bytes = value;
+        assert_eq!(
+            wait(Client::server(config)).err().unwrap().kind(),
+            ErrorKind::InvalidInput
+        );
+    }
 }

@@ -24,3 +24,6 @@ pub use config::{BackendKind, Config, MockPattern};
 
 #[cfg(test)]
 mod engine_tests;
+
+#[cfg(test)]
+mod buffer_profile;

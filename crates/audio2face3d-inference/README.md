@@ -84,3 +84,7 @@ These native tests use standard Future waiting throughout, with no async runtime
 They cover model lifecycle, real inference with capacities 1/2, cancellation and
 recovery, and typed Audio2Emotion metadata. Capacity 4 is exercised in queue/mock
 tests. Short tests do not establish sustained production throughput or quality.
+
+## Buffer ownership
+
+The 16 kHz input path moves owned PCM without a passthrough copy. Empty PCM queues adopt the input allocation, and a frame that consumes the whole queue can return that allocation. Mismatched chunk/frame boundaries still require repacking. Native normalization uses a fixed 534-sample scratch array; identity curve ordering reuses the owned callback weights and applies clamping in place. Resampling and nonidentity ordering preserve their numerical behavior. Borrowed native callbacks still require an owned capture.

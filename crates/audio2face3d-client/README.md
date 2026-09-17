@@ -81,3 +81,7 @@ DirectConfig selects the engine/model, optional emotion model, device, execution
 Server success requires a response header, a final SUCCESS status and clean gRPC termination. Intermediate SUCCESS and ProcessingFinished do not end the response. Disconnected utterances are never automatically retried; later requests may reconnect. `closed` acknowledges local RPC cleanup, not remote GPU completion.
 
 The server adapter also bounds encoded/decoded gRPC message size through `max_message_bytes`. A decoded packet, protocol conversion storage, transport buffers and native model memory are additional to the common queue accounting. Backpressure stops response reads; cancellation and deadlines remain independent of application polling. A remote error cannot be observed until its response bytes/trailers can be read.
+
+### Transport holding limits
+
+`ServerConfig::http2_window_bytes` fixes both HTTP/2 receive windows (default 65,535 bytes; valid range 65,535 through 2,147,483,647). Adaptive window growth is disabled. The channel request buffer is bounded by `Limits::max_requests`. These settings complement `max_message_bytes` and common queue accounting; they are not an allocator/RSS or remote-server memory ceiling. Larger windows may help high-latency links at the cost of more buffered data.
