@@ -17,8 +17,8 @@ Run commands from the workspace root. Requirements:
 - A CUDA-capable GPU, CUDA and TensorRT. The tested native configuration is
   Windows x64/MSVC, CUDA 12.9 and TensorRT 10.16.1.
 - A 16 kHz Regression model and its TensorRT engines. Follow the workspace
-  instructions for [model acquisition](../../README.md#explicit-model-acquisition)
-  and [engine generation](../../README.md#tensorrt-engine-generation).
+  instructions for [model acquisition](../../docs/getting-started.md#explicit-model-acquisition)
+  and [engine generation](../../docs/getting-started.md#tensorrt-engine-generation).
   Model files and native SDKs are separate downloads.
 
 Set `CUDA_PATH` and `TENSORRT_ROOT_DIR` to your installations, then add their

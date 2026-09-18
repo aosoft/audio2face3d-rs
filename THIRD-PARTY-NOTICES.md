@@ -23,7 +23,7 @@ modifications, is licensed under MPL-2.0 and retains the original attribution.
 
 The MPL text is in the root `LICENSE-MPL-2.0`. The library's `LICENSE` also
 contains it so the standalone Cargo source archive retains the full text.
-The library package declares `MIT AND MPL-2.0`; independently written MIT
+The library package declares `MIT AND MPL-2.0 AND Apache-2.0`; independently written MIT
 files keep their MIT license. Source distributions retain the SVD source and
 its notices. Binary distributions must provide access to the corresponding
 MPL-covered source, including any modifications; the release archive or an
@@ -33,3 +33,7 @@ exact source revision can be used for this purpose. See the
 External CUDA/TensorRT installations remain subject to their own terms.
 These notices describe embedded SDK/Eigen source;
 binary releases must also retain notices required by their other dependencies.
+
+The ACE protocol definitions under `crates/audio2face3d/proto` retain their
+upstream notices and use Apache-2.0. The license text is included in
+[the library package](crates/audio2face3d/LICENSE-APACHE).
