@@ -1,3 +1,4 @@
+#![cfg(feature = "animation")]
 //! Compile-pass coverage for the Step 1 declaration surface.
 //! No CUDA installation or model execution is required for portable contracts.
 

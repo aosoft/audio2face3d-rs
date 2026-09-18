@@ -134,6 +134,7 @@ pub fn create_classifier_emotion_interactive_executor(
 /// is a private implementation detail.
 #[cfg(feature = "tensorrt")]
 pub struct ClassifierEmotionExecutor {
+    scope: crate::logging::integration::LogScope,
     execution: ClassifierScheduler,
     backend: TensorRtClassifierBackend,
     contract: ClassifierContract,
@@ -153,6 +154,7 @@ pub struct ClassifierEmotionExecutor {
 /// `audio2emotion-sdk/include/audio2emotion/interactive_executor.h`.
 #[cfg(feature = "tensorrt")]
 pub struct ClassifierEmotionInteractiveExecutor {
+    scope: crate::logging::integration::LogScope,
     inner: crate::emotion::ClassifierInteractiveExecution<TensorRtClassifierBackend>,
     contract: ClassifierContract,
     audio: Arc<crate::audio2x::AudioAccumulator>,
@@ -193,8 +195,10 @@ impl ClassifierEmotionExecutor {
                 ));
             }
         };
-        let (data, model_parameters) =
-            crate::emotion::EmotionPostProcessData::from_model(network, config)?;
+        let (data, _) = crate::emotion::EmotionPostProcessData::from_model(network, config)?;
+        let model_parameters =
+            super::post_process::into_internal_params(parameters.post_process_params);
+        model_parameters.validate(&data)?;
         if parameters.buffer_length == 0 {
             return Err(crate::Error::InvalidArgument {
                 field: "buffer_length",
@@ -242,6 +246,7 @@ impl ClassifierEmotionExecutor {
         let sample_rate = network.audio_params.samplerate;
         let preferred_emotions = parameters.preferred_emotions;
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             execution,
             backend,
             contract,
@@ -256,20 +261,25 @@ impl ClassifierEmotionExecutor {
     }
 
     pub fn track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tracks.len()
     }
     /// Returns the stream owned by the classifier backend.
     pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        let _scope = self.scope.activate();
         self.backend.stream()
     }
 
     pub fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.sample_rate
     }
     pub fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
     pub fn audio(&self, track: usize) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        let _scope = self.scope.activate();
         self.tracks
             .get(track)
             .map(|value| &value.audio)
@@ -285,6 +295,7 @@ impl ClassifierEmotionExecutor {
         &self,
         track: usize,
     ) -> crate::Result<&Arc<crate::audio2x::AudioAccumulator>> {
+        let _scope = self.scope.activate();
         self.audio(track)
     }
 
@@ -293,6 +304,7 @@ impl ClassifierEmotionExecutor {
         &self,
         track: usize,
     ) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        let _scope = self.scope.activate();
         self.preferred_emotions
             .get(track)
             .ok_or(crate::Error::OutOfBounds {
@@ -302,10 +314,12 @@ impl ClassifierEmotionExecutor {
             })
     }
     pub fn emotion_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.execution.output_emotion_length()
     }
 
     pub fn reset_track(&mut self, track: usize) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         <Self as crate::audio2x::Executor>::reset_track(self, track)
     }
 }
@@ -387,6 +401,7 @@ impl ClassifierEmotionInteractiveExecutor {
         let output = device.allocate(data.output_emotion_length)?;
         let stream = device.create_stream()?;
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             inner,
             contract,
             audio: Arc::clone(&parameters.common.audio),
@@ -403,16 +418,19 @@ impl ClassifierEmotionInteractiveExecutor {
 
     /// Returns the stream used for device result copies.
     pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        let _scope = self.scope.activate();
         &self.stream
     }
 
     /// Borrows the closed audio timeline retained by this executor.
     pub fn audio_accumulator(&self) -> &Arc<crate::audio2x::AudioAccumulator> {
+        let _scope = self.scope.activate();
         &self.audio
     }
 
     /// Borrows the optional preferred-emotion timeline, when configured.
     pub fn emotion_accumulator(&self) -> crate::Result<&Arc<crate::audio2x::EmotionAccumulator>> {
+        let _scope = self.scope.activate();
         self.preferred_emotions
             .as_ref()
             .ok_or(crate::Error::InvalidState {
@@ -430,6 +448,7 @@ impl ClassifierEmotionInteractiveExecutor {
                      + Send
              ),
     ) -> crate::Result<crate::emotion::InteractiveEmotionStatus> {
+        let _scope = self.scope.activate();
         let interrupt = self.interrupt.clone();
         let output = &mut self.output;
         let stream = &self.stream;
@@ -472,16 +491,19 @@ impl ClassifierEmotionInteractiveExecutor {
 #[cfg(feature = "tensorrt")]
 impl crate::audio2x::InteractiveExecutor for ClassifierEmotionInteractiveExecutor {
     fn invalidate_all(&mut self) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         self.inner.invalidate_audio();
         self.post_processing_valid = false;
         Ok(())
     }
 
     fn is_fully_valid(&self) -> bool {
+        let _scope = self.scope.activate();
         self.inner.inference_cache_is_valid() && self.post_processing_valid
     }
 
     fn total_frame_count(&self) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         validate_interactive_inputs(
             &self.audio,
             self.preferred_emotions.as_deref(),
@@ -491,18 +513,22 @@ impl crate::audio2x::InteractiveExecutor for ClassifierEmotionInteractiveExecuto
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.sample_rate
     }
 
     fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
 
     fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        let _scope = self.scope.activate();
         self.contract.frame_timestamp(frame)
     }
 
     fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        let _scope = self.scope.activate();
         self.interrupt.clone()
     }
 }
@@ -513,6 +539,7 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for ClassifierEmotionInter
         &mut self,
         layer: crate::audio2emotion::EmotionInvalidationLayer,
     ) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         match layer {
             crate::audio2emotion::EmotionInvalidationLayer::None => {}
             crate::audio2emotion::EmotionInvalidationLayer::Inference
@@ -528,6 +555,7 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for ClassifierEmotionInter
     }
 
     fn is_emotion_valid(&self, layer: crate::audio2emotion::EmotionInvalidationLayer) -> bool {
+        let _scope = self.scope.activate();
         match layer {
             crate::audio2emotion::EmotionInvalidationLayer::None => true,
             crate::audio2emotion::EmotionInvalidationLayer::Inference => {
@@ -543,6 +571,7 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for ClassifierEmotionInter
     }
 
     fn emotion_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.inner.emotion_count()
     }
 
@@ -554,33 +583,37 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for ClassifierEmotionInter
                         + Send
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
-        Box::pin(async move {
-            self.post_processing_valid = false;
-            let total = self.total_frame_count()?;
-            if frame >= total {
-                return Err(crate::Error::OutOfBounds {
-                    field: "frame",
-                    index: frame,
-                    len: total,
-                });
-            }
-            let generation = self.interrupt.generation();
-            match self.compute_one(frame, generation, callback)? {
-                crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
-                    self.post_processing_valid = false;
-                    Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Complete,
-                        emitted_frames: frames,
-                    })
+        let _scope = self.scope.activate();
+        Box::pin({
+            let scope = self.scope.for_current();
+            scope.wrap_future(async move {
+                self.post_processing_valid = false;
+                let total = self.total_frame_count()?;
+                if frame >= total {
+                    return Err(crate::Error::OutOfBounds {
+                        field: "frame",
+                        index: frame,
+                        len: total,
+                    });
                 }
-                crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
-                    self.post_processing_valid = false;
-                    Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                        emitted_frames: frames,
-                    })
+                let generation = self.interrupt.generation();
+                match self.compute_one(frame, generation, callback)? {
+                    crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
+                        self.post_processing_valid = false;
+                        Ok(crate::audio2x::InteractiveExecutionReport {
+                            status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                            emitted_frames: frames,
+                        })
+                    }
+                    crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
+                        self.post_processing_valid = false;
+                        Ok(crate::audio2x::InteractiveExecutionReport {
+                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                            emitted_frames: frames,
+                        })
+                    }
                 }
-            }
+            })
         })
     }
 
@@ -591,33 +624,37 @@ impl crate::audio2emotion::EmotionInteractiveExecutor for ClassifierEmotionInter
                         + Send
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
-        Box::pin(async move {
-            self.post_processing_valid = false;
-            let total = self.total_frame_count()?;
-            let generation = self.interrupt.generation();
-            let mut emitted = 0;
-            for frame in 0..total {
-                match self.compute_one(frame, generation, callback)? {
-                    crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
-                        emitted += frames;
+        let _scope = self.scope.activate();
+        Box::pin({
+            let scope = self.scope.for_current();
+            scope.wrap_future(async move {
+                self.post_processing_valid = false;
+                let total = self.total_frame_count()?;
+                let generation = self.interrupt.generation();
+                let mut emitted = 0;
+                for frame in 0..total {
+                    match self.compute_one(frame, generation, callback)? {
+                        crate::emotion::InteractiveEmotionStatus::Complete { frames } => {
+                            emitted += frames;
+                        }
+                        crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
+                            emitted += frames;
+                            self.post_processing_valid = false;
+                            return Ok(crate::audio2x::InteractiveExecutionReport {
+                                status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
+                                emitted_frames: emitted,
+                            });
+                        }
                     }
-                    crate::emotion::InteractiveEmotionStatus::Interrupted { frames } => {
-                        emitted += frames;
-                        self.post_processing_valid = false;
-                        return Ok(crate::audio2x::InteractiveExecutionReport {
-                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                            emitted_frames: emitted,
-                        });
+                    if frame + 1 < total {
+                        yield_once().await;
                     }
                 }
-                if frame + 1 < total {
-                    yield_once().await;
-                }
-            }
-            self.post_processing_valid = true;
-            Ok(crate::audio2x::InteractiveExecutionReport {
-                status: crate::audio2x::InteractiveExecutionStatus::Complete,
-                emitted_frames: emitted,
+                self.post_processing_valid = true;
+                Ok(crate::audio2x::InteractiveExecutionReport {
+                    status: crate::audio2x::InteractiveExecutionStatus::Complete,
+                    emitted_frames: emitted,
+                })
             })
         })
     }
@@ -663,10 +700,12 @@ async fn yield_once() {
 #[cfg(feature = "tensorrt")]
 impl crate::audio2x::Executor for ClassifierEmotionExecutor {
     fn track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tracks.len()
     }
 
     fn reset_track(&mut self, track: usize) -> crate::Result<()> {
+        let _scope = self.scope.activate();
         if track >= self.tracks.len() {
             return Err(crate::Error::OutOfBounds {
                 field: "track",
@@ -687,6 +726,7 @@ impl crate::audio2x::Executor for ClassifierEmotionExecutor {
     }
 
     fn has_execution_started(&self, track: usize) -> crate::Result<bool> {
+        let _scope = self.scope.activate();
         if track >= self.tracks.len() {
             return Err(crate::Error::OutOfBounds {
                 field: "track",
@@ -698,6 +738,7 @@ impl crate::audio2x::Executor for ClassifierEmotionExecutor {
     }
 
     fn available_execution_count(&self, track: usize) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         let audio = self.audio(track)?;
         Ok(self
             .contract
@@ -710,6 +751,7 @@ impl crate::audio2x::Executor for ClassifierEmotionExecutor {
     }
 
     fn ready_track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.tracks
             .iter()
             .enumerate()
@@ -721,6 +763,7 @@ impl crate::audio2x::Executor for ClassifierEmotionExecutor {
     }
 
     fn total_frame_count(&self, track: usize) -> crate::Result<Option<usize>> {
+        let _scope = self.scope.activate();
         let audio = self.audio(track)?;
         if !audio.is_closed() {
             return Ok(None);
@@ -732,12 +775,15 @@ impl crate::audio2x::Executor for ClassifierEmotionExecutor {
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.sample_rate
     }
     fn frame_rate(&self) -> FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
     fn frame_timestamp(&self, frame: usize) -> crate::Result<i64> {
+        let _scope = self.scope.activate();
         self.contract.frame_timestamp(frame)
     }
 }
@@ -745,10 +791,12 @@ impl crate::audio2x::Executor for ClassifierEmotionExecutor {
 #[cfg(feature = "tensorrt")]
 impl crate::audio2emotion::EmotionExecutor for ClassifierEmotionExecutor {
     fn emotion_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.execution.output_emotion_length()
     }
 
     fn next_audio_sample_to_read(&self, track: usize) -> crate::Result<usize> {
+        let _scope = self.scope.activate();
         self.audio(track)?;
         let inference = self.execution.next_inference_index(track)?;
         Ok(self
@@ -765,6 +813,7 @@ impl crate::audio2emotion::EmotionExecutor for ClassifierEmotionExecutor {
             crate::audio2emotion::EmotionResults<'r>,
         ) -> ControlFlow<()>,
     ) -> crate::Result<crate::audio2x::Execution> {
+        let _scope = self.scope.activate();
         let tracks = self
             .tracks
             .iter()
@@ -817,5 +866,27 @@ impl crate::audio2emotion::EmotionExecutor for ClassifierEmotionExecutor {
                 emitted_frames,
             },
         ))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl ClassifierEmotionExecutorFactory {
+    pub fn load_with_context(
+        parameters: ClassifierEmotionExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> crate::audio2x::ExecutorFuture<'static, ClassifierEmotionExecutor> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl ClassifierEmotionInteractiveExecutorFactory {
+    pub fn load_with_context(
+        parameters: ClassifierEmotionInteractiveExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+    ) -> crate::audio2x::ExecutorFuture<'static, ClassifierEmotionInteractiveExecutor> {
+        let scope = crate::logging::integration::LogScope::new(context);
+        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
     }
 }

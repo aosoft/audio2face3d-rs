@@ -82,6 +82,8 @@ pub struct GeometryConfig {
     pub source_frame: Option<i64>,
     pub skin_strength: f32,
     pub blink_strength: f32,
+    #[serde(default)]
+    pub blink_offset: f32,
     pub lower_teeth_strength: f32,
     pub lower_teeth_height_offset: f32,
     pub lower_teeth_depth_offset: f32,

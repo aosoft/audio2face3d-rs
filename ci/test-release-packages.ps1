@@ -29,7 +29,7 @@ $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-J
 if ($LASTEXITCODE -ne 0) {
     throw "could not read Cargo metadata"
 }
-$packages = @($metadata.packages | Where-Object { $_.name -in @("audio2face3d", "audio2face3d-cli") })
+$packages = @($metadata.packages | Where-Object { $_.name -in @("audio2face3d", "audio2face3d-server") })
 if ($packages.Count -ne 2) {
     throw "expected exactly the audio2face3d library and CLI packages"
 }
@@ -38,9 +38,9 @@ foreach ($package in $packages) {
         throw "package $($package.name) has version $($package.version), expected 0.1.0"
     }
 }
-$cli = $packages | Where-Object name -eq "audio2face3d-cli"
+$cli = $packages | Where-Object name -eq "audio2face3d-server"
 $library = $packages | Where-Object name -eq "audio2face3d"
-if ($library.license -ne 'MIT AND MPL-2.0') {
+if ($library.license -ne 'MIT AND MPL-2.0 AND Apache-2.0') {
     throw 'The library package must declare the Eigen-derived source license'
 }
 $mplText = [IO.File]::ReadAllText((Join-Path $repoRoot 'LICENSE-MPL-2.0')).Replace("`r`n", "`n").Trim()
@@ -48,13 +48,13 @@ $packagedLicense = [IO.File]::ReadAllText((Join-Path $repoRoot 'crates/audio2fac
 if (-not $packagedLicense.Contains($mplText)) {
     throw 'Packaged LICENSE must retain the full root MPL-2.0 text'
 }
-$libraryDependency = $cli.dependencies | Where-Object name -eq "audio2face3d"
+$libraryDependency = $cli.dependencies | Where-Object { $_.name -eq "audio2face3d" -and $null -eq $_.kind }
 if ($null -eq $libraryDependency -or $libraryDependency.req -notin @("^0.1.0", "0.1.0")) {
-    throw "audio2face3d-cli must depend on audio2face3d 0.1.0"
+    throw "audio2face3d-server must depend on audio2face3d 0.1.0"
 }
 
 $forbiddenPath = '(?i)(^|/)(reference/compatible_test|models)(/|$)|\.audio2x-|\.(onnx(?:[._]data)?|trt|engine|plan|wav|pdb|dll|so|dylib|lib|exe|bin|npz|npy)$'
-foreach ($packageName in @("audio2face3d", "audio2face3d-cli")) {
+foreach ($packageName in @("audio2face3d", "audio2face3d-server")) {
     $files = @(Get-PackageFiles $packageName)
     if ('LICENSE' -notin $files) { throw "$packageName is missing LICENSE" }
     if ($packageName -eq 'audio2face3d' -and 'src/animation/blendshape/bvls/svd.rs' -notin $files) {
@@ -69,10 +69,10 @@ foreach ($packageName in @("audio2face3d", "audio2face3d-cli")) {
 
 # Modern Cargo stages workspace packages in a temporary local registry, so
 # both packaged manifests can be verified before their initial publication.
-Invoke-Checked @("cargo", "package", "--workspace", "--locked", "--allow-dirty")
+Invoke-Checked @("cargo", "package", "--workspace", "--locked", "--allow-dirty", "--no-default-features")
 
 if (-not $SkipPublishDryRun) {
-    Invoke-Checked @("cargo", "publish", "--workspace", "--locked", "--allow-dirty", "--dry-run", "--registry", "crates-io")
+    Invoke-Checked @("cargo", "publish", "--workspace", "--locked", "--allow-dirty", "--no-default-features", "--dry-run", "--registry", "crates-io")
 } else {
     Write-Warning "Skipped the networked workspace publish dry-run; this gate is unverified."
 }

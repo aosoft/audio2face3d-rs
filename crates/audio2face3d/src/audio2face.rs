@@ -487,6 +487,7 @@ pub struct DeviceBlendshapeSolveExecutorCreationParameters<'a> {
 /// `nva2f::IBlendshapeInteractiveExecutor` host results.
 #[cfg(feature = "cuda")]
 pub struct HostBlendshapeSolveInteractiveExecutor {
+    scope: crate::logging::integration::LogScope,
     layer: Arc<Mutex<InteractiveBlendshapeLayer>>,
     runner: Arc<dyn JobRunner>,
     total_frames: Option<usize>,
@@ -500,6 +501,7 @@ pub struct HostBlendshapeSolveInteractiveExecutor {
 /// `nva2f::IBlendshapeInteractiveExecutor` device results.
 #[cfg(feature = "cuda")]
 pub struct DeviceBlendshapeSolveInteractiveExecutor {
+    scope: crate::logging::integration::LogScope,
     layer: crate::animation::InteractiveGpuBlendshapeLayer,
     total_frames: Option<usize>,
     sample_rate: usize,
@@ -533,6 +535,7 @@ impl HostBlendshapeSolveInteractiveExecutor {
             None => Arc::new(ThreadPoolJobRunner::new_for_components(component_count)?),
         };
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             layer: Arc::new(Mutex::new(layer)),
             runner,
             total_frames: None,
@@ -544,12 +547,14 @@ impl HostBlendshapeSolveInteractiveExecutor {
     }
 
     pub fn layer(&self) -> Result<MutexGuard<'_, InteractiveBlendshapeLayer>> {
+        let _scope = self.scope.activate();
         self.layer.lock().map_err(|_| crate::Error::Poisoned {
             resource: "interactive BlendShape layer",
         })
     }
 
     pub fn layer_mut(&mut self) -> Result<MutexGuard<'_, InteractiveBlendshapeLayer>> {
+        let _scope = self.scope.activate();
         self.layer()
     }
 
@@ -565,6 +570,7 @@ impl HostBlendshapeSolveInteractiveExecutor {
     where
         C: FnMut(&InteractiveBlendshapeWeights) -> bool + Send + Unpin + 'a,
     {
+        let _scope = self.scope.activate();
         self.total_frames = Some(total_frames);
         Box::pin(HostBlendshapeInteractiveFuture {
             executor: self,
@@ -592,6 +598,7 @@ impl HostBlendshapeSolveInteractiveExecutor {
     where
         C: FnMut(&InteractiveBlendshapeWeights) -> bool + Send + Unpin + 'a,
     {
+        let _scope = self.scope.activate();
         self.total_frames = Some(geometry.len());
         Box::pin(HostBlendshapeInteractiveFuture {
             executor: self,
@@ -611,6 +618,7 @@ impl HostBlendshapeSolveInteractiveExecutor {
     }
 
     fn timestamp(&self, frame: usize) -> Result<i64> {
+        let _scope = self.scope.activate();
         let numerator = self.frame_rate.numerator() as u128;
         let denominator = self.frame_rate.denominator() as u128;
         let samples = (frame as u128)
@@ -656,6 +664,7 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
+        let _scope = self.executor.scope.activate();
         let this = self.as_mut().get_mut();
         if this.finished {
             panic!("interactive BlendShape future polled after completion");
@@ -818,6 +827,7 @@ where
 #[cfg(feature = "cuda")]
 impl<C> Drop for HostBlendshapeInteractiveFuture<'_, C> {
     fn drop(&mut self) {
+        let _scope = self.executor.scope.activate();
         // An ordered pass keeps completed frame cache entries while its
         // remaining entries stay empty, making validity false after drop.
         // Clearing all entries here would discard useful completed work.
@@ -827,17 +837,20 @@ impl<C> Drop for HostBlendshapeInteractiveFuture<'_, C> {
 #[cfg(feature = "cuda")]
 impl InteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
     fn invalidate_all(&mut self) -> Result<()> {
+        let _scope = self.scope.activate();
         self.layer()?
             .invalidate(crate::animation::BlendshapeInvalidationLayer::All);
         Ok(())
     }
 
     fn is_fully_valid(&self) -> bool {
+        let _scope = self.scope.activate();
         self.layer()
             .is_ok_and(|layer| layer.is_valid(crate::animation::BlendshapeInvalidationLayer::All))
     }
 
     fn total_frame_count(&self) -> Result<usize> {
+        let _scope = self.scope.activate();
         self.total_frames.ok_or(crate::Error::InvalidState {
             operation: "query interactive BlendShape frame count",
             state: "no computation has established the input timeline",
@@ -845,14 +858,17 @@ impl InteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.sample_rate
     }
 
     fn frame_rate(&self) -> crate::audio2x::FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
 
     fn frame_timestamp(&self, frame: usize) -> Result<i64> {
+        let _scope = self.scope.activate();
         let total = self.total_frame_count()?;
         if frame >= total {
             return Err(crate::Error::OutOfBounds {
@@ -865,6 +881,7 @@ impl InteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
     }
 
     fn interrupt_handle(&self) -> InteractiveInterruptHandle {
+        let _scope = self.scope.activate();
         self.interrupt.clone()
     }
 }
@@ -872,6 +889,7 @@ impl InteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
 #[cfg(feature = "cuda")]
 impl BlendshapeInteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
     fn invalidate_blendshape(&mut self, layer: BlendshapeInvalidationLayer) -> Result<()> {
+        let _scope = self.scope.activate();
         match layer {
             BlendshapeInvalidationLayer::None => {}
             BlendshapeInvalidationLayer::SkinSolverPrepare => self
@@ -888,6 +906,7 @@ impl BlendshapeInteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
     }
 
     fn is_blendshape_valid(&self, layer: BlendshapeInvalidationLayer) -> bool {
+        let _scope = self.scope.activate();
         let Ok(layer_guard) = self.layer() else {
             return false;
         };
@@ -902,6 +921,7 @@ impl BlendshapeInteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
     }
 
     fn weight_count(&self) -> usize {
+        let _scope = self.scope.activate();
         let Ok(layer) = self.layer() else {
             return 0;
         };
@@ -914,6 +934,7 @@ impl BlendshapeInteractiveExecutor for HostBlendshapeSolveInteractiveExecutor {
     }
 
     fn result_kind(&self) -> BlendshapeResultKind {
+        let _scope = self.scope.activate();
         BlendshapeResultKind::Host
     }
 }
@@ -929,6 +950,7 @@ impl DeviceBlendshapeSolveInteractiveExecutor {
         frame_rate: crate::audio2x::FrameRate,
     ) -> Self {
         Self {
+            scope: crate::logging::integration::LogScope::capture(),
             layer,
             total_frames: None,
             sample_rate,
@@ -939,10 +961,12 @@ impl DeviceBlendshapeSolveInteractiveExecutor {
     }
 
     pub fn layer(&self) -> &crate::animation::InteractiveGpuBlendshapeLayer {
+        let _scope = self.scope.activate();
         &self.layer
     }
 
     pub fn layer_mut(&mut self) -> &mut crate::animation::InteractiveGpuBlendshapeLayer {
+        let _scope = self.scope.activate();
         &mut self.layer
     }
 
@@ -959,6 +983,7 @@ impl DeviceBlendshapeSolveInteractiveExecutor {
             + Unpin
             + 'a,
     {
+        let _scope = self.scope.activate();
         self.total_frames = Some(total_frames);
         Box::pin(DeviceBlendshapeInteractiveFuture {
             executor: self,
@@ -987,6 +1012,7 @@ impl DeviceBlendshapeSolveInteractiveExecutor {
             + Unpin
             + 'a,
     {
+        let _scope = self.scope.activate();
         self.total_frames = Some(geometry.len());
         Box::pin(DeviceBlendshapeInteractiveFuture {
             executor: self,
@@ -1005,6 +1031,7 @@ impl DeviceBlendshapeSolveInteractiveExecutor {
     }
 
     fn timestamp(&self, frame: usize) -> Result<i64> {
+        let _scope = self.scope.activate();
         let numerator = self.frame_rate.numerator() as u128;
         let denominator = self.frame_rate.denominator() as u128;
         let samples = (frame as u128)
@@ -1049,6 +1076,7 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
+        let _scope = self.executor.scope.activate();
         let this = self.as_mut().get_mut();
         if this.finished {
             panic!("interactive GPU BlendShape future polled after completion");
@@ -1142,6 +1170,7 @@ where
 #[cfg(feature = "cuda")]
 impl<C> Drop for DeviceBlendshapeInteractiveFuture<'_, C> {
     fn drop(&mut self) {
+        let _scope = self.executor.scope.activate();
         // The GPU layer keeps cached device buffers alive; unfinished ordered
         // frames remain absent and therefore report invalidity.
     }
@@ -1150,17 +1179,20 @@ impl<C> Drop for DeviceBlendshapeInteractiveFuture<'_, C> {
 #[cfg(feature = "cuda")]
 impl InteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor {
     fn invalidate_all(&mut self) -> Result<()> {
+        let _scope = self.scope.activate();
         self.layer
             .invalidate(crate::animation::BlendshapeInvalidationLayer::All);
         Ok(())
     }
 
     fn is_fully_valid(&self) -> bool {
+        let _scope = self.scope.activate();
         self.layer
             .is_valid(crate::animation::BlendshapeInvalidationLayer::All)
     }
 
     fn total_frame_count(&self) -> Result<usize> {
+        let _scope = self.scope.activate();
         self.total_frames.ok_or(crate::Error::InvalidState {
             operation: "query interactive GPU BlendShape frame count",
             state: "no computation has established the input timeline",
@@ -1168,14 +1200,17 @@ impl InteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor {
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.sample_rate
     }
 
     fn frame_rate(&self) -> crate::audio2x::FrameRate {
+        let _scope = self.scope.activate();
         self.frame_rate
     }
 
     fn frame_timestamp(&self, frame: usize) -> Result<i64> {
+        let _scope = self.scope.activate();
         let total = self.total_frame_count()?;
         if frame >= total {
             return Err(crate::Error::OutOfBounds {
@@ -1188,6 +1223,7 @@ impl InteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor {
     }
 
     fn interrupt_handle(&self) -> InteractiveInterruptHandle {
+        let _scope = self.scope.activate();
         self.interrupt.clone()
     }
 }
@@ -1195,6 +1231,7 @@ impl InteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor {
 #[cfg(feature = "cuda")]
 impl BlendshapeInteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor {
     fn invalidate_blendshape(&mut self, layer: BlendshapeInvalidationLayer) -> Result<()> {
+        let _scope = self.scope.activate();
         match layer {
             BlendshapeInvalidationLayer::None => {}
             BlendshapeInvalidationLayer::SkinSolverPrepare => self
@@ -1211,6 +1248,7 @@ impl BlendshapeInteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor 
     }
 
     fn is_blendshape_valid(&self, layer: BlendshapeInvalidationLayer) -> bool {
+        let _scope = self.scope.activate();
         match layer {
             BlendshapeInvalidationLayer::SkinSolverPrepare => self
                 .layer
@@ -1226,6 +1264,7 @@ impl BlendshapeInteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor 
     }
 
     fn weight_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.layer
             .skin_solver()
             .map_or(0, crate::animation::GpuBlendshapeSolver::pose_count)
@@ -1236,6 +1275,7 @@ impl BlendshapeInteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor 
     }
 
     fn result_kind(&self) -> BlendshapeResultKind {
+        let _scope = self.scope.activate();
         BlendshapeResultKind::Device
     }
 }
@@ -1243,6 +1283,7 @@ impl BlendshapeInteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor 
 /// Owning asynchronous host BlendShape executor.
 #[cfg(feature = "cuda")]
 pub struct HostBlendshapeSolveExecutor {
+    scope: crate::logging::integration::LogScope,
     #[cfg(feature = "tensorrt")]
     skin_rhs: Option<Box<crate::animation::GpuRhs>>,
     #[cfg(feature = "tensorrt")]
@@ -1269,6 +1310,7 @@ pub struct HostBlendshapeSolveExecutor {
 /// Owning synchronous device-result BlendShape executor.
 #[cfg(feature = "cuda")]
 pub struct DeviceBlendshapeSolveExecutor {
+    scope: crate::logging::integration::LogScope,
     #[cfg(feature = "tensorrt")]
     source: GeometrySource,
     #[cfg(feature = "tensorrt")]
@@ -1633,6 +1675,7 @@ impl HostBlendshapeSolveExecutor {
         };
         let track_count = source.track_count();
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             skin_rhs,
             tongue_rhs,
             source,
@@ -1661,21 +1704,25 @@ impl HostBlendshapeSolveExecutor {
 
     /// Returns the geometry result stream retained by this owning executor.
     pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        let _scope = self.scope.activate();
         self.source.cuda_stream()
     }
 
     /// Returns the exact shared audio accumulator transferred with geometry.
     pub fn audio_accumulator(&self, track: usize) -> Result<&Arc<AudioAccumulator>> {
+        let _scope = self.scope.activate();
         self.source.audio_accumulator(track)
     }
 
     /// Returns the exact shared emotion accumulator transferred with geometry.
     pub fn emotion_accumulator(&self, track: usize) -> Result<&Arc<EmotionAccumulator>> {
+        let _scope = self.scope.activate();
         self.source.emotion_accumulator(track)
     }
 
     /// Schedules CPU solve jobs and returns a call-local completion handle.
     pub fn execute(&mut self, callback: HostBlendshapeCallback) -> Result<Execution> {
+        let _scope = self.scope.activate();
         let track_count = self.source.track_count();
         let (execution, completion) = Execution::pending(track_count);
         let runner = Arc::clone(&self.runner);
@@ -1804,6 +1851,7 @@ impl HostBlendshapeSolveExecutor {
 #[cfg(feature = "tensorrt")]
 impl Drop for HostBlendshapeSolveExecutor {
     fn drop(&mut self) {
+        let _scope = self.scope.activate();
         for completion in &self.pending {
             completion.wait_blocking();
         }
@@ -1887,6 +1935,7 @@ impl DeviceBlendshapeSolveExecutor {
                 Err(error) => return Err((error, source)),
             };
         Ok(Self {
+            scope: crate::logging::integration::LogScope::capture(),
             source,
             skin_solvers,
             tongue_solvers,
@@ -1903,16 +1952,19 @@ impl DeviceBlendshapeSolveExecutor {
 
     /// Returns the solver stream owned by this device-result executor.
     pub fn cuda_stream(&self) -> &crate::cuda::CudaStream {
+        let _scope = self.scope.activate();
         &self.stream
     }
 
     /// Returns the exact shared audio accumulator transferred with geometry.
     pub fn audio_accumulator(&self, track: usize) -> Result<&Arc<AudioAccumulator>> {
+        let _scope = self.scope.activate();
         self.source.audio_accumulator(track)
     }
 
     /// Returns the exact shared emotion accumulator transferred with geometry.
     pub fn emotion_accumulator(&self, track: usize) -> Result<&Arc<EmotionAccumulator>> {
+        let _scope = self.scope.activate();
         self.source.emotion_accumulator(track)
     }
 
@@ -1921,6 +1973,7 @@ impl DeviceBlendshapeSolveExecutor {
         &mut self,
         callback: &mut dyn for<'r> FnMut(BlendshapeDeviceResults<'r>) -> ControlFlow<()>,
     ) -> Result<Execution> {
+        let _scope = self.scope.activate();
         let skin_solvers = &mut self.skin_solvers;
         let tongue_solvers = &mut self.tongue_solvers;
         let skin_weights = &mut self.skin_weights;
@@ -1997,10 +2050,12 @@ impl DeviceBlendshapeSolveExecutor {
 #[cfg(feature = "tensorrt")]
 impl Executor for HostBlendshapeSolveExecutor {
     fn track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.source.track_count()
     }
 
     fn reset_track(&mut self, track: usize) -> Result<()> {
+        let _scope = self.scope.activate();
         if self
             .pending
             .iter()
@@ -2036,30 +2091,37 @@ impl Executor for HostBlendshapeSolveExecutor {
     }
 
     fn has_execution_started(&self, track: usize) -> Result<bool> {
+        let _scope = self.scope.activate();
         self.source.has_execution_started(track)
     }
 
     fn available_execution_count(&self, track: usize) -> Result<usize> {
+        let _scope = self.scope.activate();
         self.source.available_execution_count(track)
     }
 
     fn ready_track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.source.ready_track_count()
     }
 
     fn total_frame_count(&self, track: usize) -> Result<Option<usize>> {
+        let _scope = self.scope.activate();
         self.source.total_frame_count(track)
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.source.sample_rate()
     }
 
     fn frame_rate(&self) -> crate::audio2x::FrameRate {
+        let _scope = self.scope.activate();
         self.source.frame_rate()
     }
 
     fn frame_timestamp(&self, frame: usize) -> Result<i64> {
+        let _scope = self.scope.activate();
         self.source.frame_timestamp(frame)
     }
 }
@@ -2067,10 +2129,12 @@ impl Executor for HostBlendshapeSolveExecutor {
 #[cfg(feature = "tensorrt")]
 impl FaceExecutor for HostBlendshapeSolveExecutor {
     fn next_audio_sample_to_read(&self, track: usize) -> Result<usize> {
+        let _scope = self.scope.activate();
         self.source.next_audio_sample_to_read(track)
     }
 
     fn next_emotion_timestamp_to_read(&self, track: usize) -> Result<i64> {
+        let _scope = self.scope.activate();
         self.source.next_emotion_timestamp_to_read(track)
     }
 }
@@ -2078,10 +2142,12 @@ impl FaceExecutor for HostBlendshapeSolveExecutor {
 #[cfg(feature = "tensorrt")]
 impl BlendshapeExecutor for HostBlendshapeSolveExecutor {
     fn weight_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.weight_count
     }
 
     fn result_kind(&self) -> BlendshapeResultKind {
+        let _scope = self.scope.activate();
         BlendshapeResultKind::Host
     }
 }
@@ -2089,10 +2155,12 @@ impl BlendshapeExecutor for HostBlendshapeSolveExecutor {
 #[cfg(feature = "tensorrt")]
 impl Executor for DeviceBlendshapeSolveExecutor {
     fn track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.source.track_count()
     }
 
     fn reset_track(&mut self, track: usize) -> Result<()> {
+        let _scope = self.scope.activate();
         self.source.reset_track(track)?;
         let len = self.source.track_count();
         if let Some(solver) = self.skin_solvers.get_mut(track).ok_or(Error::OutOfBounds {
@@ -2109,30 +2177,37 @@ impl Executor for DeviceBlendshapeSolveExecutor {
     }
 
     fn has_execution_started(&self, track: usize) -> Result<bool> {
+        let _scope = self.scope.activate();
         self.source.has_execution_started(track)
     }
 
     fn available_execution_count(&self, track: usize) -> Result<usize> {
+        let _scope = self.scope.activate();
         self.source.available_execution_count(track)
     }
 
     fn ready_track_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.source.ready_track_count()
     }
 
     fn total_frame_count(&self, track: usize) -> Result<Option<usize>> {
+        let _scope = self.scope.activate();
         self.source.total_frame_count(track)
     }
 
     fn sample_rate(&self) -> usize {
+        let _scope = self.scope.activate();
         self.source.sample_rate()
     }
 
     fn frame_rate(&self) -> crate::audio2x::FrameRate {
+        let _scope = self.scope.activate();
         self.source.frame_rate()
     }
 
     fn frame_timestamp(&self, frame: usize) -> Result<i64> {
+        let _scope = self.scope.activate();
         self.source.frame_timestamp(frame)
     }
 }
@@ -2140,10 +2215,12 @@ impl Executor for DeviceBlendshapeSolveExecutor {
 #[cfg(feature = "tensorrt")]
 impl FaceExecutor for DeviceBlendshapeSolveExecutor {
     fn next_audio_sample_to_read(&self, track: usize) -> Result<usize> {
+        let _scope = self.scope.activate();
         self.source.next_audio_sample_to_read(track)
     }
 
     fn next_emotion_timestamp_to_read(&self, track: usize) -> Result<i64> {
+        let _scope = self.scope.activate();
         self.source.next_emotion_timestamp_to_read(track)
     }
 }
@@ -2151,10 +2228,12 @@ impl FaceExecutor for DeviceBlendshapeSolveExecutor {
 #[cfg(feature = "tensorrt")]
 impl BlendshapeExecutor for DeviceBlendshapeSolveExecutor {
     fn weight_count(&self) -> usize {
+        let _scope = self.scope.activate();
         self.weight_count
     }
 
     fn result_kind(&self) -> BlendshapeResultKind {
+        let _scope = self.scope.activate();
         BlendshapeResultKind::Device
     }
 }

@@ -1,3 +1,4 @@
+#![cfg(feature = "animation")]
 #![cfg(feature = "tensorrt")]
 
 use audio2face3d::common::{Dimension, ElementType, IoMode, Shape};

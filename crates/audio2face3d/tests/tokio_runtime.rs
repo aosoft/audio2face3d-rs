@@ -1,3 +1,4 @@
+#![cfg(feature = "animation")]
 use audio2face3d::audio2x::{
     Execution, ExecutionReport, ExecutorFuture, InteractiveExecutionReport,
     InteractiveExecutionStatus, Result,

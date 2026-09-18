@@ -24,7 +24,8 @@ public:
             const char* text = message ? message : "(null TensorRT message)";
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                entries_.push_back(Entry{static_cast<int32_t>(severity), text});
+                if (entries_.size() < 1024)
+                    entries_.push_back(Entry{static_cast<int32_t>(severity), text});
             }
             if (severity <= Severity::kWARNING) fprintf(stderr, "[TensorRT] %s\n", text);
         } catch (...) {
@@ -52,6 +53,44 @@ public:
 private:
     mutable std::mutex mutex_;
     std::vector<Entry> entries_;
+};
+
+// TensorRT retains one logger process-wide, across all runtime instances.
+// Subscriptions keep bounded diagnostic snapshots alive until each handle's
+// context, engine and runtime have been destroyed.
+class SharedLogger final : public nvinfer1::ILogger {
+public:
+    void subscribe(Logger* logger) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sinks_.push_back(logger);
+    }
+    void unsubscribe(Logger* logger) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sinks_.erase(std::remove(sinks_.begin(), sinks_.end(), logger), sinks_.end());
+    }
+    void log(Severity severity, const char* message) noexcept override {
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (auto* sink : sinks_) sink->log(severity, message);
+        } catch (...) {}
+    }
+private:
+    std::mutex mutex_;
+    std::vector<Logger*> sinks_;
+};
+
+SharedLogger& shared_logger() {
+    // Intentionally process-lifetime: TensorRT may log from library teardown.
+    static auto* logger = new SharedLogger();
+    return *logger;
+}
+struct LogSubscription {
+    explicit LogSubscription(Logger& logger) : logger_(&logger) { shared_logger().subscribe(logger_); }
+    ~LogSubscription() { shared_logger().unsubscribe(logger_); }
+    LogSubscription(const LogSubscription&) = delete;
+    LogSubscription& operator=(const LogSubscription&) = delete;
+private:
+    Logger* logger_;
 };
 
 class ErrorRecorder final : public nvinfer1::IErrorRecorder {
@@ -145,6 +184,7 @@ void ensure_device(const trt_shim_handle* handle);
 struct trt_shim_handle {
     int32_t device_id;
     Logger logger;
+    LogSubscription log_subscription{logger};
     ErrorRecorder error_recorder;
     TrtPtr<nvinfer1::IRuntime> runtime;
     TrtPtr<nvinfer1::ICudaEngine> engine;
@@ -174,7 +214,7 @@ extern "C" trt_shim_handle* trt_shim_create(const char* path, int32_t device_id,
         handle->device_id = device_id;
         handle->error_recorder.set_logger(&handle->logger);
         const auto bytes = read_engine(path);
-        handle->runtime.reset(nvinfer1::createInferRuntime(handle->logger));
+        handle->runtime.reset(nvinfer1::createInferRuntime(shared_logger()));
         if (!handle->runtime) throw std::runtime_error(native_error("createInferRuntime"));
         handle->runtime->setErrorRecorder(&handle->error_recorder);
         handle->engine.reset(handle->runtime->deserializeCudaEngine(bytes.data(), bytes.size()));

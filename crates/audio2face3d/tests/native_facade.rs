@@ -1,3 +1,4 @@
+#![cfg(feature = "animation")]
 #![cfg(all(feature = "animation", feature = "emotion", feature = "tensorrt"))]
 
 use std::future::Future;
