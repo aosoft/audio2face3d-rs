@@ -8,12 +8,6 @@ MIT permission text are retained in the root and crate `LICENSE` files.
 The Rust port implements the pipelines without linking the original Audio2Face
 SDK libraries; CUDA and TensorRT remain native dependencies.
 
-The CPU BlendShape BVLS algorithm in
-`crates/audio2face3d/src/animation/blendshape/bvls.rs` follows NVIDIA
-Audio2Face-3D-SDK `audio2face-sdk/source/audio2face-core/bvls.cpp` at that
-revision (MIT). The source retains its NVIDIA
-copyright notice; the MIT text is in `LICENSE` and the library's `LICENSE`.
-
 `crates/audio2face3d/src/animation/blendshape/bvls/svd.rs` is a Rust adaptation
 of Eigen 3.4's `JacobiSVD.h`, `RealSvd2x2.h`, `Jacobi.h`,
 `ColPivHouseholderQR.h`, `Householder.h`, `SVDBase.h`, `Redux.h`,
