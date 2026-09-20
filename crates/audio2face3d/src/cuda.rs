@@ -33,6 +33,8 @@ pub mod build_config;
 #[cfg(feature = "cuda")]
 mod accumulator;
 #[cfg(feature = "cuda")]
+pub(crate) mod api;
+#[cfg(feature = "cuda")]
 mod native;
 
 #[cfg(feature = "cuda")]

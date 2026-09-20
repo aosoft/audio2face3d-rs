@@ -172,6 +172,11 @@ fn installed_tensorrt() -> Result<PathBuf, String> {
 }
 
 pub fn resolve(tensorrt: bool) -> Result<BuildConfig, String> {
+    if let Ok(version) = env::var("CUDARC_CUDA_VERSION")
+        && version != "12090"
+    {
+        return Err("CUDARC_CUDA_VERSION conflicts with the required cuda-12090 bindings".into());
+    }
     for name in [
         "AUDIO2FACE3D_BUILD_CONFIG",
         "CUDA_PATH",

@@ -2,15 +2,15 @@
 mod config;
 #[cfg(any(feature = "cuda", test))]
 #[allow(dead_code)]
-mod discovery;
+pub(crate) mod discovery;
 mod error;
 mod info;
 #[cfg(any(feature = "cuda", test))]
 #[allow(dead_code)]
-mod loader;
+pub(crate) mod loader;
 #[cfg(any(feature = "cuda", test))]
 #[allow(dead_code)] // Connected to native initialization in the following migration phase.
-mod registry;
+pub(crate) mod registry;
 mod version;
 pub use config::{NativeRuntimeConfig, NativeRuntimeConfigBuilder, NativeSearchPolicy};
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};

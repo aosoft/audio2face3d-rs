@@ -1283,6 +1283,7 @@ impl BlendshapeInteractiveExecutor for DeviceBlendshapeSolveInteractiveExecutor 
 /// Owning asynchronous host BlendShape executor.
 #[cfg(feature = "cuda")]
 pub struct HostBlendshapeSolveExecutor {
+    #[cfg(feature = "tensorrt")]
     scope: crate::logging::integration::LogScope,
     #[cfg(feature = "tensorrt")]
     skin_rhs: Option<Box<crate::animation::GpuRhs>>,
@@ -1310,6 +1311,7 @@ pub struct HostBlendshapeSolveExecutor {
 /// Owning synchronous device-result BlendShape executor.
 #[cfg(feature = "cuda")]
 pub struct DeviceBlendshapeSolveExecutor {
+    #[cfg(feature = "tensorrt")]
     scope: crate::logging::integration::LogScope,
     #[cfg(feature = "tensorrt")]
     source: GeometrySource,

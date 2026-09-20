@@ -33,6 +33,7 @@ impl LibraryFile {
         Ok(Self { path, identity })
     }
 }
+#[derive(Debug)]
 pub(crate) struct LoadedLibrary {
     pub(crate) file: LibraryFile,
     library: &'static libloading::Library,
