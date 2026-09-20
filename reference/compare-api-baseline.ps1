@@ -23,7 +23,7 @@ foreach ($case in $summary.cases) {
         throw "Report has no preserved capture for $($case.case); recapture with run-api-regression.ps1"
     }
     if (Test-Path -LiteralPath $comparison) { throw "Baseline comparison already exists; preserve it and use a new report directory" }
-    & cargo run -p audio2face3d-cli -- reference compare (Join-Path $baseline "results/$($case.case)/rust") $actual --tolerances reference/tolerances.json --report $comparison
+    & cargo run -p audio2face3d --features cli -- reference compare (Join-Path $baseline "results/$($case.case)/rust") $actual --tolerances reference/tolerances.json --report $comparison
     $exitCode = $LASTEXITCODE
     if (!(Test-Path -LiteralPath $comparison)) { throw "Baseline comparison did not produce a report" }
     $result = Get-Content -Raw -Encoding UTF8 $comparison | ConvertFrom-Json

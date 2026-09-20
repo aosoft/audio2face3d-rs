@@ -11,32 +11,32 @@
     {
       "name": "regression",
       "scope": "raw-network",
-      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--output", "reference/compatible_test/benchmarks/regression.json"]
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d", "--features", "cli,native", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--output", "temp/benchmarks/regression.json"]
     },
     {
       "name": "diffusion",
       "scope": "raw-network",
-      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_DIFFUSION_MODEL%", "1", "fp32", "100", "--output", "reference/compatible_test/benchmarks/diffusion.json"]
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d", "--features", "cli,native", "--", "benchmark", "%AUDIO2FACE3D_DIFFUSION_MODEL%", "1", "fp32", "100", "--output", "temp/benchmarks/diffusion.json"]
     },
     {
       "name": "audio2emotion",
       "scope": "raw-network",
-      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_EMOTION_MODEL%", "1", "fp32", "100", "--output", "reference/compatible_test/benchmarks/audio2emotion.json"]
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d", "--features", "cli,native", "--", "benchmark", "%AUDIO2FACE3D_EMOTION_MODEL%", "1", "fp32", "100", "--output", "temp/benchmarks/audio2emotion.json"]
     },
     {
       "name": "blendshape-cpu",
       "scope": "blendshape-cpu",
-      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "blendshape-cpu", "--output", "reference/compatible_test/benchmarks/blendshape-cpu.json"]
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d", "--features", "cli,native", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "blendshape-cpu", "--output", "temp/benchmarks/blendshape-cpu.json"]
     },
     {
       "name": "blendshape-gpu",
       "scope": "blendshape-gpu",
-      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "blendshape-gpu", "--output", "reference/compatible_test/benchmarks/blendshape-gpu.json"]
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d", "--features", "cli,native", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "blendshape-gpu", "--output", "temp/benchmarks/blendshape-gpu.json"]
     },
     {
       "name": "interactive-gpu-replay",
       "scope": "interactive-gpu-replay",
-      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d-cli", "--features", "runtime", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "interactive-gpu-replay", "--output", "reference/compatible_test/benchmarks/interactive-gpu-replay.json"]
+      "capture_command": ["cargo", "run", "--release", "-p", "audio2face3d", "--features", "cli,native", "--", "benchmark", "%AUDIO2FACE3D_REGRESSION_MODEL%", "1", "fp32", "100", "--scope", "interactive-gpu-replay", "--output", "temp/benchmarks/interactive-gpu-replay.json"]
     }
   ],
   "cases": [

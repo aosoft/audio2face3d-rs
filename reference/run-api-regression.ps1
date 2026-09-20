@@ -60,7 +60,7 @@ foreach ($case in $cases) {
         # records. Capture it without treating a successful build as a failure;
         # the child process exit code and fresh comparison decide the outcome.
         $ErrorActionPreference = "Continue"
-        & powershell -NoProfile -ExecutionPolicy Bypass -File reference/run-sdk-compatibility.ps1 -Pipeline $case.pipeline -Execution $case.execution -Precision fp32 -Tracks $case.tracks -Seed 0 *> (Join-Path $reportRoot "$name.log")
+        & powershell -NoProfile -ExecutionPolicy Bypass -File reference/run-sdk-compatibility.ps1 -Pipeline $case.pipeline -Execution $case.execution -Precision fp32 -Tracks $case.tracks -Seed 0 -OutputRoot (Join-Path $captureRoot "results") *> (Join-Path $reportRoot "$name.log")
         $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorAction

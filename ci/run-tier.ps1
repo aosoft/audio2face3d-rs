@@ -16,19 +16,32 @@ function Invoke-Checked {
     $arguments = if ($Command.Length -gt 1) { $Command[1..($Command.Length - 1)] } else { @() }
     $start = [System.Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $program
+    $start.WorkingDirectory = $repoRoot
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
-    foreach ($argument in $arguments) { $start.ArgumentList.Add($argument) }
-    if ($BuildConfig) { $start.Environment['AUDIO2FACE3D_BUILD_CONFIG'] = [IO.Path]::GetFullPath($BuildConfig) }
+    # Windows argv quoting works on Windows PowerShell 5.1 as well as PowerShell 7.
+    $quoted = foreach ($argument in $arguments) {
+        '"' + [regex]::Replace([regex]::Replace([string]$argument, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+    }
+    $start.Arguments = $quoted -join ' '
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    if ($BuildConfig) { $start.EnvironmentVariables['AUDIO2FACE3D_BUILD_CONFIG'] = [IO.Path]::GetFullPath([IO.Path]::Combine($repoRoot, $BuildConfig)) }
     if ($script:runtimeInfo) {
         # Legacy native tests consume SDK roots. These settings belong only to this child.
-        $start.Environment['CUDA_PATH'] = $script:runtimeInfo.cuda_root
-        $start.Environment['TENSORRT_ROOT_DIR'] = $script:runtimeInfo.tensorrt_root
+        $start.EnvironmentVariables['CUDA_PATH'] = $script:runtimeInfo.cuda_root
+        $start.EnvironmentVariables['TENSORRT_ROOT_DIR'] = $script:runtimeInfo.tensorrt_root
         $directories = @($script:runtimeInfo.libraries | ForEach-Object { Split-Path -Parent $_.path } | Select-Object -Unique)
-        $start.Environment['PATH'] = ($directories + @($start.Environment['PATH'])) -join [IO.Path]::PathSeparator
+        $start.EnvironmentVariables['PATH'] = ($directories + @($start.EnvironmentVariables['PATH'])) -join [IO.Path]::PathSeparator
     }
     $process = [System.Diagnostics.Process]::Start($start)
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
+    $outputText = $stdout.GetAwaiter().GetResult()
+    $errorText = $stderr.GetAwaiter().GetResult()
+    if ($outputText) { Write-Output $outputText }
+    if ($errorText) { [Console]::Error.WriteLine($errorText) }
     $code = $process.ExitCode
     $process.Dispose()
     if ($code -ne 0) { throw "release tier command failed ($code): $($Command -join ' ')" }
@@ -97,8 +110,7 @@ switch ($Tier) {
         }
         Invoke-Checked @("cargo", "check", "--workspace", "--all-features")
         Invoke-Checked @("cargo", "clippy", "--workspace", "--all-features", "--all-targets", "--", "-D", "warnings")
-        # Optimized test binaries avoid a known MSVC 14.51 debug-linker LNK1000
-        # when the large TensorRT import libraries are present.
+        # Keep optimized real-model tests for representative GPU execution.
         Invoke-Checked @("cargo", "test", "--release", "--workspace", "--all-features")
         Invoke-Checked @("cargo", "test", "--release", "-p", "audio2face3d", "--all-features", "--test", "native_facade", "--", "--ignored", "--exact", "acquired_models_execute_through_completed_facades", "--test-threads=1")
         $previousRustdocFlags = $env:RUSTDOCFLAGS
@@ -122,10 +134,7 @@ switch ($Tier) {
         } finally {
             $env:RUSTDOCFLAGS = $previousRustdocFlags
         }
-        & (Join-Path $PSScriptRoot "test-release-packages.ps1")
-        if ($LASTEXITCODE -ne 0) {
-            throw "release package checks failed ($LASTEXITCODE)"
-        }
+        Invoke-Checked @("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "test-release-packages.ps1"))
     }
 }
 

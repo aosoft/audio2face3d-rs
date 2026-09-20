@@ -53,6 +53,10 @@ let config = audio2face3d::client::ServerConfig::builder(endpoint)
 let client = audio2face3d::client::Client::server(config).await?;
 ```
 
+## Native runtime paths
+
+Attach `NativeRuntimeConfig` with `.native_runtime(config)` when building `Audio2Face3DContext`. This supplies direct inference and embedded servers with the same SDK locations and shared native ownership. Configuration and diagnostics remain GPU-free until native preparation. See [native SDK configuration](native-runtime.md) for an example, version checks and process lifetime rules.
+
 ## Shared context and logging
 
 `Audio2Face3DContext` owns shared application resources. Build it with an `Arc<dyn Logger>` and pass it to `Client::direct_with_context`, `Client::server_with_context`, `inference::Factory::prepare_with_context`, a low-level `load_with_context` factory, or `Server::builder(config).context(context)`. Clones share the same resources. Context drop does not stop consumers or flush the logger.

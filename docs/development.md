@@ -21,9 +21,7 @@ and original-SDK reference parity:
 ./ci/run-tier.ps1 reference-parity
 ```
 
-Native tiers require `CUDA_PATH` and, for TensorRT, `TENSORRT_ROOT_DIR`.
-CUDA lifetime checks also require `AUDIO2FACE3D_CUDA_ARCHS`; real-model tests
-require `AUDIO2FACE3D_TEST_FACADE_MODELS`. See the
+Native tiers accept `-RuntimeConfig native-runtime.toml -BuildConfig native-build.toml`. The runtime file must use SDK roots for legacy test adapters; only child processes receive their SDK environment. Existing environment-based runs still work. See [native configuration](native-runtime.md). Real-model tests require `AUDIO2FACE3D_TEST_FACADE_MODELS`. See the
 [reference guide](../reference/README.md) for original-SDK comparison setup.
 Machine-local SDK/model/audio paths and generated captures are not committed.
 The `release` tier verifies native documentation and publishable packages.
@@ -51,7 +49,7 @@ cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/
 cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --scope blendshape-cpu
 cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --scope blendshape-gpu
 cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --scope interactive-gpu-replay
-cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --output reference/compatible_test/benchmarks/mark.json
+cargo run --release -p audio2face3d --features cli,native -- benchmark ./models/mark/model.json 1 fp32 100 --output temp/benchmarks/mark.json
 ```
 
 JSON output records the model and engine SHA-256, execution environment,
@@ -60,7 +58,7 @@ against the tracked hardware baseline independently from reference-value
 parity:
 
 ```sh
-cargo run -p audio2face3d --features cli -- release benchmark-compare reference/benchmark-baseline.json reference/compatible_test/benchmarks/mark.json
+cargo run -p audio2face3d --features cli -- release benchmark-compare reference/benchmark-baseline.json temp/benchmarks/mark.json
 ```
 
 For geometry models, the isolated post-process phase currently measures the device-result consumption boundary; full animator and blendshape timing must be reported separately from raw TensorRT inference. Compare C++ and Rust only with identical model/engine, batch, precision, GPU, driver, CUDA, and TensorRT versions.

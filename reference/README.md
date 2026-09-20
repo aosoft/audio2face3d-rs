@@ -12,7 +12,7 @@ Validate `reference/artifacts.json` against a local SDK checkout explicitly:
 
 ```powershell
 $env:AUDIO2FACE_SDK_ROOT = '<Audio2Face-3D-SDK checkout>'
-cargo test -p audio2face3d-cli --test reference_artifacts `
+cargo test -p audio2face3d --features cli --test reference_artifacts `
   reference_artifact_manifest_matches_sdk_checkout -- --ignored --exact
 ```
 
@@ -25,7 +25,7 @@ tool. For example, generate the Mark FP16 engine with the original `_fp16`
 suffix convention as follows:
 
 ```powershell
-cargo run -p audio2face3d-cli -- model engine mark --precision fp16
+cargo run -p audio2face3d --features cli -- model engine mark --precision fp16
 ```
 
 The three cases are:
@@ -61,15 +61,15 @@ element with an absolute tolerance of `1e-3`.
 required Regression, Diffusion, Audio2Emotion, CPU/GPU BlendShape, and
 interactive replay workloads, plus the initial measured cases. Capture commands
 use only environment variables for local model descriptors. Generated benchmark
-JSON belongs below `reference/compatible_test/benchmarks/` and is ignored.
+JSON belongs below `temp/benchmarks/` and is ignored.
 
 The benchmark comparator checks P50/P95/P99 latency, throughput, and peak GPU
 memory without mixing performance failure with the numeric artifact comparator:
 
 ```powershell
-cargo run -p audio2face3d-cli -- release benchmark-compare `
+cargo run -p audio2face3d --features cli -- release benchmark-compare `
   reference/benchmark-baseline.json `
-  reference/compatible_test/benchmarks/regression.json
+  temp/benchmarks/regression.json
 ```
 
 The default limits are 15 percent for latency and throughput and 10 percent for
@@ -85,8 +85,7 @@ runner. Each capture directory contains `artifact.json` plus a contiguous
 shape, byte range, and SHA-256. `tolerances.json` separates FP32 and FP16 limits
 and can override them per component.
 
-All machine-local input and generated output belongs under
-`reference/compatible_test/`, which is ignored by Git. Place the evaluation
+Generated captures go under `temp/reference-comparison/` (override with `-OutputRoot`); the runner is built under `temp/reference-tools/`. Both are ignored by Git. The existing input location is retained. Place the evaluation
 audio at the fixed path below before running the harness:
 
 ```powershell
@@ -95,14 +94,12 @@ Copy-Item '<evaluation-audio.wav>' reference\compatible_test\input.wav
 ```
 
 `input.wav` must be mono PCM16 at 16 kHz. The harness decodes it once into
-`compatible_test/fixture/samples.f32le`; both runners consume that same sample
+the case's `fixture/samples.f32le`; both runners consume that same sample
 sequence. Set `AUDIO2FACE3D_REFERENCE_WAV_SHA256` when the source WAV digest
 must be pinned, and set `AUDIO2FACE3D_REFERENCE_WAV_LICENSE` to record a license
 label other than the default `user-provided-not-for-redistribution`.
 
-Configure every external installation through environment variables. No local
-checkout or installation path is accepted as a script argument or stored in a
-tracked file.
+Use `ci/run-tier.ps1 reference-parity -RuntimeConfig native-runtime.toml -BuildConfig native-build.toml` to select SDKs without parent environment changes. Direct invocation of this legacy harness still reads SDK roots from its environment. Original SDK and input-license parameters remain separate. See [native configuration](../docs/native-runtime.md).
 
 ```powershell
 $env:AUDIO2FACE_SDK_ROOT = '<Audio2Face-3D-SDK checkout>'
@@ -143,17 +140,14 @@ layer/component/index and the observed maximum error up to that point. The
 local directory layout is:
 
 ```text
-reference/compatible_test/       # ignored as a whole
-├── input.wav                     # user-supplied fixed input name
-├── fixture/
-│   ├── fixture.json
-│   └── samples.f32le
-├── tools/                        # C++ runner binary and object
-└── results/
-    └── <pipeline>-<execution>-<precision>-tracks<N>-seed<N>/
-        ├── cpp/{artifact.json,values.f32le}
-        ├── rust/{artifact.json,values.f32le}
-        └── comparison.json
+reference/compatible_test/input.wav     # existing user-supplied input
+temp/reference-tools/                  # C++ runner and object
+temp/reference-comparison/
+   <pipeline>-<execution>-<precision>-tracks<N>-seed<N>/
+     fixture/{fixture.json,samples.f32le}
+     cpp/{artifact.json,values.f32le}
+     rust/{artifact.json,values.f32le}
+     comparison.json
 ```
 
 None of these local inputs, binaries, captures, or comparison results are
@@ -168,6 +162,8 @@ The older ignored TensorRT fixture test remains the low-level binding/inference
 check.
 
 ## API regression assessment
+
+The legacy 19-case API assessment explicitly retains its existing `reference/compatible_test` output layout. New standalone compatibility runs use `temp` as described above.
 
 Before changing execution behavior, preserve the local `results` directory
 under a new ignored `reference/compatible_test/<baseline>/results` directory.

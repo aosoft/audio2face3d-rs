@@ -6,7 +6,8 @@ param(
     [ValidateSet("standard", "interactive-random", "interactive-all", "interactive-blendshape-random", "interactive-blendshape-all", "blendshape-cpu", "blendshape-gpu", "teeth-standalone")]
     [string]$Execution = "standard",
     [int]$Tracks = 1,
-    [UInt64]$Seed = 0
+    [UInt64]$Seed = 0,
+    [string]$OutputRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,8 +52,9 @@ if (-not (Test-Path -LiteralPath $Model -PathType Leaf)) {
 }
 
 $caseName = "$Pipeline-$Execution-$Precision-tracks$Tracks-seed$Seed"
-$fixture = Join-Path $testRoot "fixture"
-$outputRoot = Join-Path (Join-Path $testRoot "results") $caseName
+if (-not $OutputRoot) { $OutputRoot = Join-Path $repoRoot "temp/reference-comparison" }
+$outputRoot = [IO.Path]::GetFullPath((Join-Path $OutputRoot $caseName))
+$fixture = Join-Path $outputRoot "fixture"
 $cppArtifact = Join-Path $outputRoot "cpp"
 $rustArtifact = Join-Path $outputRoot "rust"
 $report = Join-Path $outputRoot "comparison.json"
@@ -80,7 +82,7 @@ $fixtureLicense = if ($env:AUDIO2FACE3D_REFERENCE_WAV_LICENSE) {
     "user-provided-not-for-redistribution"
 }
 $fixtureArguments = @(
-    "run", "-p", "audio2face3d-cli", "--", "reference", "fixture", "wav",
+    "run", "-p", "audio2face3d", "--features", "cli", "--", "reference", "fixture", "wav",
     $Wav, $fixture, "--name", "compatible-test-input", "--license", $fixtureLicense
 )
 if ($env:AUDIO2FACE3D_REFERENCE_WAV_SHA256) {
@@ -89,7 +91,7 @@ if ($env:AUDIO2FACE3D_REFERENCE_WAV_SHA256) {
 & cargo @fixtureArguments
 if ($LASTEXITCODE -ne 0) { throw "fixture preparation failed" }
 
-cargo run --release -p audio2face3d-cli --features runtime -- reference capture `
+cargo run --release -p audio2face3d --features cli,native -- reference capture `
     $Model $fixture $rustArtifact --execution $Execution --precision $Precision `
     --tracks $Tracks --seed $Seed
 if ($LASTEXITCODE -ne 0) { throw "Rust reference capture failed" }
@@ -98,7 +100,7 @@ if ($LASTEXITCODE -ne 0) { throw "Rust reference capture failed" }
     $cppArtifact $Precision $Tracks $Seed
 if ($LASTEXITCODE -ne 0) { throw "C++ reference capture failed" }
 
-cargo run -p audio2face3d-cli -- reference compare $cppArtifact $rustArtifact `
+cargo run -p audio2face3d --features cli -- reference compare $cppArtifact $rustArtifact `
     --tolerances (Join-Path $PSScriptRoot "tolerances.json") --report $report
 if ($LASTEXITCODE -ne 0) {
     throw "reference parity failed; inspect $report"

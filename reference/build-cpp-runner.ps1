@@ -10,7 +10,7 @@ if (-not (Test-Path -LiteralPath $SdkRoot -PathType Container)) {
 }
 
 $source = Join-Path $PSScriptRoot "cpp/main.cpp"
-$outputRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "compatible_test/tools"))
+$outputRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../temp/reference-tools"))
 $sdkInclude = Join-Path $SdkRoot "_build/release/audio2x-sdk/include"
 $sdkLibrary = Join-Path $SdkRoot "_build/release/audio2x-sdk/lib/audio2x.lib"
 if (-not (Test-Path -LiteralPath $sdkInclude -PathType Container)) {

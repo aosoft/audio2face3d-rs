@@ -49,3 +49,5 @@ The Rust modules correspond to the original SDK as follows:
 ## Previous workspace layout
 
 The former types/client/inference/protocol packages are modules under `audio2face3d::{types,client,inference,protocol}`. The former CLI package is now the base package binary. The old `direct`/`runtime`/remote `server` feature selections become `mock` or `native`, `native`, and `client-grpc`, respectively. Wire types are separate from common Rust request/result types. `grpc-server` is a technical wire integration feature used by the server dependency; it provides shared inference plumbing but does not compile a backend.
+
+`runtime-cli` exposes the shared native-path argument parser used by the server executable without enabling model download commands. Applications normally select `cli` instead. Native loading itself is enabled by `cuda`/`tensorrt`; no separate loader feature or shim DLL is required.
