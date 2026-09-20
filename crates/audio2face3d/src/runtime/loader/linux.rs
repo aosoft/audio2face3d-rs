@@ -80,3 +80,26 @@ fn check_existing(file: &LibraryFile) -> Result<(), NativeRuntimeError> {
     }
     Ok(())
 }
+
+pub(super) fn loaded_paths() -> Result<Vec<PathBuf>, NativeRuntimeError> {
+    unsafe extern "C" fn visit(
+        info: *mut libc::dl_phdr_info,
+        _size: usize,
+        data: *mut std::ffi::c_void,
+    ) -> i32 {
+        // SAFETY: caller passes a live Vec and the loader supplies a valid NUL-terminated name.
+        let paths = unsafe { &mut *data.cast::<Vec<PathBuf>>() };
+        // SAFETY: info and its name are valid during this loader callback.
+        let name = unsafe { std::ffi::CStr::from_ptr((*info).dlpi_name) };
+        if !name.to_bytes().is_empty() {
+            paths.push(PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes())));
+        }
+        0
+    }
+    let mut paths = Vec::new();
+    // SAFETY: callback is synchronous and the Vec outlives every invocation.
+    unsafe {
+        libc::dl_iterate_phdr(Some(visit), (&mut paths as *mut Vec<PathBuf>).cast());
+    }
+    Ok(paths)
+}

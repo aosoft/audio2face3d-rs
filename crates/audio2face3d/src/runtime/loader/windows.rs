@@ -127,3 +127,49 @@ pub(super) unsafe fn open(
     }
     Ok(library)
 }
+
+pub(super) fn loaded_paths() -> Result<Vec<PathBuf>, NativeRuntimeError> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        System::Diagnostics::ToolHelp::*,
+    };
+    // SAFETY: enumerate the current process; no foreign memory is accessed directly.
+    let snapshot = unsafe {
+        CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, std::process::id())
+    };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(NativeRuntimeError::new(
+            NativeRuntimeErrorKind::DependencyLoadFailed,
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    let mut entry = MODULEENTRY32W {
+        dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut paths = Vec::new();
+    // SAFETY: snapshot is valid and entry has the documented structure size.
+    let mut found = unsafe { Module32FirstW(snapshot, &mut entry) };
+    while found != 0 {
+        let len = entry
+            .szExePath
+            .iter()
+            .position(|&value| value == 0)
+            .unwrap_or(entry.szExePath.len());
+        paths.push(PathBuf::from(OsString::from_wide(&entry.szExePath[..len])));
+        // SAFETY: same live snapshot and writable entry.
+        found = unsafe { Module32NextW(snapshot, &mut entry) };
+    }
+    let error = std::io::Error::last_os_error();
+    // SAFETY: this function owns the snapshot and closes it exactly once.
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    if error.raw_os_error() != Some(18) {
+        return Err(NativeRuntimeError::new(
+            NativeRuntimeErrorKind::DependencyLoadFailed,
+            error.to_string(),
+        ));
+    }
+    Ok(paths)
+}

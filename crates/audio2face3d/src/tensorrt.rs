@@ -6,6 +6,8 @@ mod error;
 pub use error::InferenceError;
 
 #[cfg(feature = "tensorrt")]
+pub(crate) mod api;
+#[cfg(feature = "tensorrt")]
 mod ffi;
 #[cfg(feature = "tensorrt")]
 mod session;

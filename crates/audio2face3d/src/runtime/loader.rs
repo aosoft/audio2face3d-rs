@@ -63,3 +63,53 @@ impl LoadedLibrary {
 
 #[cfg(test)]
 mod tests;
+
+/// Reject NVIDIA dependencies resolved from a different SDK, including prior host loads.
+pub(crate) fn validate_loaded(
+    directories: &[PathBuf],
+    include_tensorrt: bool,
+) -> Result<(), NativeRuntimeError> {
+    for path in platform::loaded_paths()? {
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        let lower = name.to_string_lossy().to_ascii_lowercase();
+        let nvidia = [
+            "cudart",
+            "cublas",
+            "curand",
+            "nvrtc",
+            "nvjitlink",
+            "libcudart",
+            "libcublas",
+            "libcurand",
+            "libnvrtc",
+            "libnvjitlink",
+        ]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+            || (include_tensorrt
+                && (lower.starts_with("nvinfer") || lower.starts_with("libnvinfer")));
+        if !nvidia {
+            continue;
+        }
+        let actual = LibraryFile::resolve(&path)?;
+        let matches = directories
+            .iter()
+            .map(|directory| directory.join(name))
+            .filter(|candidate| candidate.is_file())
+            .any(|candidate| {
+                LibraryFile::resolve(&candidate)
+                    .is_ok_and(|expected| expected.identity == actual.identity)
+            });
+        if !matches {
+            return Err(NativeRuntimeError::new(
+                NativeRuntimeErrorKind::RuntimeConflict,
+                "NVIDIA dependency was loaded outside the selected SDK directories",
+            )
+            .with_path(path)
+            .after_load());
+        }
+    }
+    Ok(())
+}

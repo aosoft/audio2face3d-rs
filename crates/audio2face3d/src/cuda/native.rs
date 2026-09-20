@@ -100,6 +100,11 @@ impl GpuDevice {
         }))
     }
 
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn runtime_context(&self) -> &crate::Audio2Face3DContext {
+        self.scope.context()
+    }
+
     pub const fn id(&self) -> DeviceId {
         self.id
     }

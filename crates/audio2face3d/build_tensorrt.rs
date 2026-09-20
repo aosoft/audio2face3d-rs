@@ -1,20 +1,4 @@
 use std::env;
-use std::path::{Path, PathBuf};
-
-fn first_directory(root: &Path, candidates: &[&str]) -> PathBuf {
-    candidates
-        .iter()
-        .map(|candidate| root.join(candidate))
-        .find(|candidate| candidate.is_dir())
-        .unwrap_or_else(|| {
-            panic!(
-                "none of the library directories exist below {}: {}",
-                root.display(),
-                candidates.join(", ")
-            )
-        })
-}
-
 pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=TENSORRT_ROOT_DIR");
@@ -35,7 +19,6 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
         tensorrt.join("include/NvInfer.h").is_file(),
         "TensorRT NvInfer.h is missing"
     );
-    let library = first_directory(tensorrt, &["lib", "lib64", "lib/x64", "cuda/lib"]);
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -48,12 +31,6 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     } else {
         build.flag("-std=c++17");
     }
-    println!("cargo:rustc-link-search=native={}", library.display());
-    let cuda_library = first_directory(cuda, &["lib/x64", "lib64", "lib"]);
-    println!("cargo:rustc-link-search=native={}", cuda_library.display());
-    println!("cargo:rustc-link-lib=dylib=nvinfer_10");
-    println!("cargo:rustc-link-lib=dylib=nvinfer_plugin_10");
-    println!("cargo:rustc-link-lib=dylib=cudart");
     println!("cargo:rerun-if-changed=cpp/tensorrt_shim.h");
     println!("cargo:rerun-if-changed=cpp/tensorrt_shim.cpp");
     build.compile("audio2face3d_tensorrt_shim");

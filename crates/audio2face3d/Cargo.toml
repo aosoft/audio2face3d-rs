@@ -47,11 +47,11 @@ tonic-prost = { version = "=0.14.6", optional = true }
 tokio = { version = "1.53.1", features = ["rt", "sync", "time", "net", "macros"], optional = true }
 tokio-stream = { version = "0.1.18", optional = true }
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp"] }
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2", optional = true }
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp"] }
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 [build-dependencies]

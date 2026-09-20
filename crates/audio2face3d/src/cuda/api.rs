@@ -252,6 +252,7 @@ impl CudaApi {
                 // SAFETY: configuration explicitly selects these SDK binaries; each handle is retained.
                 libraries.push(unsafe { LoadedLibrary::open(file, &dirs, attempt) }?);
             }
+            crate::runtime::loader::validate_loaded(&dirs, false)?;
             // SAFETY: table signatures match pinned CUDA binding ABI; missing exports return errors.
             let api = unsafe {
                 Self {
