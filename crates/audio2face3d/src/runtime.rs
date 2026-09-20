@@ -1,7 +1,16 @@
 //! Native configuration and diagnostics, usable without loading a GPU SDK.
 mod config;
+#[cfg(any(feature = "cuda", test))]
+#[allow(dead_code)]
+mod discovery;
 mod error;
 mod info;
+#[cfg(any(feature = "cuda", test))]
+#[allow(dead_code)]
+mod loader;
+#[cfg(any(feature = "cuda", test))]
+#[allow(dead_code)] // Connected to native initialization in the following migration phase.
+mod registry;
 mod version;
 pub use config::{NativeRuntimeConfig, NativeRuntimeConfigBuilder, NativeSearchPolicy};
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};

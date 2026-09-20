@@ -116,6 +116,8 @@ dependencies = [
  "clap",
  "cudarc",
  "hf-hub",
+ "libc",
+ "libloading",
  "prost",
  "prost-types",
  "protoc-bin-vendored",
@@ -132,6 +134,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trybuild",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
