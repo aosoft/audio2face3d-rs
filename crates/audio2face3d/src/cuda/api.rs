@@ -208,6 +208,7 @@ mod curand {
 }
 #[derive(Debug)]
 pub(crate) struct CudaApi {
+    pub(crate) info: crate::runtime::NativeRuntimeInfo,
     pub(crate) driver: driver::Driver,
     pub(crate) cublas: cublas::Cublas,
     pub(crate) curand: curand::Curand,
@@ -227,6 +228,12 @@ impl CudaApi {
     pub(crate) fn initialize(
         context: &Audio2Face3DContext,
     ) -> Result<Arc<Self>, NativeRuntimeError> {
+        if let Some(api) = context.cached_cuda() {
+            return Ok(api);
+        }
+        if let Some(error) = REGISTRY.prior_failure() {
+            return Err(error);
+        }
         let dirs = discovery::directories(context.native_runtime(), Sdk::Cuda)?;
         let driver = discovery::driver()?;
         #[cfg(windows)]
@@ -254,8 +261,12 @@ impl CudaApi {
             }
             crate::runtime::loader::validate_loaded(&dirs, false)?;
             // SAFETY: table signatures match pinned CUDA binding ABI; missing exports return errors.
-            let api = unsafe {
+            let mut api = unsafe {
                 Self {
+                    info: crate::runtime::NativeRuntimeInfo {
+                        state: crate::runtime::NativeRuntimeState::Loaded,
+                        libraries: Vec::new(),
+                    },
                     driver: driver::Driver::load(&libraries[0])?,
                     cublas: cublas::Cublas::load(&libraries[2])?,
                     curand: curand::Curand::load(&libraries[3])?,
@@ -280,6 +291,30 @@ impl CudaApi {
                     ));
                 }
             }
+            api.info.libraries = api
+                .libraries
+                .iter()
+                .enumerate()
+                .map(|(index, library)| crate::runtime::NativeLibraryInfo {
+                    name: library
+                        .file
+                        .path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    path: library.file.path.clone(),
+                    build_version: None,
+                    runtime_version: (index == 0).then(|| {
+                        crate::runtime::NativeVersion::new(
+                            version as u32 / 1000,
+                            (version as u32 % 1000) / 10,
+                            None,
+                            None,
+                        )
+                    }),
+                })
+                .collect();
             context.logger().log(LogLevel::Debug, || {
                 format!("CUDA Driver API version: {version}")
             });
@@ -291,6 +326,7 @@ impl CudaApi {
             Ok(api)
         })?;
         let _ = READY.set(Arc::clone(&api));
+        context.retain_cuda(Arc::clone(&api));
         Ok(api)
     }
 }

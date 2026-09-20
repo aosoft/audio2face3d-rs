@@ -25,6 +25,12 @@ pub(crate) struct Registry<K, T> {
     changed: Condvar,
 }
 impl<K: PartialEq, T> Registry<K, T> {
+    pub(crate) fn prior_failure(&self) -> Option<NativeRuntimeError> {
+        match &*self.state.lock().unwrap_or_else(|e| e.into_inner()) {
+            State::Failed(error) => Some(error.clone()),
+            _ => None,
+        }
+    }
     pub(crate) const fn new() -> Self {
         Self {
             state: Mutex::new(State::Empty),

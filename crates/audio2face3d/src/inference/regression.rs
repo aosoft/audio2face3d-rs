@@ -68,6 +68,11 @@ fn load_sync(config: &Config, header: &RequestOptions) -> Result<Runtime, Error>
     let ModelParameters::Geometry(geometry_config) = model.parameters(0).map_err(internal)? else {
         return Err(internal("missing geometry configuration"));
     };
+    // This runs on the existing inference control worker, before any native engine is created.
+    crate::logging::integration::LogScope::capture()
+        .context()
+        .initialize_native()
+        .map_err(|error| Error::new(ErrorKind::RuntimeUnavailable, error.to_string()))?;
     let mut geometry_config = geometry_config.clone();
     super::parameters::face(&mut geometry_config, header)?;
     let audio = Arc::new(AudioAccumulator::new(audio_parameters.buffer_len, 0).map_err(internal)?);

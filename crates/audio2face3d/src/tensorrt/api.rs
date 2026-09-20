@@ -98,6 +98,12 @@ impl NativeApi {
     pub(crate) fn initialize(
         context: &Audio2Face3DContext,
     ) -> Result<Arc<Self>, NativeRuntimeError> {
+        if let Some(api) = context.cached_tensorrt() {
+            return Ok(api);
+        }
+        if let Some(error) = REGISTRY.prior_failure() {
+            return Err(error);
+        }
         let cuda = CudaApi::initialize(context)?;
         let cuda_dirs = discovery::directories(context.native_runtime(), Sdk::Cuda)?;
         let trt_dirs = discovery::directories(context.native_runtime(), Sdk::TensorRt)?;
@@ -113,7 +119,7 @@ impl NativeApi {
             .map(|library| library.file.identity.clone())
             .collect::<Vec<_>>();
         key.extend([runtime.identity.clone(), tensorrt.identity.clone()]);
-        REGISTRY.initialize(key, |attempt| {
+        let api = REGISTRY.initialize(key, |attempt| {
             let dirs = cuda_dirs.into_iter().chain(trt_dirs).collect::<Vec<_>>();
             // SAFETY: selected SDK files are trusted and retained throughout process lifetime.
             let runtime = unsafe { LoadedLibrary::open(runtime, &dirs, attempt) }?;
@@ -182,22 +188,7 @@ impl NativeApi {
             );
             verify(context, "CUDA Runtime", cuda_build, runtime_version)?;
             verify(context, "TensorRT", trt_build, trt_version)?;
-            let mut libraries = cuda
-                .libraries
-                .iter()
-                .map(|library| NativeLibraryInfo {
-                    name: library
-                        .file
-                        .path
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
-                    path: library.file.path.clone(),
-                    build_version: None,
-                    runtime_version: None,
-                })
-                .collect::<Vec<_>>();
+            let mut libraries = cuda.info.libraries.clone();
             libraries.push(NativeLibraryInfo {
                 name: "CUDA Runtime".into(),
                 path: runtime.file.path.clone(),
@@ -223,6 +214,8 @@ impl NativeApi {
                 _cuda: cuda,
                 _libraries: vec![runtime, tensorrt],
             })
-        })
+        })?;
+        context.retain_tensorrt(Arc::clone(&api));
+        Ok(api)
     }
 }

@@ -27,3 +27,44 @@ async fn stopping_during_native_prepare_keeps_cleanup_owned() {
     assert_eq!(report.inference_requests, 0);
     assert_eq!(report.inference_workers_started, 0);
 }
+
+#[tokio::test]
+#[ignore = "requires AUDIO2FACE3D_LOG_MODEL pointing to a prepared Regression descriptor"]
+async fn unavailable_native_configuration_fails_prepare_before_serving() {
+    use audio2face3d::{
+        Audio2Face3DContext,
+        runtime::{NativeRuntimeConfig, NativeSearchPolicy},
+    };
+    let model = std::env::var_os("AUDIO2FACE3D_LOG_MODEL").expect("prepared model");
+    let context = Audio2Face3DContext::builder()
+        .native_runtime(
+            NativeRuntimeConfig::builder()
+                .search_policy(NativeSearchPolicy::ExplicitOnly)
+                .build()
+                .unwrap(),
+        )
+        .build();
+    let server = Server::builder(
+        Config::builder(BackendKind::Regression)
+            .optional_model(Some(model.into()))
+            .build()
+            .unwrap(),
+    )
+    .context(context.clone())
+    .build()
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        server.serve(listener, std::future::pending()),
+    )
+    .await
+    .expect("prepare must fail promptly");
+    match result {
+        Err(ServerError::Prepare(status)) => {
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition)
+        }
+        _ => panic!("expected unavailable prepare failure"),
+    }
+    assert!(context.native_runtime_info().is_none());
+}

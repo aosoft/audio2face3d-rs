@@ -90,6 +90,7 @@ impl GpuDevice {
                 "cuDevicePrimaryCtxRetain",
             )?;
         }
+        scope.context().native_device_ready();
         tracing::debug!(device = ordinal, "retained CUDA primary context");
         Ok(Arc::new(Self {
             scope,
