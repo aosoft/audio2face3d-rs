@@ -5,7 +5,14 @@ fn tool_selection_changes_only_the_child_environment() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest
         .join("../../temp/native-runtime-work/fixtures")
-        .join(format!("tools-{}", std::process::id()));
+        .join(format!(
+            "tools-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
     let cuda = root.join("cuda/bin");
     let trt = root.join("trt/bin");
     std::fs::create_dir_all(&cuda).unwrap();

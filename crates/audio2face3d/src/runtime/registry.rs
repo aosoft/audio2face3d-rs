@@ -213,3 +213,72 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+    use crate::{
+        Audio2Face3DContext,
+        logging::{LogLevel, Logger},
+        runtime::{NativeVersion, version::verify},
+    };
+    struct Reentrant(Arc<Registry<u8, ()>>);
+    impl Logger for Reentrant {
+        fn log_level(&self) -> LogLevel {
+            LogLevel::Warn
+        }
+        fn write_log(&self, _: LogLevel, _: String) {
+            assert_eq!(
+                self.0.initialize(1, |_| Ok(())).unwrap_err().kind(),
+                NativeRuntimeErrorKind::InitializationReentered
+            );
+        }
+    }
+    #[test]
+    fn logger_callback_can_reenter_without_holding_registry_lock() {
+        let registry = Arc::new(Registry::new());
+        let context = Audio2Face3DContext::builder()
+            .logger(Arc::new(Reentrant(registry.clone())))
+            .build();
+        registry
+            .initialize(1, |_| {
+                verify(
+                    &context,
+                    "fixture",
+                    NativeVersion::new(10, 16, None, None),
+                    NativeVersion::new(10, 17, None, None),
+                )
+            })
+            .unwrap();
+    }
+    #[test]
+    fn concurrent_postload_failure_releases_every_waiter_without_retry() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let registry = Registry::<u8, ()>::new();
+        let barrier = Barrier::new(8);
+        let calls = AtomicUsize::new(0);
+        thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    let error = registry
+                        .initialize(1, |attempt| {
+                            attempt.begin();
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Err(NativeRuntimeError::new(
+                                NativeRuntimeErrorKind::InitializationFailed,
+                                "fixture initialization failure",
+                            ))
+                        })
+                        .unwrap_err();
+                    assert!(error.restart_required());
+                    assert_eq!(error.kind(), NativeRuntimeErrorKind::InitializationFailed);
+                });
+            }
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}

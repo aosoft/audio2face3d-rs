@@ -6,10 +6,11 @@ use crate::{
     logging::{LogLevel, Logger},
     runtime::{
         NativeLibraryInfo, NativeRuntimeError, NativeRuntimeErrorKind, NativeRuntimeInfo,
-        NativeRuntimeState, NativeVersion, VersionCompatibility,
+        NativeRuntimeState, NativeVersion,
         discovery::{self, Sdk},
         loader::{FileIdentity, LoadedLibrary},
         registry::Registry,
+        version::verify,
     },
 };
 use std::{
@@ -66,26 +67,6 @@ unsafe extern "C" fn resolve(
             ));
             std::ptr::null_mut()
         }
-    }
-}
-fn verify(
-    context: &Audio2Face3DContext,
-    name: &str,
-    build: NativeVersion,
-    runtime: NativeVersion,
-) -> Result<(), NativeRuntimeError> {
-    match build.compatibility(runtime) {
-        VersionCompatibility::MajorMismatch => Err(NativeRuntimeError::new(
-            NativeRuntimeErrorKind::VersionMismatch,
-            format!("{name} major mismatch: built with {build}, loaded {runtime}"),
-        )),
-        VersionCompatibility::MinorMismatch => {
-            context.logger().log(LogLevel::Warn, || {
-                format!("{name} minor mismatch: built with {build}, loaded {runtime}; continuing")
-            });
-            Ok(())
-        }
-        VersionCompatibility::Compatible => Ok(()),
     }
 }
 fn cuda_version(value: u32) -> NativeVersion {
@@ -217,5 +198,93 @@ impl NativeApi {
         })?;
         context.retain_tensorrt(Arc::clone(&api));
         Ok(api)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    unsafe extern "C" fn missing(_: *mut c_void, _: i32, _: *const c_char) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    #[test]
+    fn shim_reports_missing_entry_point_without_publishing_api() {
+        let (mut trt, mut cuda) = (0, 0);
+        let mut error = [0 as c_char; 128];
+        // SAFETY: synchronous callback, valid output buffers; missing callback never dereferences inputs.
+        let result = unsafe {
+            ffi::trt_shim_initialize(
+                missing,
+                std::ptr::null_mut(),
+                &mut trt,
+                &mut cuda,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        assert_eq!(result, 0);
+        assert_eq!((trt, cuda), (0, 0));
+        // SAFETY: shim NUL-terminates this buffer on failure.
+        assert!(
+            // SAFETY: shim NUL-terminates this buffer on failure.
+            unsafe { CStr::from_ptr(error.as_ptr()) }
+                .to_str()
+                .unwrap()
+                .contains("missing cudaSetDevice")
+        );
+    }
+}
+
+#[cfg(test)]
+mod version_failure_tests {
+    use super::*;
+    unsafe extern "C" fn runtime_failure(_: *mut i32) -> i32 {
+        999
+    }
+    unsafe extern "C" fn trt_version() -> i32 {
+        101601
+    }
+    unsafe extern "C" fn unused() {}
+    unsafe extern "C" fn resolver(user: *mut c_void, _: i32, name: *const c_char) -> *mut c_void {
+        // SAFETY: shim supplies static NUL-terminated export names and a live bool.
+        let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+        // SAFETY: test owns this boolean until synchronous initialization returns.
+        let missing = unsafe { *user.cast::<bool>() };
+        match name {
+            b"cudaRuntimeGetVersion" if missing => std::ptr::null_mut(),
+            b"cudaRuntimeGetVersion" => runtime_failure as *const () as *mut c_void,
+            b"getInferLibVersion" => trt_version as *const () as *mut c_void,
+            // These exports are checked for presence but never invoked on this failing path.
+            _ => unused as *const () as *mut c_void,
+        }
+    }
+    #[test]
+    fn shim_version_symbol_and_api_failures_do_not_publish_function_table() {
+        for mut missing in [true, false] {
+            let (mut trt, mut cuda) = (0, 0);
+            let mut error = [0 as c_char; 128];
+            // SAFETY: live buffers and synchronous resolver; its only invoked exports have exact ABI.
+            let result = unsafe {
+                ffi::trt_shim_initialize(
+                    resolver,
+                    (&mut missing as *mut bool).cast(),
+                    &mut trt,
+                    &mut cuda,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            assert_eq!(result, 0);
+            // SAFETY: shim NUL-terminates errors and never installs this failing table.
+            let text = unsafe { CStr::from_ptr(error.as_ptr()) }.to_str().unwrap();
+            assert_eq!(
+                text,
+                if missing {
+                    "missing cudaRuntimeGetVersion"
+                } else {
+                    "cudaRuntimeGetVersion failed"
+                }
+            );
+        }
     }
 }

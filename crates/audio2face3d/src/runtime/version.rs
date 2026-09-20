@@ -58,3 +58,31 @@ impl fmt::Display for NativeVersion {
         Ok(())
     }
 }
+
+#[cfg(any(feature = "tensorrt", test))]
+use crate::{
+    Audio2Face3DContext,
+    logging::{LogLevel, Logger},
+    runtime::{NativeRuntimeError, NativeRuntimeErrorKind},
+};
+#[cfg(any(feature = "tensorrt", test))]
+pub(crate) fn verify(
+    context: &Audio2Face3DContext,
+    name: &str,
+    build: NativeVersion,
+    runtime: NativeVersion,
+) -> Result<(), NativeRuntimeError> {
+    match build.compatibility(runtime) {
+        VersionCompatibility::MajorMismatch => Err(NativeRuntimeError::new(
+            NativeRuntimeErrorKind::VersionMismatch,
+            format!("{name} major mismatch: built with {build}, loaded {runtime}"),
+        )),
+        VersionCompatibility::MinorMismatch => {
+            context.logger().log(LogLevel::Warn, || {
+                format!("{name} minor mismatch: built with {build}, loaded {runtime}; continuing")
+            });
+            Ok(())
+        }
+        VersionCompatibility::Compatible => Ok(()),
+    }
+}

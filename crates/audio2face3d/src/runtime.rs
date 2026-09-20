@@ -10,7 +10,7 @@ pub(crate) mod loader;
 #[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
 #[allow(dead_code)] // Connected to native initialization in the following migration phase.
 pub(crate) mod registry;
-mod version;
+pub(crate) mod version;
 pub use config::{NativeRuntimeConfig, NativeRuntimeConfigBuilder, NativeSearchPolicy};
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
 pub use info::{NativeLibraryInfo, NativeRuntimeInfo, NativeRuntimeState};

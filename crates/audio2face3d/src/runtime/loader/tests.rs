@@ -39,7 +39,14 @@ fn native_fixture_absolute_path_dependencies_symbols_identity_and_conflicts() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest
         .join("../../temp/native-runtime-work/fixtures")
-        .join(format!("loader-{}", std::process::id()));
+        .join(format!(
+            "loader-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
     let valid = root.join("空白 path");
     let missing = root.join("missing");
     let other = root.join("other");
@@ -158,4 +165,99 @@ fn native_fixture_absolute_path_dependencies_symbols_identity_and_conflicts() {
         .kind(),
         NativeRuntimeErrorKind::RuntimeConflict
     );
+}
+
+#[test]
+fn version_fixture_uses_production_policy_and_emits_one_warning_per_initialization() {
+    use crate::{
+        Audio2Face3DContext,
+        logging::{LogLevel, Logger},
+        runtime::{NativeVersion, version::verify},
+    };
+    use std::sync::{Arc, Mutex};
+    struct Logs(Mutex<Vec<String>>);
+    impl Logger for Logs {
+        fn log_level(&self) -> LogLevel {
+            LogLevel::Warn
+        }
+        fn write_log(&self, level: LogLevel, message: String) {
+            assert_eq!(level, LogLevel::Warn);
+            self.0.lock().unwrap().push(message);
+        }
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest
+        .join("../../temp/native-runtime-work/fixtures")
+        .join(format!(
+            "versions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    fs::create_dir_all(&root).unwrap();
+    compile(
+        &manifest.join("tests/fixtures/native_loader/versions.rs"),
+        "a2f_fixture_versions",
+        &root,
+        None,
+    );
+    let registry = Registry::new();
+    let loaded = registry
+        .initialize((), |attempt| {
+            // SAFETY: trusted Rust fixture compiled by this test.
+            unsafe {
+                LoadedLibrary::open(
+                    LibraryFile::resolve(&root.join(filename("a2f_fixture_versions")))?,
+                    &[],
+                    attempt,
+                )
+            }
+        })
+        .unwrap();
+    // SAFETY: export has exactly this signature in versions.rs.
+    let version =
+        unsafe { loaded.symbol::<unsafe extern "C" fn(u32) -> u32>(b"fixture_version\0") }.unwrap();
+    let logs = Arc::new(Logs(Mutex::new(vec![])));
+    let context = Audio2Face3DContext::builder().logger(logs.clone()).build();
+    let build = NativeVersion::new(10, 16, Some(1), Some(11));
+    for case in 0..7 {
+        let once = Registry::new();
+        let before = logs.0.lock().unwrap().len();
+        for _ in 0..2 {
+            let result = once.initialize((), |attempt| {
+                attempt.begin();
+                // SAFETY: fixture module retained and exact ABI established above.
+                let value = unsafe { version(case) };
+                if value == 0 {
+                    return Err(NativeRuntimeError::new(
+                        NativeRuntimeErrorKind::InitializationFailed,
+                        "fixture version unavailable",
+                    ));
+                }
+                let runtime =
+                    NativeVersion::new(value / 10000, (value / 100) % 100, Some(value % 100), None);
+                verify(&context, "TensorRT fixture", build, runtime)
+            });
+            if matches!(case, 1 | 2 | 6) {
+                let error = result.unwrap_err();
+                assert!(error.restart_required());
+                assert_eq!(
+                    error.kind(),
+                    if case == 6 {
+                        NativeRuntimeErrorKind::InitializationFailed
+                    } else {
+                        NativeRuntimeErrorKind::VersionMismatch
+                    }
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+        assert_eq!(
+            logs.0.lock().unwrap().len() - before,
+            usize::from(matches!(case, 3 | 4))
+        );
+    }
 }

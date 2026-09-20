@@ -94,3 +94,64 @@ fn explicit_and_lazy_initialization_share_context_resources_and_outlive_caller()
     assert_eq!(output, [7, 11]);
     assert!(session.environment().is_ok());
 }
+
+#[cfg(feature = "tensorrt")]
+#[test]
+#[ignore = "requires explicit SDK roots; run alone in a fresh test process"]
+fn real_native_logger_reentry_and_concurrent_initialization() {
+    use audio2face3d::{
+        logging::{LogLevel, Logger},
+        runtime::NativeRuntimeErrorKind,
+    };
+    use std::sync::{
+        Arc, Barrier, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Callback {
+        context: Mutex<Option<Audio2Face3DContext>>,
+        calls: AtomicUsize,
+    }
+    impl Logger for Callback {
+        fn log_level(&self) -> LogLevel {
+            LogLevel::Debug
+        }
+        fn write_log(&self, _: LogLevel, _: String) {
+            let context = self.context.lock().unwrap().clone().unwrap();
+            assert_eq!(
+                context.initialize_native().unwrap_err().kind(),
+                NativeRuntimeErrorKind::InitializationReentered
+            );
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let callback = Arc::new(Callback {
+        context: Mutex::new(None),
+        calls: AtomicUsize::new(0),
+    });
+    let config = NativeRuntimeConfig::builder()
+        .cuda_root(std::env::var_os("AUDIO2FACE3D_TEST_CUDA_ROOT").unwrap())
+        .tensorrt_root(std::env::var_os("AUDIO2FACE3D_TEST_TENSORRT_ROOT").unwrap())
+        .search_policy(NativeSearchPolicy::ExplicitOnly)
+        .build()
+        .unwrap();
+    let context = Audio2Face3DContext::builder()
+        .native_runtime(config)
+        .logger(callback.clone())
+        .build();
+    *callback.context.lock().unwrap() = Some(context.clone());
+    let barrier = Barrier::new(8);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                barrier.wait();
+                context.initialize_native().unwrap();
+            });
+        }
+    });
+    assert!(callback.calls.load(Ordering::SeqCst) > 0);
+    // Break the test-only callback cycle before dropping application resources.
+    callback.context.lock().unwrap().take();
+    let count = callback.calls.load(Ordering::SeqCst);
+    context.initialize_native().unwrap();
+    assert_eq!(callback.calls.load(Ordering::SeqCst), count);
+}
