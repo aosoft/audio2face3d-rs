@@ -7,7 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub(crate) fn build() {
+pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=AUDIO2FACE3D_CUDA_ARCHS");
     println!("cargo:rerun-if-env-changed=AUDIO2FACE3D_CUDA_HOST_COMPILER");
@@ -18,9 +18,7 @@ pub(crate) fn build() {
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
     }
-    let cuda = env::var_os("CUDA_PATH")
-        .map(PathBuf::from)
-        .expect("CUDA_PATH is required when the cuda feature is enabled");
+    let cuda = &config.cuda_root;
     let nvcc = cuda
         .join("bin")
         .join(if cfg!(windows) { "nvcc.exe" } else { "nvcc" });
@@ -30,8 +28,8 @@ pub(crate) fn build() {
         nvcc.display()
     );
 
-    let architectures = env::var("AUDIO2FACE3D_CUDA_ARCHS").unwrap_or_else(|_| "86".into());
-    let flags = build_config::gencode_flags(&architectures)
+    let architectures = &config.cuda_archs;
+    let flags = build_config::gencode_flags(architectures)
         .unwrap_or_else(|error| panic!("invalid AUDIO2FACE3D_CUDA_ARCHS: {error}"));
     // PTX is virtual-architecture specific. Compile for the first requested
     // architecture so the driver can JIT it for that architecture and newer
@@ -47,7 +45,10 @@ pub(crate) fn build() {
         .expect("validated gencode flag has a compute architecture");
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
         .join("regression_postprocess.ptx");
-    let host_compiler = cuda_host_compiler();
+    let host_compiler = config
+        .cuda_host_compiler
+        .clone()
+        .unwrap_or_else(cuda_host_compiler);
     let host_compiler_dir = host_compiler
         .parent()
         .expect("host compiler has a parent directory");
@@ -125,9 +126,6 @@ pub(crate) fn build() {
 }
 
 fn cuda_host_compiler() -> PathBuf {
-    if let Some(path) = env::var_os("AUDIO2FACE3D_CUDA_HOST_COMPILER") {
-        return PathBuf::from(path);
-    }
     if cfg!(windows)
         && let Some(path) = visual_studio_2022_compiler()
     {

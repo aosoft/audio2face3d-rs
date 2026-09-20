@@ -1,18 +1,6 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-fn required_directory(name: &str) -> PathBuf {
-    let path = env::var_os(name)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| panic!("{name} is required when the tensorrt feature is enabled"));
-    assert!(
-        path.is_dir(),
-        "{name} is not a directory: {}",
-        path.display()
-    );
-    path
-}
-
 fn first_directory(root: &Path, candidates: &[&str]) -> PathBuf {
     candidates
         .iter()
@@ -27,15 +15,18 @@ fn first_directory(root: &Path, candidates: &[&str]) -> PathBuf {
         })
 }
 
-pub(crate) fn build() {
+pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=TENSORRT_ROOT_DIR");
     if env::var_os("CARGO_FEATURE_TENSORRT").is_none() {
         return;
     }
 
-    let cuda = required_directory("CUDA_PATH");
-    let tensorrt = required_directory("TENSORRT_ROOT_DIR");
+    let cuda = &config.cuda_root;
+    let tensorrt = config
+        .tensorrt_root
+        .as_ref()
+        .expect("TensorRT configuration");
     assert!(
         cuda.join("include").is_dir(),
         "CUDA include directory is missing"
@@ -44,7 +35,7 @@ pub(crate) fn build() {
         tensorrt.join("include/NvInfer.h").is_file(),
         "TensorRT NvInfer.h is missing"
     );
-    let library = first_directory(&tensorrt, &["lib", "lib64", "lib/x64", "cuda/lib"]);
+    let library = first_directory(tensorrt, &["lib", "lib64", "lib/x64", "cuda/lib"]);
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -58,7 +49,7 @@ pub(crate) fn build() {
         build.flag("-std=c++17");
     }
     println!("cargo:rustc-link-search=native={}", library.display());
-    let cuda_library = first_directory(&cuda, &["lib/x64", "lib64", "lib"]);
+    let cuda_library = first_directory(cuda, &["lib/x64", "lib64", "lib"]);
     println!("cargo:rustc-link-search=native={}", cuda_library.display());
     println!("cargo:rustc-link-lib=dylib=nvinfer_10");
     println!("cargo:rustc-link-lib=dylib=nvinfer_plugin_10");
