@@ -1,5 +1,6 @@
 //! Immutable shared application resources.
 use crate::logging::{Logger, NoopLogger};
+use crate::runtime::NativeRuntimeConfig;
 use std::sync::Arc;
 #[derive(Clone)]
 pub struct Audio2Face3DContext {
@@ -7,11 +8,13 @@ pub struct Audio2Face3DContext {
 }
 struct ContextInner {
     logger: Arc<dyn Logger>,
+    native_runtime: NativeRuntimeConfig,
     #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
     legacy: bool,
 }
 pub struct Audio2Face3DContextBuilder {
     logger: Arc<dyn Logger>,
+    native_runtime: NativeRuntimeConfig,
 }
 impl Audio2Face3DContext {
     pub fn builder() -> Audio2Face3DContextBuilder {
@@ -20,10 +23,14 @@ impl Audio2Face3DContext {
     pub fn logger(&self) -> &Arc<dyn Logger> {
         &self.inner.logger
     }
+    pub fn native_runtime(&self) -> &NativeRuntimeConfig {
+        &self.inner.native_runtime
+    }
     pub(crate) fn legacy() -> Self {
         Self {
             inner: Arc::new(ContextInner {
                 logger: Arc::new(NoopLogger),
+                native_runtime: NativeRuntimeConfig::default(),
                 legacy: true,
             }),
         }
@@ -45,10 +52,15 @@ impl Default for Audio2Face3DContextBuilder {
     fn default() -> Self {
         Self {
             logger: Arc::new(NoopLogger),
+            native_runtime: NativeRuntimeConfig::default(),
         }
     }
 }
 impl Audio2Face3DContextBuilder {
+    pub fn native_runtime(mut self, config: NativeRuntimeConfig) -> Self {
+        self.native_runtime = config;
+        self
+    }
     pub fn logger(mut self, logger: Arc<dyn Logger>) -> Self {
         self.logger = logger;
         self
@@ -57,6 +69,7 @@ impl Audio2Face3DContextBuilder {
         Audio2Face3DContext {
             inner: Arc::new(ContextInner {
                 logger: self.logger,
+                native_runtime: self.native_runtime,
                 legacy: false,
             }),
         }

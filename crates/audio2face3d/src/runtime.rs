@@ -1,3 +1,13 @@
+//! Native configuration and diagnostics, usable without loading a GPU SDK.
+mod config;
+mod error;
+mod info;
+mod version;
+pub use config::{NativeRuntimeConfig, NativeRuntimeConfigBuilder, NativeSearchPolicy};
+pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
+pub use info::{NativeLibraryInfo, NativeRuntimeInfo, NativeRuntimeState};
+pub use version::{NativeVersion, VersionCompatibility};
+
 use std::env;
 use std::path::PathBuf;
 

@@ -48,14 +48,7 @@ mod emotion;
     feature = "cli"
 ))]
 mod model;
-#[cfg(any(
-    feature = "animation",
-    feature = "emotion",
-    feature = "cuda",
-    feature = "tensorrt",
-    feature = "cli"
-))]
-mod runtime;
+pub mod runtime;
 #[cfg(any(
     feature = "animation",
     feature = "emotion",
