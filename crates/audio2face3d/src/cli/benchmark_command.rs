@@ -71,6 +71,8 @@ pub fn run(
         gpu_memory_mib,
     )?;
     let engine = engine.unwrap_or_else(|| model.engine_path());
+    let log_scope = audio2face3d::logging::integration::LogScope::capture();
+    let context = log_scope.context();
     let document = serde_json::json!({
         "schema_version": 1,
         "pipeline": format!("{:?}", model.kind()).to_ascii_lowercase(),
@@ -85,8 +87,9 @@ pub fn run(
         "environment": {
             "target": std::env::consts::OS,
             "architecture": std::env::consts::ARCH,
-            "cuda_path": std::env::var("CUDA_PATH").ok(),
-            "tensorrt_root": std::env::var("TENSORRT_ROOT_DIR").ok(),
+            "cuda_path": context.native_runtime().cuda_root(),
+            "tensorrt_root": context.native_runtime().tensorrt_root(),
+            "native_runtime": context.native_runtime_info().map(|info| format!("{info:?}")),
         },
         "report": report.to_json(),
     });

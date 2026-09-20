@@ -7,7 +7,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -162,6 +162,13 @@ impl Default for EngineBuilder {
 }
 
 impl EngineBuilder {
+    pub fn build_with_context(
+        &self,
+        request: &EngineBuildRequest,
+        context: crate::Audio2Face3DContext,
+    ) -> Result<(), EngineError> {
+        crate::logging::integration::LogScope::new(context).in_scope(|| self.build(request))
+    }
     pub fn build(&self, request: &EngineBuildRequest) -> Result<(), EngineError> {
         self.build_validated(request, |_| Ok(()))
     }
@@ -217,7 +224,13 @@ fn run_and_relay(
     executable: &Path,
     arguments: &[String],
 ) -> io::Result<(std::process::ExitStatus, String)> {
-    let mut child = Command::new(executable)
+    let scope = crate::logging::integration::LogScope::capture();
+    let mut command = scope
+        .context()
+        .native_runtime()
+        .tool_command(crate::runtime::tools::NativeTool::Trtexec, Some(executable))
+        .map_err(io::Error::other)?;
+    let mut child = command
         .args(arguments)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

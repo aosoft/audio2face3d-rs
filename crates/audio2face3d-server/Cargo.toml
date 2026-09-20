@@ -12,7 +12,7 @@ description = "Audio2Face-3D compatible gRPC server"
 default = ["native"]
 native = ["audio2face3d/native"]
 mock = ["audio2face3d/mock"]
-cli = ["dep:subtle", "dep:clap", "tokio/signal"]
+cli = ["audio2face3d/runtime-cli", "dep:subtle", "dep:clap", "tokio/signal"]
 
 [dependencies]
 subtle = { version = "2.6.1", optional = true }

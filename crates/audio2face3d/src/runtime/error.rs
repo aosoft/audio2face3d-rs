@@ -40,7 +40,7 @@ impl NativeRuntimeError {
         self.paths.push(path.as_ref().to_owned());
         self
     }
-    #[cfg(any(feature = "cuda", test))]
+    #[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
     pub(crate) fn after_load(mut self) -> Self {
         self.restart_required = true;
         self

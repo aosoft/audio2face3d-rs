@@ -27,8 +27,10 @@ mock = ["tracing"]
 native = ["animation", "emotion", "tensorrt"]
 client-grpc = ["tracing", "dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tokio", "dep:tokio-stream", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
 grpc-server = ["tracing", "dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
-cli = ["dep:clap", "dep:hf-hub", "dep:sha2", "dep:thiserror", "dep:serde", "dep:serde_json", "tracing", "dep:zip"]
+runtime-cli = ["dep:clap", "dep:toml", "dep:libloading", "dep:windows-sys", "dep:libc"]
+cli = ["runtime-cli", "dep:clap", "dep:hf-hub", "dep:sha2", "dep:thiserror", "dep:serde", "dep:serde_json", "tracing", "dep:zip"]
 [dependencies]
+toml = { version = "1.1", optional = true, default-features = false, features = ["parse", "std", "serde"] }
 libloading = { version = "0.9", optional = true }
 tracing-subscriber = { version = "0.3.23", optional = true, default-features = false, features = ["registry"] }
 thiserror = { workspace = true, optional = true }

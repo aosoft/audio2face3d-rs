@@ -2,6 +2,7 @@ use crate::cli::library::sha256;
 use audio2face3d::tensorrt::{EngineBuildRequest, EngineBuilder, TrtBuildInfo, TrtBuildInfoError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(test)]
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -101,9 +102,16 @@ pub struct ModelEngineBuildRequest {
 impl ModelEngineBuildRequest {
     pub fn execute(&self) -> Result<EngineBuildReceipt, ModelEngineFailure> {
         let source_plan = BuildPlan::load(self)?;
-        let executable = resolve_executable(&self.trtexec).ok_or_else(|| {
-            ModelEngineFailure::ExecutableNotFound(self.trtexec.to_string_lossy().into_owned())
-        })?;
+        let scope = audio2face3d::logging::integration::LogScope::capture();
+        let command = scope
+            .context()
+            .native_runtime()
+            .tool_command(
+                audio2face3d::runtime::tools::NativeTool::Trtexec,
+                Some(&self.trtexec),
+            )
+            .map_err(|error| ModelEngineFailure::ExecutableNotFound(error.to_string()))?;
+        let executable = PathBuf::from(command.get_program());
         let has_existing = source_plan
             .generated_names()
             .iter()
@@ -649,55 +657,12 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), ModelEngineFail
     Ok(())
 }
 
-fn resolve_executable(executable: &Path) -> Option<PathBuf> {
-    if executable.components().count() > 1 || executable.is_absolute() {
-        return executable.is_file().then(|| executable.to_owned());
-    }
-    let path = env::var_os("PATH")?;
-    let extensions = executable_extensions();
-    for directory in env::split_paths(&path) {
-        for extension in &extensions {
-            let candidate = if extension.is_empty() {
-                directory.join(executable)
-            } else {
-                let mut name = executable.as_os_str().to_owned();
-                name.push(extension);
-                directory.join(name)
-            };
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-fn executable_extensions() -> Vec<OsString> {
-    #[cfg(windows)]
-    {
-        let mut extensions = vec![OsString::new()];
-        extensions.extend(
-            env::var_os("PATHEXT")
-                .map(|value| {
-                    value
-                        .to_string_lossy()
-                        .split(';')
-                        .filter(|value| !value.is_empty())
-                        .map(OsString::from)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_else(|| vec![OsString::from(".EXE")]),
-        );
-        extensions
-    }
-    #[cfg(not(windows))]
-    {
-        vec![OsString::new()]
-    }
-}
-
 fn trtexec_version(executable: &Path) -> String {
-    let output = command_text(executable.as_os_str(), &[OsStr::new("--help")]);
+    let output = native_command_text(
+        audio2face3d::runtime::tools::NativeTool::Trtexec,
+        Some(executable),
+        &[OsStr::new("--help")],
+    );
     output
         .lines()
         .find_map(|line| {
@@ -709,17 +674,32 @@ fn trtexec_version(executable: &Path) -> String {
 }
 
 fn cuda_toolkit_version() -> String {
-    let executable = env::var_os("CUDA_PATH")
-        .map(PathBuf::from)
-        .map(|root| {
-            root.join("bin")
-                .join(if cfg!(windows) { "nvcc.exe" } else { "nvcc" })
-        })
-        .unwrap_or_else(|| PathBuf::from("nvcc"));
-    summarize_command_output(command_text(
-        executable.as_os_str(),
+    summarize_command_output(native_command_text(
+        audio2face3d::runtime::tools::NativeTool::Nvcc,
+        None,
         &[OsStr::new("--version")],
     ))
+}
+fn native_command_text(
+    tool: audio2face3d::runtime::tools::NativeTool,
+    executable: Option<&Path>,
+    arguments: &[&OsStr],
+) -> String {
+    let scope = audio2face3d::logging::integration::LogScope::capture();
+    match scope
+        .context()
+        .native_runtime()
+        .tool_command(tool, executable)
+        .map_err(|e| e.to_string())
+        .and_then(|mut command| command.args(arguments).output().map_err(|e| e.to_string()))
+    {
+        Ok(output) => format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(error) => format!("unavailable: {error}"),
+    }
 }
 
 fn gpu_identity(device_id: u32) -> String {
@@ -901,7 +881,7 @@ pub enum ModelEngineFailure {
     InvalidMaxBatchSize(u64),
     #[error("trt_info.json has no MAX_BATCH_SIZE default to override")]
     MissingMaxBatchDefault,
-    #[error("TensorRT executable was not found: {0}; set TRTEXEC or add trtexec to PATH")]
+    #[error("TensorRT executable resolution failed: {0}; specify --tensorrt-root or TRTEXEC")]
     ExecutableNotFound(String),
     #[error(
         "existing {precision} engine artifacts in {} do not match: {reason}; use --replace to rebuild them",

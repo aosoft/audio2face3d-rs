@@ -1,7 +1,6 @@
-use super::{
-    NativeRuntimeConfig, NativeRuntimeError, NativeRuntimeErrorKind, NativeSearchPolicy,
-    loader::LibraryFile,
-};
+#[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
+use super::loader::LibraryFile;
+use super::{NativeRuntimeConfig, NativeRuntimeError, NativeRuntimeErrorKind, NativeSearchPolicy};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy)]
@@ -114,6 +113,7 @@ fn normalize(paths: impl IntoIterator<Item = PathBuf>) -> Result<Vec<PathBuf>, N
     Ok(output)
 }
 /// Resolve one component without choosing a version when multiple binaries exist.
+#[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
 pub(crate) fn library(
     directories: &[PathBuf],
     prefix: &str,
@@ -167,6 +167,7 @@ pub(crate) fn library(
     }
     Err(error)
 }
+#[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
 pub(crate) fn driver() -> Result<LibraryFile, NativeRuntimeError> {
     #[cfg(windows)]
     {
@@ -203,5 +204,51 @@ pub(crate) fn driver() -> Result<LibraryFile, NativeRuntimeError> {
         .filter(|p| p.is_dir())
         .collect::<Vec<_>>();
         library(&dirs, "libcuda.so.", "")
+    }
+}
+
+#[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
+impl NativeRuntimeConfig {
+    /// Inspects candidate files without loading any DLL or calling the GPU driver.
+    pub fn discover(&self) -> Result<super::NativeRuntimeInfo, NativeRuntimeError> {
+        let cuda = directories(self, Sdk::Cuda)?;
+        let trt = directories(self, Sdk::TensorRt)?;
+        let mut files = vec![driver()?];
+        #[cfg(windows)]
+        let names = [
+            (&cuda, "cublasLt64_", ".dll"),
+            (&cuda, "cublas64_", ".dll"),
+            (&cuda, "curand64_", ".dll"),
+            (&cuda, "cudart64_", ".dll"),
+            (&trt, "nvinfer_", ".dll"),
+        ];
+        #[cfg(unix)]
+        let names = [
+            (&cuda, "libcublasLt.so", ""),
+            (&cuda, "libcublas.so", ""),
+            (&cuda, "libcurand.so", ""),
+            (&cuda, "libcudart.so", ""),
+            (&trt, "libnvinfer.so", ""),
+        ];
+        for (dirs, prefix, suffix) in names {
+            files.push(library(dirs, prefix, suffix)?);
+        }
+        Ok(super::NativeRuntimeInfo {
+            state: super::NativeRuntimeState::Discovered,
+            libraries: files
+                .into_iter()
+                .map(|file| super::NativeLibraryInfo {
+                    name: file
+                        .path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    path: file.path,
+                    build_version: None,
+                    runtime_version: None,
+                })
+                .collect(),
+        })
     }
 }
