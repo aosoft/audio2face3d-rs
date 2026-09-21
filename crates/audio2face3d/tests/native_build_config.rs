@@ -15,7 +15,6 @@ fn file_configuration_is_complete_and_relative_to_itself() {
         config.tensorrt_root,
         Some(file.parent().unwrap().join("shared/trt"))
     );
-    assert_eq!(config.cuda_archs, "86,89");
     assert_eq!(
         config.cuda_host_compiler,
         Some(file.parent().unwrap().join("build/compiler"))
@@ -67,7 +66,7 @@ fn build_rejects_invalid_runtime_sections_even_when_not_used() {
     for tail in [
         "[runtime]\nsearch-policy='latest'",
         "[runtime]\ncuda-library-dirs=[]",
-        "[build]\ncuda_archs=['86']",
+        "[build]\ncuda_arch='86'",
         "[runtime]\ncuda-root='a'\ncuda-library-dirs=['b']",
     ] {
         assert!(parse_config(&format!("cuda-root='sdk'\n{tail}"), &file(), false).is_err());
@@ -82,7 +81,6 @@ fn absent_platform_file_uses_legacy_build_environment() {
         let config = native_build::resolve(true).unwrap();
         assert_eq!(config.cuda_root, root.join("cuda"));
         assert_eq!(config.tensorrt_root, Some(root.join("trt")));
-        assert_eq!(config.cuda_archs, "75,86");
         assert_eq!(config.cuda_host_compiler, Some(root.join("compiler")));
         return;
     }
@@ -109,7 +107,8 @@ fn absent_platform_file_uses_legacy_build_environment() {
         std::fs::write(root.join(marker), "").unwrap();
     }
     let root = root.canonicalize().unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
             "absent_platform_file_uses_legacy_build_environment",
@@ -125,10 +124,8 @@ fn absent_platform_file_uses_legacy_build_environment() {
         .env("HOME", root.join("user"))
         .env("CUDA_PATH", root.join("cuda"))
         .env("TENSORRT_ROOT_DIR", root.join("trt"))
-        .env("AUDIO2FACE3D_CUDA_ARCHS", "75,86")
-        .env("AUDIO2FACE3D_CUDA_HOST_COMPILER", root.join("compiler"))
-        .output()
-        .unwrap();
+        .env("AUDIO2FACE3D_CUDA_HOST_COMPILER", root.join("compiler"));
+    let output = command.output().unwrap();
     assert!(
         output.status.success(),
         "stdout: {}\nstderr: {}",
@@ -165,4 +162,17 @@ fn absent_build_configuration_accepts_multiple_installed_sdks_in_stable_order() 
         )
         .is_err()
     );
+}
+
+#[test]
+fn cuda_architecture_is_not_a_user_configuration_setting() {
+    for setting in ["cuda-arch='86'", "cuda-archs=['86', '89']"] {
+        let error = parse_config(
+            &format!("cuda-root='sdk'\n[build]\n{setting}"),
+            &file(),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown platform setting"), "{error}");
+    }
 }

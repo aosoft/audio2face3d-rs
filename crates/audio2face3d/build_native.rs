@@ -10,7 +10,6 @@ use std::{
 pub struct BuildConfig {
     pub cuda_root: PathBuf,
     pub tensorrt_root: Option<PathBuf>,
-    pub cuda_archs: String,
     pub cuda_host_compiler: Option<PathBuf>,
 }
 
@@ -45,26 +44,9 @@ pub fn parse_config(text: &str, file: &Path, tensorrt: bool) -> Result<BuildConf
     if tensorrt && tensorrt_root.is_none() {
         return Err("tensorrt-root is required for TensorRT".into());
     }
-    let cuda_archs = match table.get("cuda-archs") {
-        None => "86".into(),
-        Some(value) => {
-            let values = value
-                .as_array()
-                .ok_or("cuda-archs must be an array of strings")?;
-            if values.is_empty() {
-                return Err("cuda-archs must not be empty".into());
-            }
-            values
-                .iter()
-                .map(|v| v.as_str().ok_or("cuda-archs must contain strings"))
-                .collect::<Result<Vec<_>, _>>()?
-                .join(",")
-        }
-    };
     Ok(BuildConfig {
         cuda_root,
         tensorrt_root,
-        cuda_archs,
         cuda_host_compiler: string(&table, "cuda-host-compiler")?.map(|p| absolute(base, &p)),
     })
 }
@@ -156,7 +138,6 @@ pub fn resolve(tensorrt: bool) -> Result<BuildConfig, String> {
         "AUDIO2FACE3D_PLATFORM_CONFIG",
         "CUDA_PATH",
         "TENSORRT_ROOT_DIR",
-        "AUDIO2FACE3D_CUDA_ARCHS",
         "AUDIO2FACE3D_CUDA_HOST_COMPILER",
         "LOCALAPPDATA",
         "XDG_CONFIG_HOME",
@@ -195,7 +176,6 @@ pub fn resolve(tensorrt: bool) -> Result<BuildConfig, String> {
     validate(BuildConfig {
         cuda_root,
         tensorrt_root,
-        cuda_archs: env::var("AUDIO2FACE3D_CUDA_ARCHS").unwrap_or_else(|_| "86".into()),
         cuda_host_compiler: env::var_os("AUDIO2FACE3D_CUDA_HOST_COMPILER").map(PathBuf::from),
     })
 }

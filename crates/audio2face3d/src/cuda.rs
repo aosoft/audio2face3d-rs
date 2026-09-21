@@ -28,7 +28,6 @@
 //! the polling thread and are not retained across an `.await` boundary.
 
 mod borrowed;
-pub mod build_config;
 
 #[cfg(feature = "cuda")]
 mod accumulator;

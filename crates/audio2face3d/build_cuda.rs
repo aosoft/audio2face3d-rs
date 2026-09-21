@@ -1,5 +1,5 @@
-#[path = "src/cuda/build_config.rs"]
-mod build_config;
+#[path = "build_cuda_arch.rs"]
+mod build_cuda_arch;
 
 use std::env;
 use std::fs;
@@ -9,7 +9,6 @@ use std::process::Command;
 
 pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
-    println!("cargo:rerun-if-env-changed=AUDIO2FACE3D_CUDA_ARCHS");
     println!("cargo:rerun-if-env-changed=AUDIO2FACE3D_CUDA_HOST_COMPILER");
     println!("cargo:rerun-if-changed=cuda/regression_postprocess.cu");
     println!("cargo:rerun-if-changed=cuda/regression_jaw.cu");
@@ -28,21 +27,19 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
         nvcc.display()
     );
 
-    let architectures = &config.cuda_archs;
-    let flags = build_config::gencode_flags(architectures)
-        .unwrap_or_else(|error| panic!("invalid AUDIO2FACE3D_CUDA_ARCHS: {error}"));
-    // PTX is virtual-architecture specific. Compile for the first requested
-    // architecture so the driver can JIT it for that architecture and newer
-    // devices. The complete architecture list remains part of the release
-    // support contract and the build configuration tests.
-    let first = flags
-        .first()
-        .expect("gencode_flags always returns at least one architecture");
-    let compute = first
-        .split("arch=compute_")
-        .nth(1)
-        .and_then(|value| value.split(',').next())
-        .expect("validated gencode flag has a compute architecture");
+    println!("cargo:rerun-if-changed={}", nvcc.display());
+    let supported = Command::new(&nvcc)
+        .arg("--list-gpu-arch")
+        .output()
+        .unwrap_or_else(|error| panic!("failed to query {}: {error}", nvcc.display()));
+    assert!(
+        supported.status.success(),
+        "nvcc target query failed: {}",
+        String::from_utf8_lossy(&supported.stderr)
+    );
+    let compute = build_cuda_arch::minimum_target(&String::from_utf8_lossy(&supported.stdout))
+        .expect("select the minimum supported CUDA kernel PTX target");
+    println!("cargo:rustc-env=AUDIO2FACE3D_KERNEL_COMPUTE_CAPABILITY={compute}");
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
         .join("regression_postprocess.ptx");
     let host_compiler = config

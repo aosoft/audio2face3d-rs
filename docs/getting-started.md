@@ -49,8 +49,21 @@ First obtain access on the official Hugging Face model page, then configure
 your own access token. Downloads are explicit and never happen from `build.rs`
 or model loading:
 
+PowerShell:
+
+```powershell
+$env:HF_TOKEN = '...'
+```
+
+Bash/sh:
+
 ```sh
-export HF_TOKEN=...
+export HF_TOKEN='...'
+```
+
+Then list and download models:
+
+```sh
 cargo run -p audio2face3d --features cli -- model list
 cargo run -p audio2face3d --features cli -- model download mark
 cargo run -p audio2face3d --features cli -- model download all

@@ -209,7 +209,10 @@ mod tests {
             "[runtime]\ncuda-library-dirs=[]",
             "[runtime]\ncuda-root='a'\ncuda-library-dirs=['b']",
             "[runtime]\nsearch-policy='latest'",
-            "[build]\ncuda-archs=false",
+            "[build]\ncuda-archs=['86', '89']",
+            "[build]\ncuda-arch=['86']",
+            "[build]\ncuda-arch='86,89'",
+            "[build]\ncuda-arch=false",
         ] {
             assert!(parse(text, &cwd).is_err(), "{text}");
         }
