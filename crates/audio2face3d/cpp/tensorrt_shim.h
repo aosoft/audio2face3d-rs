@@ -10,6 +10,10 @@ extern "C" {
 
 typedef struct trt_shim_handle trt_shim_handle;
 
+/* Synchronous resolver: user is never retained. component: 0 = CUDA Runtime, 1 = TensorRT. */
+typedef void* (*trt_shim_resolve)(void* user, int32_t component, const char* name);
+int32_t trt_shim_initialize(trt_shim_resolve resolve, void* user, int32_t* trt_version, int32_t* cuda_version, char* error, size_t capacity);
+
 typedef struct trt_shim_tensor_info {
     int32_t io_mode;
     int32_t data_type;

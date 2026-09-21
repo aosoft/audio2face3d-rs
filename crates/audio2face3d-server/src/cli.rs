@@ -29,6 +29,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     let logger = logging::StderrLogger::from_env()?;
     let context = audio2face3d::Audio2Face3DContext::builder()
         .logger(std::sync::Arc::new(logger))
+        .native_runtime(args.runtime.resolve()?)
         .build();
     let server = Server::builder(args.config()?)
         .context(context)

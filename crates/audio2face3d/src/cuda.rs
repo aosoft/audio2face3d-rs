@@ -28,10 +28,11 @@
 //! the polling thread and are not retained across an `.await` boundary.
 
 mod borrowed;
-pub mod build_config;
 
 #[cfg(feature = "cuda")]
 mod accumulator;
+#[cfg(feature = "cuda")]
+pub(crate) mod api;
 #[cfg(feature = "cuda")]
 mod native;
 

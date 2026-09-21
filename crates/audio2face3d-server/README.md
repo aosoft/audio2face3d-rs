@@ -21,13 +21,11 @@ Run commands from the workspace root. Requirements:
   and [engine generation](../../docs/getting-started.md#tensorrt-engine-generation).
   Model files and native SDKs are separate downloads.
 
-Set `CUDA_PATH` and `TENSORRT_ROOT_DIR` to your installations, then add their
-`bin` directories to `PATH`. The default `native` feature provides Regression inference. Enable `cli` to build the executable:
+Optionally prepare a [shared platform configuration file](../../docs/platform.md) for build and runtime SDK locations. Without a selected or discovered file, existing SDK environment variables and runtime search paths are used. The default `native` feature provides Regression inference. Enable `cli` to build the executable:
 
 ```powershell
-$env:PATH = "$env:CUDA_PATH\bin;$env:TENSORRT_ROOT_DIR\bin;$env:PATH"
 cargo build --release --locked -p audio2face3d-server --features cli
-.\target\release\audio2face3d-server.exe --backend regression --model models/mark/model.json
+.\target\release\audio2face3d-server.exe --platform-config platform.toml --backend regression --model models/mark/model.json
 ```
 
 The model path above assumes Mark was prepared under `models/mark`.
@@ -48,8 +46,7 @@ then returns a process error; the timeout does not force-release native resource
 
 ## Library, logging and authentication
 
-The library never creates a runtime, reads environment variables, installs a
-global logger or handles process signals. The embedding application binds a
+The server library never creates a Tokio runtime, installs a global logger or handles process signals. Supply an explicit native Context to avoid SDK environment discovery; the default native search policy may read legacy SDK variables. The embedding application binds a
 Tokio listener, builds a `Server`, and supplies its stop future:
 
 ```rust,no_run

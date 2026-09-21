@@ -1,3 +1,21 @@
+//! Native configuration and diagnostics, usable without loading a GPU SDK.
+mod config;
+#[allow(dead_code)]
+pub(crate) mod discovery;
+mod error;
+mod info;
+#[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
+#[allow(dead_code)]
+pub(crate) mod loader;
+#[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
+#[allow(dead_code)] // Connected to native initialization in the following migration phase.
+pub(crate) mod registry;
+pub(crate) mod version;
+pub use config::{NativeRuntimeConfig, NativeRuntimeConfigBuilder, NativeSearchPolicy};
+pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
+pub use info::{NativeLibraryInfo, NativeRuntimeInfo, NativeRuntimeState};
+pub use version::{NativeVersion, VersionCompatibility};
+
 use std::env;
 use std::path::PathBuf;
 
@@ -107,3 +125,8 @@ mod tests {
         assert!(!RuntimeDiscovery::discover().diagnostic().is_empty());
     }
 }
+
+#[cfg(feature = "runtime-cli")]
+pub mod cli;
+
+pub mod tools;

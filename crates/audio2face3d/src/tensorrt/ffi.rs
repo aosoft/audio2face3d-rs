@@ -25,6 +25,14 @@ pub struct EnvironmentInfo {
 }
 
 unsafe extern "C" {
+    pub fn trt_shim_initialize(
+        resolve: unsafe extern "C" fn(*mut c_void, i32, *const c_char) -> *mut c_void,
+        user: *mut c_void,
+        trt_version: *mut i32,
+        cuda_version: *mut i32,
+        error: *mut c_char,
+        capacity: usize,
+    ) -> i32;
     pub fn trt_shim_log_count(session: *const TrtSessionHandle) -> i32;
     pub fn trt_shim_log_message(
         session: *const TrtSessionHandle,

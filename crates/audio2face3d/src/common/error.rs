@@ -9,6 +9,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// Normal waiting, completion, and interruption belong to execution reports.
 /// Legacy variants remain during migration; existing algorithms are not remapped here.
 pub enum Error {
+    #[error("{0}")]
+    NativeRuntime(#[from] crate::runtime::NativeRuntimeError),
     #[error("invalid {field}: {reason}")]
     InvalidArgument { field: &'static str, reason: String },
     #[error("{field} index {index} is outside length {len}")]

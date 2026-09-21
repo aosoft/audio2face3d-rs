@@ -1,3 +1,4 @@
+use super::api::CudaApi;
 use crate::common::{Error, Result};
 use crate::cuda::{CudaStreamRef, DeviceId, DeviceView, ensure_same_device};
 use cudarc::driver::sys::*;
@@ -12,18 +13,24 @@ use std::sync::{Arc, Mutex};
 /// the context it owns without leaking that change to an embedding process.
 pub(crate) struct CurrentContextGuard {
     previous: CUcontext,
+    api: Arc<CudaApi>,
 }
 
 impl CurrentContextGuard {
-    fn enter(target: CUcontext) -> Result<Self> {
+    fn enter(target: CUcontext, api: Arc<CudaApi>) -> Result<Self> {
         let mut previous = ptr::null_mut();
         // SAFETY: CUDA writes one context handle to a valid output pointer.
-        unsafe { check(cuCtxGetCurrent(&mut previous), "cuCtxGetCurrent")? };
+        unsafe {
+            check(
+                (api.driver.cuCtxGetCurrent)(&mut previous),
+                "cuCtxGetCurrent",
+            )?
+        };
         if previous != target {
             // SAFETY: target is retained by the owning GpuDevice.
-            unsafe { check(cuCtxSetCurrent(target), "cuCtxSetCurrent")? };
+            unsafe { check((api.driver.cuCtxSetCurrent)(target), "cuCtxSetCurrent")? };
         }
-        Ok(Self { previous })
+        Ok(Self { previous, api })
     }
 }
 
@@ -32,7 +39,7 @@ impl Drop for CurrentContextGuard {
         // SAFETY: restoring the context is best-effort during unwinding/drop;
         // the previous handle was returned by CUDA on this same thread.
         unsafe {
-            let _ = cuCtxSetCurrent(self.previous);
+            let _ = (self.api.driver.cuCtxSetCurrent)(self.previous);
         }
     }
 }
@@ -52,6 +59,7 @@ fn check(code: CUresult, operation: &'static str) -> Result<()> {
 pub struct GpuDevice {
     scope: crate::logging::integration::LogScope,
     id: DeviceId,
+    api: Arc<CudaApi>,
     raw_device: CUdevice,
     context: CUcontext,
 }
@@ -67,24 +75,35 @@ unsafe impl Sync for GpuDevice {}
 impl GpuDevice {
     pub fn new(ordinal: i32) -> Result<Arc<Self>> {
         let id = DeviceId::new(ordinal)?;
+        let scope = crate::logging::integration::LogScope::capture();
+        let api = CudaApi::initialize(scope.context())?;
         let mut raw_device = 0;
         let mut context = ptr::null_mut();
         // SAFETY: output pointers are valid, and CUDA initialization precedes device access.
         unsafe {
-            check(cuInit(0), "cuInit")?;
-            check(cuDeviceGet(&mut raw_device, ordinal), "cuDeviceGet")?;
             check(
-                cuDevicePrimaryCtxRetain(&mut context, raw_device),
+                (api.driver.cuDeviceGet)(&mut raw_device, ordinal),
+                "cuDeviceGet",
+            )?;
+            check(
+                (api.driver.cuDevicePrimaryCtxRetain)(&mut context, raw_device),
                 "cuDevicePrimaryCtxRetain",
             )?;
         }
+        scope.context().native_device_ready();
         tracing::debug!(device = ordinal, "retained CUDA primary context");
         Ok(Arc::new(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
+            api,
             id,
             raw_device,
             context,
         }))
+    }
+
+    #[cfg(feature = "tensorrt")]
+    pub(crate) fn runtime_context(&self) -> &crate::Audio2Face3DContext {
+        self.scope.context()
     }
 
     pub const fn id(&self) -> DeviceId {
@@ -93,7 +112,7 @@ impl GpuDevice {
 
     pub(crate) fn make_current(&self) -> Result<CurrentContextGuard> {
         let _scope = self.scope.activate();
-        CurrentContextGuard::enter(self.context)
+        CurrentContextGuard::enter(self.context, Arc::clone(&self.api))
     }
 
     #[cfg(all(feature = "animation", feature = "tensorrt"))]
@@ -105,7 +124,7 @@ impl GpuDevice {
         // owner remains alive for this call.
         unsafe {
             check(
-                cuStreamSynchronize(stream.as_raw().cast()),
+                (self.api.driver.cuStreamSynchronize)(stream.as_raw().cast()),
                 "cuStreamSynchronize",
             )
         }
@@ -115,7 +134,12 @@ impl GpuDevice {
         let _context = self.make_current()?;
         let mut raw = ptr::null_mut();
         // SAFETY: current context is retained and the output pointer is valid.
-        unsafe { check(cuStreamCreate(&mut raw, 0), "cuStreamCreate")? };
+        unsafe {
+            check(
+                (self.api.driver.cuStreamCreate)(&mut raw, 0),
+                "cuStreamCreate",
+            )?
+        };
         tracing::debug!(device = self.id().ordinal(), "created CUDA stream");
         Ok(CudaStream {
             device: Arc::clone(self),
@@ -139,7 +163,12 @@ impl GpuDevice {
         let _context = self.make_current()?;
         let mut pointer = 0;
         // SAFETY: the current context is retained and pointer is a valid output.
-        unsafe { check(cuMemAlloc_v2(&mut pointer, bytes), "cuMemAlloc")? };
+        unsafe {
+            check(
+                (self.api.driver.cuMemAlloc_v2)(&mut pointer, bytes),
+                "cuMemAlloc",
+            )?
+        };
         tracing::debug!(
             device = self.id().ordinal(),
             elements = len,
@@ -162,7 +191,7 @@ impl GpuDevice {
         // SAFETY: PTX is NUL terminated and remains alive for the duration of the call.
         unsafe {
             check(
-                cuModuleLoadData(&mut raw, ptx.as_ptr().cast()),
+                (self.api.driver.cuModuleLoadData)(&mut raw, ptx.as_ptr().cast()),
                 "cuModuleLoadData",
             )?;
         }
@@ -180,7 +209,7 @@ impl Drop for GpuDevice {
         // SAFETY: this object owns one primary-context retain count. All child
         // resources hold an Arc and therefore outlive this final release.
         unsafe {
-            let _ = cuDevicePrimaryCtxRelease_v2(self.raw_device);
+            let _ = (self.api.driver.cuDevicePrimaryCtxRelease_v2)(self.raw_device);
         }
     }
 }
@@ -227,14 +256,24 @@ impl CudaStream {
     pub fn synchronize(&self) -> Result<()> {
         let _context = self.device.make_current()?;
         // SAFETY: raw is owned by this object and remains valid for the call.
-        unsafe { check(cuStreamSynchronize(self.raw), "cuStreamSynchronize") }
+        unsafe {
+            check(
+                (self.device.api.driver.cuStreamSynchronize)(self.raw),
+                "cuStreamSynchronize",
+            )
+        }
     }
 
     pub fn create_event(&self) -> Result<CudaEvent> {
         let _context = self.device.make_current()?;
         let mut raw = ptr::null_mut();
         // SAFETY: output pointer is valid and the current context is retained.
-        unsafe { check(cuEventCreate(&mut raw, 0), "cuEventCreate")? };
+        unsafe {
+            check(
+                (self.device.api.driver.cuEventCreate)(&mut raw, 0),
+                "cuEventCreate",
+            )?
+        };
         Ok(CudaEvent {
             device: Arc::clone(&self.device),
             raw,
@@ -253,7 +292,7 @@ impl CudaStream {
         // SAFETY: the caller guarantees pointer validity, ownership, and lifetime.
         unsafe {
             check(
-                cuMemsetD8Async(pointer, 0, bytes, self.raw),
+                (self.device.api.driver.cuMemsetD8Async)(pointer, 0, bytes, self.raw),
                 "cuMemsetD8Async",
             )
         }
@@ -265,8 +304,8 @@ impl Drop for CudaStream {
         let _context = self.device.make_current();
         // SAFETY: raw is exclusively owned by this object.
         unsafe {
-            let _ = cuStreamSynchronize(self.raw);
-            let _ = cuStreamDestroy_v2(self.raw);
+            let _ = (self.device.api.driver.cuStreamSynchronize)(self.raw);
+            let _ = (self.device.api.driver.cuStreamDestroy_v2)(self.raw);
         }
     }
 }
@@ -284,13 +323,14 @@ pub(crate) fn copy_device_view_to_host<T: Copy>(
             source.len()
         )));
     }
-    let _context = CurrentContextGuard::enter(stream.context_raw().cast())?;
+    let api = CudaApi::loaded()?;
+    let _context = CurrentContextGuard::enter(stream.context_raw().cast(), Arc::clone(&api))?;
     // SAFETY: the callback-scoped view covers the checked byte count, the host
     // destination remains borrowed through synchronization, and the borrowed
     // stream/context remain alive for this call.
     unsafe {
         check(
-            cuMemcpyDtoHAsync_v2(
+            (api.driver.cuMemcpyDtoHAsync_v2)(
                 destination.as_mut_ptr().cast(),
                 source.as_raw(),
                 std::mem::size_of_val(destination),
@@ -299,7 +339,7 @@ pub(crate) fn copy_device_view_to_host<T: Copy>(
             "cuMemcpyDtoHAsync",
         )?;
         check(
-            cuStreamSynchronize(stream.as_raw().cast()),
+            (api.driver.cuStreamSynchronize)(stream.as_raw().cast()),
             "cuStreamSynchronize",
         )
     }
@@ -324,8 +364,8 @@ impl Drop for CudaModule {
         // SAFETY: draining the retained context ensures no queued kernel still
         // references module code; `raw` is exclusively owned here.
         unsafe {
-            let _ = cuCtxSynchronize();
-            let _ = cuModuleUnload(self.raw);
+            let _ = (self.device.api.driver.cuCtxSynchronize)();
+            let _ = (self.device.api.driver.cuModuleUnload)(self.raw);
         }
     }
 }
@@ -344,7 +384,7 @@ impl CudaModule {
         // valid output pointer.
         unsafe {
             check(
-                cuModuleGetFunction(&mut raw, self.raw, name.as_ptr()),
+                (self.device.api.driver.cuModuleGetFunction)(&mut raw, self.raw, name.as_ptr()),
                 "cuModuleGetFunction",
             )?
         };
@@ -398,7 +438,7 @@ impl CudaFunction<'_> {
         // lifetimes are delegated to the caller as documented above.
         unsafe {
             check(
-                cuLaunchKernel(
+                (self.module.device.api.driver.cuLaunchKernel)(
                     self.raw,
                     grid.0,
                     grid.1,
@@ -448,12 +488,20 @@ pub struct PcaDimensions {
 impl CublasHandle {
     pub fn new(stream: &CudaStream) -> Result<Self> {
         let _context = stream.device.make_current()?;
-        let raw = cudarc::cublas::result::create_handle()
+        let mut raw = ptr::null_mut();
+        // SAFETY: output storage is valid and the device retains the loaded API.
+        unsafe { (stream.device.api.cublas.cublasCreate_v2)(&mut raw).result() }
             .map_err(|error| Error::CudaUnavailable(format!("cuBLAS create: {error:?}")))?;
-        // SAFETY: handle and stream are live and owned by the retained context.
+        // SAFETY: raw and stream are valid; failed stream setup releases the new handle.
         unsafe {
-            cudarc::cublas::result::set_stream(raw, stream.raw.cast())
-                .map_err(|error| Error::CudaUnavailable(format!("cuBLAS set stream: {error:?}")))?;
+            if let Err(error) =
+                (stream.device.api.cublas.cublasSetStream_v2)(raw, stream.raw.cast()).result()
+            {
+                let _ = (stream.device.api.cublas.cublasDestroy_v2)(raw);
+                return Err(Error::CudaUnavailable(format!(
+                    "cuBLAS set stream: {error:?}"
+                )));
+            }
         }
         Ok(Self {
             device: Arc::clone(&stream.device),
@@ -521,7 +569,7 @@ impl CublasHandle {
         // SAFETY: dimensions and device ownership were validated. The caller
         // provides the asynchronous resource lifetime and aliasing invariant.
         unsafe {
-            cudarc::cublas::result::sgemv(
+            (self.device.api.cublas.cublasSgemv_v2)(
                 self.raw,
                 operation,
                 m,
@@ -535,6 +583,7 @@ impl CublasHandle {
                 output.pointer as usize as *mut f32,
                 1,
             )
+            .result()
             .map_err(|error| Error::CudaUnavailable(format!("cuBLAS SGEMV: {error:?}")))
         }
     }
@@ -619,7 +668,7 @@ impl CublasHandle {
         // SAFETY: validated allocations cover column-major A(m*k), B(k*n), C(m*n),
         // and the returned fence holds every owner until the recorded event completes.
         unsafe {
-            cudarc::cublas::result::sgemm(
+            (self.device.api.cublas.cublasSgemm_v2)(
                 self.raw,
                 cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
                 cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
@@ -635,6 +684,7 @@ impl CublasHandle {
                 output.pointer as usize as *mut f32,
                 m,
             )
+            .result()
             .map_err(|error| Error::CudaUnavailable(format!("cuBLAS SGEMM: {error:?}")))?;
         }
         let event = stream.create_event()?;
@@ -668,8 +718,8 @@ impl Drop for CublasHandle {
         // SAFETY: the context is retained, queued work is drained first, and
         // this object exclusively owns the cuBLAS handle.
         unsafe {
-            let _ = cuCtxSynchronize();
-            let _ = cudarc::cublas::result::destroy_handle(self.raw);
+            let _ = (self.device.api.driver.cuCtxSynchronize)();
+            let _ = (self.device.api.cublas.cublasDestroy_v2)(self.raw).result();
         }
     }
 }
@@ -687,14 +737,26 @@ unsafe impl Send for CurandHandle {}
 impl CurandHandle {
     pub fn new(stream: &CudaStream) -> Result<Self> {
         let _context = stream.device.make_current()?;
-        let raw = cudarc::curand::result::create_generator_kind(
-            cudarc::curand::sys::curandRngType_t::CURAND_RNG_PSEUDO_PHILOX4_32_10,
-        )
-        .map_err(|error| Error::CudaUnavailable(format!("cuRAND create: {error:?}")))?;
-        // SAFETY: generator and stream are live and owned by the retained context.
+        let mut raw = ptr::null_mut();
+        // SAFETY: output storage is valid and the device retains the loaded API.
         unsafe {
-            cudarc::curand::result::set_stream(raw, stream.raw.cast())
-                .map_err(|error| Error::CudaUnavailable(format!("cuRAND set stream: {error:?}")))?;
+            (stream.device.api.curand.curandCreateGenerator)(
+                &mut raw,
+                cudarc::curand::sys::curandRngType_t::CURAND_RNG_PSEUDO_PHILOX4_32_10,
+            )
+            .result()
+        }
+        .map_err(|error| Error::CudaUnavailable(format!("cuRAND create: {error:?}")))?;
+        // SAFETY: raw and stream are valid; failed setup releases the new generator.
+        unsafe {
+            if let Err(error) =
+                (stream.device.api.curand.curandSetStream)(raw, stream.raw.cast()).result()
+            {
+                let _ = (stream.device.api.curand.curandDestroyGenerator)(raw);
+                return Err(Error::CudaUnavailable(format!(
+                    "cuRAND set stream: {error:?}"
+                )));
+            }
         }
         Ok(Self {
             device: Arc::clone(&stream.device),
@@ -708,7 +770,8 @@ impl CurandHandle {
         let _context = self.device.make_current()?;
         // SAFETY: `raw` is exclusively owned and remains allocated for this call.
         unsafe {
-            cudarc::curand::result::set_offset(self.raw, offset)
+            (self.device.api.curand.curandSetGeneratorOffset)(self.raw, offset)
+                .result()
                 .map_err(|error| Error::CudaUnavailable(format!("cuRAND set offset: {error:?}")))
         }
     }
@@ -717,7 +780,8 @@ impl CurandHandle {
         let _context = self.device.make_current()?;
         // SAFETY: `raw` is exclusively owned and is a pseudo-random generator.
         unsafe {
-            cudarc::curand::result::set_seed(self.raw, seed)
+            (self.device.api.curand.curandSetPseudoRandomGeneratorSeed)(self.raw, seed)
+                .result()
                 .map_err(|error| Error::CudaUnavailable(format!("cuRAND set seed: {error:?}")))
         }
     }
@@ -742,13 +806,14 @@ impl CurandHandle {
         // SAFETY: output owns `len` writable f32 elements and the returned
         // fence prevents generator, stream, or allocation destruction.
         unsafe {
-            cudarc::curand::result::generate::normal_f32(
+            (self.device.api.curand.curandGenerateNormal)(
                 self.raw,
                 output.pointer as usize as *mut f32,
                 output.len,
                 0.0,
                 1.0,
             )
+            .result()
             .map_err(|error| {
                 Error::CudaUnavailable(format!("cuRAND normal generation: {error:?}"))
             })?;
@@ -783,8 +848,8 @@ impl Drop for CurandHandle {
         // SAFETY: the context is retained, queued work is drained first, and
         // this object exclusively owns the cuRAND generator.
         unsafe {
-            let _ = cuCtxSynchronize();
-            let _ = cudarc::curand::result::destroy_generator(self.raw);
+            let _ = (self.device.api.driver.cuCtxSynchronize)();
+            let _ = (self.device.api.curand.curandDestroyGenerator)(self.raw).result();
         }
     }
 }
@@ -816,7 +881,12 @@ impl CudaEvent {
         ensure_same_device(self.device.id(), stream.device_id())?;
         let _context = self.device.make_current()?;
         // SAFETY: event and stream are live and belong to the same context.
-        unsafe { check(cuEventRecord(self.raw, stream.raw), "cuEventRecord") }
+        unsafe {
+            check(
+                (self.device.api.driver.cuEventRecord)(self.raw, stream.raw),
+                "cuEventRecord",
+            )
+        }
     }
 
     /// Makes `stream` wait for this event without synchronizing the host.
@@ -831,7 +901,7 @@ impl CudaEvent {
         // SAFETY: event and stream are live and belong to the same context.
         unsafe {
             check(
-                cuStreamWaitEvent(stream.raw, self.raw, 0),
+                (self.device.api.driver.cuStreamWaitEvent)(stream.raw, self.raw, 0),
                 "cuStreamWaitEvent",
             )
         }
@@ -843,7 +913,12 @@ impl CudaEvent {
         })?;
         let _context = self.device.make_current()?;
         // SAFETY: raw is owned by this object and remains valid for the call.
-        unsafe { check(cuEventSynchronize(self.raw), "cuEventSynchronize") }
+        unsafe {
+            check(
+                (self.device.api.driver.cuEventSynchronize)(self.raw),
+                "cuEventSynchronize",
+            )
+        }
     }
 }
 
@@ -853,8 +928,8 @@ impl Drop for CudaEvent {
         // SAFETY: this event is uniquely owned; synchronizing before destroy
         // prevents pending stream dependencies from retaining it.
         unsafe {
-            let _ = cuEventSynchronize(self.raw);
-            let _ = cuEventDestroy_v2(self.raw);
+            let _ = (self.device.api.driver.cuEventSynchronize)(self.raw);
+            let _ = (self.device.api.driver.cuEventDestroy_v2)(self.raw);
         }
     }
 }
@@ -925,7 +1000,7 @@ impl<T> DeviceBuffer<T> {
         // asynchronous lifetime is delegated to the caller.
         unsafe {
             check(
-                cuMemcpyHtoDAsync_v2(
+                (self.device.api.driver.cuMemcpyHtoDAsync_v2)(
                     self.pointer,
                     source.as_ptr().cast(),
                     std::mem::size_of_val(source),
@@ -952,7 +1027,7 @@ impl<T> DeviceBuffer<T> {
         // before return prevents the host slice from being accessed while CUDA writes it.
         unsafe {
             check(
-                cuMemcpyDtoHAsync_v2(
+                (self.device.api.driver.cuMemcpyDtoHAsync_v2)(
                     destination.as_mut_ptr().cast(),
                     self.pointer,
                     std::mem::size_of_val(destination),
@@ -979,7 +1054,7 @@ impl<T> DeviceBuffer<T> {
         // SAFETY: allocation owns at least `bytes`, and synchronization completes the write.
         unsafe {
             check(
-                cuMemsetD8Async(self.pointer, 0, bytes, stream.raw),
+                (self.device.api.driver.cuMemsetD8Async)(self.pointer, 0, bytes, stream.raw),
                 "cuMemsetD8Async",
             )?;
         }
@@ -1024,7 +1099,12 @@ impl<T> DeviceBuffer<T> {
         // context, and synchronization completes the transfer before return.
         unsafe {
             check(
-                cuMemcpyDtoDAsync_v2(target.as_raw(), source.as_raw(), bytes, stream.raw),
+                (self.device.api.driver.cuMemcpyDtoDAsync_v2)(
+                    target.as_raw(),
+                    source.as_raw(),
+                    bytes,
+                    stream.raw,
+                ),
                 "cuMemcpyDtoDAsync",
             )?;
         }
@@ -1052,7 +1132,7 @@ impl<T> DeviceBuffer<T> {
         // the write before this method returns.
         unsafe {
             check(
-                cuMemsetD8Async(target.as_raw(), 0, bytes, stream.raw),
+                (self.device.api.driver.cuMemsetD8Async)(target.as_raw(), 0, bytes, stream.raw),
                 "cuMemsetD8Async",
             )?;
         }
@@ -1066,8 +1146,8 @@ impl<T> Drop for DeviceBuffer<T> {
         // SAFETY: this allocation is uniquely owned and the retained context
         // is synchronized before its pointer is freed.
         unsafe {
-            let _ = cuCtxSynchronize();
-            let _ = cuMemFree_v2(self.pointer);
+            let _ = (self.device.api.driver.cuCtxSynchronize)();
+            let _ = (self.device.api.driver.cuMemFree_v2)(self.pointer);
         }
     }
 }
@@ -1093,7 +1173,7 @@ impl<'a, T> DeviceView<'a, T> {
         // unavailable until the transfer completes.
         unsafe {
             check(
-                cuMemcpyDtoHAsync_v2(
+                (stream.device.api.driver.cuMemcpyDtoHAsync_v2)(
                     destination.as_mut_ptr().cast(),
                     self.as_raw(),
                     std::mem::size_of_val(destination),
@@ -1157,26 +1237,56 @@ DONE:
         let mut original = ptr::null_mut();
         // SAFETY: CUDA writes the calling thread's current context to a valid
         // output pointer. The same handle is restored before this test exits.
-        unsafe { check(cuCtxGetCurrent(&mut original), "cuCtxGetCurrent").unwrap() };
+        unsafe {
+            check(
+                (device.api.driver.cuCtxGetCurrent)(&mut original),
+                "cuCtxGetCurrent",
+            )
+            .unwrap()
+        };
 
         // SAFETY: a null handle clears only this calling thread's current CUDA
         // context; `original` remains retained by its owner or the driver.
-        unsafe { check(cuCtxSetCurrent(ptr::null_mut()), "cuCtxSetCurrent").unwrap() };
+        unsafe {
+            check(
+                (device.api.driver.cuCtxSetCurrent)(ptr::null_mut()),
+                "cuCtxSetCurrent",
+            )
+            .unwrap()
+        };
         let stream = device.create_stream().unwrap();
         let mut after_create = original;
         // SAFETY: CUDA writes one context handle to the valid output pointer.
-        unsafe { check(cuCtxGetCurrent(&mut after_create), "cuCtxGetCurrent").unwrap() };
+        unsafe {
+            check(
+                (device.api.driver.cuCtxGetCurrent)(&mut after_create),
+                "cuCtxGetCurrent",
+            )
+            .unwrap()
+        };
         assert!(after_create.is_null());
 
         drop(stream);
         let mut after_drop = original;
         // SAFETY: CUDA writes one context handle to the valid output pointer.
-        unsafe { check(cuCtxGetCurrent(&mut after_drop), "cuCtxGetCurrent").unwrap() };
+        unsafe {
+            check(
+                (device.api.driver.cuCtxGetCurrent)(&mut after_drop),
+                "cuCtxGetCurrent",
+            )
+            .unwrap()
+        };
         assert!(after_drop.is_null());
 
         // SAFETY: restore the context observed at test entry for subsequent
         // tests that may execute on this worker thread.
-        unsafe { check(cuCtxSetCurrent(original), "cuCtxSetCurrent").unwrap() };
+        unsafe {
+            check(
+                (device.api.driver.cuCtxSetCurrent)(original),
+                "cuCtxSetCurrent",
+            )
+            .unwrap()
+        };
     }
 
     #[test]

@@ -1466,7 +1466,12 @@ fn add_provenance(writer: &mut ArtifactWriter, model: &Model) -> io::Result<()> 
         .insert("arch".into(), std::env::consts::ARCH.into());
     writer.manifest_mut().environment.insert(
         "runtime".into(),
-        audio2face3d::RuntimeDiscovery::discover().diagnostic(),
+        format!(
+            "{:?}",
+            audio2face3d::logging::integration::LogScope::capture()
+                .context()
+                .native_runtime_info()
+        ),
     );
     Ok(())
 }

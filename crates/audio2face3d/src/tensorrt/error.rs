@@ -2,6 +2,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum InferenceError {
+    #[error("{0}")]
+    NativeRuntime(#[from] crate::runtime::NativeRuntimeError),
     #[error("TensorRT support is unavailable")]
     Unavailable,
     #[error("invalid inference binding: {0}")]

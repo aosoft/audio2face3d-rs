@@ -20,7 +20,7 @@ use crate::cli::library::{
     EngineBuildReceipt, EnginePrecision, MODEL_PRESETS, ModelDownloadRequest,
     ModelEngineBuildRequest, ModelPreset, model_preset,
 };
-use audio2face3d::RuntimeDiscovery;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -40,6 +40,8 @@ const DEFAULT_TOKEN_ENVIRONMENT: &str = "HF_TOKEN";
     arg_required_else_help = true
 )]
 struct Cli {
+    #[command(flatten)]
+    runtime: audio2face3d::runtime::cli::PlatformArgs,
     #[command(subcommand)]
     command: Command,
 }
@@ -47,7 +49,17 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Diagnose CUDA and TensorRT runtime discovery.
-    Doctor,
+    Doctor {
+        /// Load native libraries and report actual versions.
+        #[arg(long)]
+        load: bool,
+        /// Also create a CUDA device (requires --load).
+        #[arg(long, requires = "load")]
+        device: Option<i32>,
+        /// Emit machine-readable observations and selected roots.
+        #[arg(long)]
+        json: bool,
+    },
     /// Download models and generate TensorRT engines.
     Model {
         #[command(subcommand)]
@@ -439,6 +451,7 @@ pub fn run() {
         let logger = logging::StderrLogger::from_env()?;
         let context = audio2face3d::Audio2Face3DContext::builder()
             .logger(std::sync::Arc::new(logger))
+            .native_runtime(cli.runtime.resolve()?)
             .build();
         audio2face3d::logging::integration::LogScope::new(context).in_scope(|| execute(cli))
     })();
@@ -450,11 +463,51 @@ pub fn run() {
 
 fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
-        Command::Doctor => {
-            let runtime = RuntimeDiscovery::discover();
-            println!("{}", runtime.diagnostic());
-            if !runtime.is_ready() {
-                std::process::exit(2);
+        Command::Doctor { load, device, json } => {
+            let scope = audio2face3d::logging::integration::LogScope::capture();
+            let context = scope.context();
+            let discovered = context.native_runtime().discover()?;
+            let info = if load {
+                #[cfg(feature = "cuda")]
+                {
+                    let mut info = context.initialize_native()?;
+                    if let Some(ordinal) = device {
+                        let _device = audio2face3d::cuda::GpuDevice::new_with_context(
+                            ordinal,
+                            context.clone(),
+                        )?;
+                        info = context.native_runtime_info().unwrap();
+                    }
+                    info
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    let _ = device;
+                    return Err("doctor --load requires the cuda/native feature".into());
+                }
+            } else {
+                discovered
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"state":format!("{:?}",info.state()),"cuda_root":context.native_runtime().cuda_root(),"tensorrt_root":context.native_runtime().tensorrt_root(),"libraries":info.libraries().iter().map(|library|serde_json::json!({"name":library.name(),"path":library.path(),"build_version":library.build_version().map(|v|v.to_string()),"runtime_version":library.runtime_version().map(|v|v.to_string())})).collect::<Vec<_>>() })
+                );
+                return Ok(());
+            }
+            println!("state: {:?}", info.state());
+            for library in info.libraries() {
+                println!(
+                    "{}: {} (build: {}, runtime: {})",
+                    library.name(),
+                    library.path().display(),
+                    library
+                        .build_version()
+                        .map_or_else(|| "unknown".into(), |v| v.to_string()),
+                    library
+                        .runtime_version()
+                        .map_or_else(|| "not loaded".into(), |v| v.to_string())
+                );
             }
         }
         Command::Model { command } => run_model(command)?,

@@ -19,10 +19,10 @@ use audio2face3d::audio2emotion::post_process::{
 };
 
 async fn run(parameters: PostProcessEmotionExecutorCreationParameters) -> audio2face3d::Result<()> {
-let mut executor = PostProcessEmotionExecutorFactory::load(parameters).await?;
-let mut callback = |_result| std::ops::ControlFlow::Continue(());
-executor.execute(&mut callback)?.await?;
-Ok(())
+    let mut executor = PostProcessEmotionExecutorFactory::load(parameters).await?;
+    let mut callback = |_result| std::ops::ControlFlow::Continue(());
+    executor.execute(&mut callback)?.await?;
+    Ok(())
 }
 ```
 
@@ -73,10 +73,10 @@ use audio2face3d::audio2face::regression::{
 async fn run(
     parameters: RegressionGeometryInteractiveExecutorCreationParameters,
 ) -> audio2face3d::Result<()> {
-let mut executor = RegressionGeometryInteractiveExecutorFactory::load(parameters).await?;
-let mut callback = |_result| std::ops::ControlFlow::Continue(());
-executor.compute_frame(0, &mut callback).await?;
-Ok(())
+    let mut executor = RegressionGeometryInteractiveExecutorFactory::load(parameters).await?;
+    let mut callback = |_result| std::ops::ControlFlow::Continue(());
+    executor.compute_frame(0, &mut callback).await?;
+    Ok(())
 }
 ```
 

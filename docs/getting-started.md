@@ -6,7 +6,7 @@ Run these commands from the workspace root. Native inference requires separately
 
 ## Install from this checkout
 
-The packages are not yet published to crates.io. After preparing the native SDK environment below, install the executables from source:
+The packages are not yet published to crates.io. After configuring the SDK locations below, install the executables from source:
 
 ```powershell
 cargo install --path crates/audio2face3d --locked --features cli,native
@@ -24,27 +24,16 @@ shim and CUDA compilation. On Windows, install the MSVC C++ build tools;
 the Visual Studio IDE itself is not required. The default portable features
 do not compile the CUDA kernels or TensorRT shim.
 
-On Windows, set `CUDA_PATH` and `TENSORRT_ROOT_DIR`, then add their `bin` directories to `PATH`:
+Optionally configure both build and runtime with one `platform.toml`. Without a selected or discovered file, the existing SDK environment variables and runtime search paths remain available. See [platform configuration](platform.md) for the complete file format, search precedence, and library embedding.
+
+For example, after preparing the file described there:
 
 ```powershell
-$env:CUDA_PATH = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9'
-$env:TENSORRT_ROOT_DIR = 'C:\SDK\TensorRT-10.16.1.11'
-$env:PATH = "$env:CUDA_PATH\bin;$env:TENSORRT_ROOT_DIR\bin;$env:PATH"
+cargo run -p audio2face3d --features cli -- --platform-config platform.toml doctor
+cargo run -p audio2face3d --features cli,native -- --platform-config platform.toml doctor --load --device 0
 ```
 
-On Linux, set the roots and loader path:
-
-```sh
-export CUDA_PATH=/usr/local/cuda-12.9
-export TENSORRT_ROOT_DIR=/opt/TensorRT-10.16.1.11
-export LD_LIBRARY_PATH="$CUDA_PATH/lib64:$TENSORRT_ROOT_DIR/lib:$LD_LIBRARY_PATH"
-```
-
-Check runtime discovery before loading a model:
-
-```sh
-cargo run -p audio2face3d --features cli -- doctor
-```
+The samples below automatically read `platform.toml` from this checkout; add `--platform-config platform.toml` after Cargo's `--` separator to select another runtime file with any command. Runtime minor differences warn, major differences fail, and patch/build differences are allowed. Required API or engine incompatibilities still fail.
 
 The model tool uses `clap` for argument parsing. Top-level help, command-specific options, accepted values, defaults, and the package version are available directly from the CLI:
 
@@ -60,8 +49,21 @@ First obtain access on the official Hugging Face model page, then configure
 your own access token. Downloads are explicit and never happen from `build.rs`
 or model loading:
 
+PowerShell:
+
+```powershell
+$env:HF_TOKEN = '...'
+```
+
+Bash/sh:
+
 ```sh
-export HF_TOKEN=...
+export HF_TOKEN='...'
+```
+
+Then list and download models:
+
+```sh
 cargo run -p audio2face3d --features cli -- model list
 cargo run -p audio2face3d --features cli -- model download mark
 cargo run -p audio2face3d --features cli -- model download all
@@ -121,7 +123,7 @@ cargo run -p audio2face3d --features cli -- model prepare mark --precision=fp16
 cargo run -p audio2face3d --features cli -- model prepare all --device=0
 ```
 
-Engine generation can take several minutes per model. `trtexec` output is streamed to the console. Set an explicit executable when it is not on `PATH`:
+Engine generation can take several minutes per model. `trtexec` output is streamed to the console. It is found under the configured TensorRT location; its child process receives the selected SDK search paths. An optional explicit executable override is also available:
 
 ```powershell
 $env:TRTEXEC = 'C:\SDK\TensorRT-10.16.1.11\bin\trtexec.exe'

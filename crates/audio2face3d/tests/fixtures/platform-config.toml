@@ -1,0 +1,11 @@
+cuda-root = 'shared/cuda'
+tensorrt-root = 'shared/trt'
+
+[build]
+cuda-root = 'build/cuda'
+cuda-host-compiler = 'build/compiler'
+
+[runtime]
+cuda-library-dirs = ['deploy/cuda']
+tensorrt-root = 'deploy/trt'
+search-policy = 'explicit'

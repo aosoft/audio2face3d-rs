@@ -116,6 +116,8 @@ dependencies = [
  "clap",
  "cudarc",
  "hf-hub",
+ "libc",
+ "libloading",
  "prost",
  "prost-types",
  "protoc-bin-vendored",
@@ -125,12 +127,14 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "toml",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
  "trybuild",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

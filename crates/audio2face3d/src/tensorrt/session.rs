@@ -76,6 +76,7 @@ impl<'a> DeviceBindings<'a> {
 }
 
 pub struct TensorRtSession {
+    _native: Arc<super::api::NativeApi>,
     scope: crate::logging::integration::LogScope,
     handle: NonNull<ffi::TrtSessionHandle>,
     device: Arc<GpuDevice>,
@@ -113,6 +114,11 @@ pub struct EngineEnvironment {
 
 impl TensorRtSession {
     pub fn load(device: Arc<GpuDevice>, engine: &Path) -> Result<Self, InferenceError> {
+        let mut scope = crate::logging::integration::LogScope::capture();
+        if scope.context().is_legacy() {
+            scope = crate::logging::integration::LogScope::new(device.runtime_context().clone());
+        }
+        let native = super::api::NativeApi::initialize(scope.context())?;
         let _context = device.make_current().map_err(InferenceError::Cuda)?;
         let path = CString::new(engine.to_string_lossy().as_bytes())
             .map_err(|_| InferenceError::InvalidBinding("engine path contains NUL".into()))?;
@@ -127,9 +133,14 @@ impl TensorRtSession {
             )
         };
         let handle = NonNull::new(raw).ok_or_else(|| native_error("create", &error))?;
-        match read_metadata(handle) {
+        match native
+            .validate()
+            .map_err(InferenceError::from)
+            .and_then(|()| read_metadata(handle))
+        {
             Ok((schema, profile_count)) => Ok(Self {
-                scope: crate::logging::integration::LogScope::capture(),
+                scope,
+                _native: native,
                 handle,
                 device,
                 schema,
@@ -142,6 +153,9 @@ impl TensorRtSession {
                 Err(cause)
             }
         }
+    }
+    pub fn native_runtime_info(&self) -> &crate::runtime::NativeRuntimeInfo {
+        &self._native.info
     }
     pub fn metadata(&self) -> &BindingSchema {
         let _scope = self.scope.activate();

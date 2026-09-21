@@ -15,6 +15,18 @@
 #include <vector>
 
 namespace {
+struct NativeApi {
+    decltype(&::cudaSetDevice) p_cudaSetDevice{};
+    decltype(&::cudaGetDevice) p_cudaGetDevice{};
+    decltype(&::cudaPeekAtLastError) p_cudaPeekAtLastError{};
+    decltype(&::cudaGetErrorString) p_cudaGetErrorString{};
+    decltype(&::cudaRuntimeGetVersion) p_cudaRuntimeGetVersion{};
+    decltype(&::cudaDriverGetVersion) p_cudaDriverGetVersion{};
+    decltype(&::cudaGetDeviceProperties) p_cudaGetDeviceProperties{};
+    decltype(&::createInferRuntime_INTERNAL) create_runtime{};
+    decltype(&::getInferLibVersion) infer_version{};
+};
+NativeApi native_api;
 class Logger final : public nvinfer1::ILogger {
 public:
     struct Entry { int32_t severity; std::string message; };
@@ -151,9 +163,9 @@ void error_text(char* dst, size_t cap, const std::string& message) noexcept {
     dst[n] = 0;
 }
 std::string cuda_suffix() {
-    const cudaError_t status = cudaPeekAtLastError();
+    const cudaError_t status = native_api.p_cudaPeekAtLastError();
     if (status == cudaSuccess) return {};
-    return std::string("; CUDA: ") + cudaGetErrorString(status);
+    return std::string("; CUDA: ") + native_api.p_cudaGetErrorString(status);
 }
 std::string native_error(const char* operation) {
     return std::string(operation) + " failed" + cuda_suffix();
@@ -195,26 +207,57 @@ namespace {
 void ensure_device(const trt_shim_handle* handle) {
     if (!handle) throw std::runtime_error("TensorRT handle is null");
     int32_t current = -1;
-    const cudaError_t status = cudaGetDevice(&current);
+    const cudaError_t status = native_api.p_cudaGetDevice(&current);
     if (status != cudaSuccess)
-        throw std::runtime_error(std::string("cudaGetDevice failed: ") + cudaGetErrorString(status));
+        throw std::runtime_error(std::string("cudaGetDevice failed: ") + native_api.p_cudaGetErrorString(status));
     if (current != handle->device_id)
         throw std::runtime_error("current CUDA device does not match TensorRT session device");
 }
 } // namespace
 
+extern "C" int32_t trt_shim_initialize(trt_shim_resolve resolve, void* user, int32_t* trt_version, int32_t* cuda_version, char* error, size_t capacity) {
+    try {
+        if (!resolve || !trt_version || !cuda_version) throw std::runtime_error("invalid native initialization arguments");
+        NativeApi api;
+        api.p_cudaSetDevice = reinterpret_cast<decltype(api.p_cudaSetDevice)>(resolve(user, 0, "cudaSetDevice"));
+        if (!api.p_cudaSetDevice) throw std::runtime_error("missing cudaSetDevice");
+        api.p_cudaGetDevice = reinterpret_cast<decltype(api.p_cudaGetDevice)>(resolve(user, 0, "cudaGetDevice"));
+        if (!api.p_cudaGetDevice) throw std::runtime_error("missing cudaGetDevice");
+        api.p_cudaPeekAtLastError = reinterpret_cast<decltype(api.p_cudaPeekAtLastError)>(resolve(user, 0, "cudaPeekAtLastError"));
+        if (!api.p_cudaPeekAtLastError) throw std::runtime_error("missing cudaPeekAtLastError");
+        api.p_cudaGetErrorString = reinterpret_cast<decltype(api.p_cudaGetErrorString)>(resolve(user, 0, "cudaGetErrorString"));
+        if (!api.p_cudaGetErrorString) throw std::runtime_error("missing cudaGetErrorString");
+        api.p_cudaRuntimeGetVersion = reinterpret_cast<decltype(api.p_cudaRuntimeGetVersion)>(resolve(user, 0, "cudaRuntimeGetVersion"));
+        if (!api.p_cudaRuntimeGetVersion) throw std::runtime_error("missing cudaRuntimeGetVersion");
+        api.p_cudaDriverGetVersion = reinterpret_cast<decltype(api.p_cudaDriverGetVersion)>(resolve(user, 0, "cudaDriverGetVersion"));
+        if (!api.p_cudaDriverGetVersion) throw std::runtime_error("missing cudaDriverGetVersion");
+        api.p_cudaGetDeviceProperties = reinterpret_cast<decltype(api.p_cudaGetDeviceProperties)>(resolve(user, 0, "cudaGetDeviceProperties_v2"));
+        if (!api.p_cudaGetDeviceProperties) throw std::runtime_error("missing cudaGetDeviceProperties");
+        api.create_runtime = reinterpret_cast<decltype(api.create_runtime)>(resolve(user, 1, "createInferRuntime_INTERNAL"));
+        api.infer_version = reinterpret_cast<decltype(api.infer_version)>(resolve(user, 1, "getInferLibVersion"));
+        if (!api.create_runtime || !api.infer_version) throw std::runtime_error("missing TensorRT entry point");
+        *trt_version = api.infer_version();
+        if (api.p_cudaRuntimeGetVersion(cuda_version) != cudaSuccess) throw std::runtime_error("cudaRuntimeGetVersion failed");
+        native_api = api;
+        return 1;
+    } catch (const std::exception& e) { error_text(error, capacity, e.what()); }
+      catch (...) { error_text(error, capacity, "unknown native initialization error"); }
+    return 0;
+}
+
 extern "C" trt_shim_handle* trt_shim_create(const char* path, int32_t device_id,
     char* error, size_t error_capacity) {
     try {
+        if (!native_api.create_runtime) throw std::runtime_error("native API is not initialized");
         if (!path || !*path) throw std::runtime_error("engine_path is null or empty");
-        const cudaError_t cuda_status = cudaSetDevice(device_id);
+        const cudaError_t cuda_status = native_api.p_cudaSetDevice(device_id);
         if (cuda_status != cudaSuccess)
-            throw std::runtime_error(std::string("cudaSetDevice failed: ") + cudaGetErrorString(cuda_status));
+            throw std::runtime_error(std::string("cudaSetDevice failed: ") + native_api.p_cudaGetErrorString(cuda_status));
         auto handle = std::make_unique<trt_shim_handle>();
         handle->device_id = device_id;
         handle->error_recorder.set_logger(&handle->logger);
         const auto bytes = read_engine(path);
-        handle->runtime.reset(nvinfer1::createInferRuntime(shared_logger()));
+        handle->runtime.reset(static_cast<nvinfer1::IRuntime*>(native_api.create_runtime(&shared_logger(), NV_TENSORRT_VERSION)));
         if (!handle->runtime) throw std::runtime_error(native_error("createInferRuntime"));
         handle->runtime->setErrorRecorder(&handle->error_recorder);
         handle->engine.reset(handle->runtime->deserializeCudaEngine(bytes.data(), bytes.size()));
@@ -243,13 +286,14 @@ extern "C" int32_t trt_shim_environment(const trt_shim_handle* h,
         if (!info) throw std::runtime_error("environment info pointer is null");
         cudaDeviceProp properties{};
         int32_t runtime_version = 0, driver_version = 0;
-        if (cudaRuntimeGetVersion(&runtime_version) != cudaSuccess)
+        if (native_api.p_cudaRuntimeGetVersion(&runtime_version) != cudaSuccess)
             throw std::runtime_error(native_error("cudaRuntimeGetVersion"));
-        if (cudaDriverGetVersion(&driver_version) != cudaSuccess)
+        if (native_api.p_cudaDriverGetVersion(&driver_version) != cudaSuccess)
             throw std::runtime_error(native_error("cudaDriverGetVersion"));
-        if (cudaGetDeviceProperties(&properties, h->device_id) != cudaSuccess)
+        if (native_api.p_cudaGetDeviceProperties(&properties, h->device_id) != cudaSuccess)
             throw std::runtime_error(native_error("cudaGetDeviceProperties"));
-        *info = {NV_TENSORRT_MAJOR, NV_TENSORRT_MINOR, NV_TENSORRT_PATCH,
+        const int32_t trt_version = native_api.infer_version();
+        *info = {trt_version / 10000, (trt_version / 100) % 100, trt_version % 100,
             runtime_version, driver_version, properties.major, properties.minor};
         const size_t n = std::strlen(properties.name);
         if (required) *required = n + 1;
