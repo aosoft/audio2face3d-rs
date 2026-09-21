@@ -42,6 +42,7 @@ cargo run -p audio2face3d-server --features cli -- --platform-config platform.to
 | [Platform configuration](docs/platform.md) | Build/runtime path selection, diagnostics, version policy, loader lifetime |
 | [Packages and features](docs/features.md) | Package boundaries, feature selection, SDK module mapping |
 | [Client library](docs/library.md) | Configuration builders, direct/remote execution, authentication, shared context and logging |
+| [Logging](docs/logging.md) | Lazy structured records, CLI JSONL output, tracing boundaries and shutdown |
 | [Low-level runtime APIs](docs/runtime-api.md) | Executor composition, callbacks, interactive execution, safety contracts |
 | [gRPC server](crates/audio2face3d-server/README.md) | Server CLI, embedding, authentication, health and streaming contracts |
 | [Development and validation](docs/development.md) | Supported environments, test tiers, benchmarks |
