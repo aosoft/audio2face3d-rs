@@ -1,3 +1,4 @@
+mod worker;
 use audio2face3d::logging::{LogLevel, LogRecord, LogValue, Logger};
 use clap::{Args, ValueEnum};
 use std::{
@@ -17,6 +18,13 @@ pub enum Format {
 }
 #[derive(Clone, Debug, Default, Args)]
 pub struct LogArgs {
+    /// JSONL queue capacity. Each record is limited to 64 KiB of owned payload.
+    #[arg(long, global = true, default_value = "1024", value_parser = clap::value_parser!(u16).range(1..))]
+    pub log_queue_capacity: u16,
+    /// JSONL full queue behavior; drop reports losses, wait blocks the producer.
+    #[arg(long, global = true, value_enum, default_value = "drop")]
+    pub log_overflow: worker::Overflow,
+
     /// Text forwards application logs to tracing; json records typed application JSONL.
     #[arg(long, global = true, value_enum, default_value = "text")]
     pub log_format: Format,
@@ -158,6 +166,7 @@ fn json_line(level: LogLevel, record: LogRecord, received: SystemTime) -> io::Re
     Ok(bytes)
 }
 struct OutputLogger {
+    sender: Option<worker::Sender>,
     filter: Filter,
     format: Format,
     writer: SharedWriter,
@@ -176,6 +185,10 @@ impl Logger for OutputLogger {
             })
             .unwrap_or("");
         if !self.filter.accepts(level, source) {
+            return;
+        }
+        if let Some(sender) = &self.sender {
+            sender.send(level, record);
             return;
         }
         if self.format == Format::Json {
@@ -204,6 +217,7 @@ impl Logger for OutputLogger {
     }
 }
 pub struct Logging {
+    worker: Mutex<Option<worker::Worker>>,
     pub logger: Arc<dyn Logger>,
     writer: SharedWriter,
 }
@@ -236,8 +250,20 @@ impl Logging {
             }));
         // Only the executable configures the process subscriber, never Logger or library code.
         tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer))?;
+        let worker = if args.log_format == Format::Json {
+            Some(worker::Worker::start(
+                writer.clone(),
+                usize::from(args.log_queue_capacity),
+                args.log_overflow,
+            )?)
+        } else {
+            None
+        };
+        let sender = worker.as_ref().map(worker::Worker::sender);
         Ok(Self {
+            worker: Mutex::new(worker),
             logger: Arc::new(OutputLogger {
+                sender,
                 filter,
                 format: args.log_format,
                 writer: writer.clone(),
@@ -246,6 +272,13 @@ impl Logging {
         })
     }
     pub fn finish(&self) -> io::Result<()> {
+        if let Some(mut worker) = self.worker.lock().unwrap().take() {
+            let dropped = worker.finish(std::time::Duration::from_secs(5))?;
+            if dropped > 0 {
+                eprintln!("logging: dropped {dropped} records (queue full, oversized, or closed)");
+            }
+            return Ok(());
+        }
         self.writer.clone().flush()?;
         if let Some(error) = &self.writer.0.lock().unwrap().error {
             return Err(io::Error::other(error.clone()));
@@ -314,6 +347,7 @@ mod output_tests {
             error: None,
         })));
         let logger = Arc::new(OutputLogger {
+            sender: None,
             filter: Filter::parse("trace").unwrap(),
             format: Format::Json,
             writer: writer.clone(),
@@ -329,7 +363,11 @@ mod output_tests {
                 .unwrap()
                 .contains("write failure")
         );
-        let logging = Logging { logger, writer };
+        let logging = Logging {
+            logger,
+            writer,
+            worker: Mutex::new(None),
+        };
         assert!(logging.finish().is_err());
     }
     #[test]
@@ -337,5 +375,15 @@ mod output_tests {
         let bytes = json_line(LogLevel::Error, LogRecord::new("empty"), UNIX_EPOCH).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["fields"], serde_json::json!({}));
+    }
+}
+
+impl Drop for Logging {
+    fn drop(&mut self) {
+        if self.worker.get_mut().unwrap().is_some()
+            && let Err(error) = self.finish()
+        {
+            eprintln!("logging shutdown: {error}");
+        }
     }
 }
