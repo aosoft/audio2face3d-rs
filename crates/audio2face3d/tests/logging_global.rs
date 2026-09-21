@@ -1,4 +1,3 @@
-#![cfg(feature = "tracing")]
 use audio2face3d::{
     Audio2Face3DContext,
     logging::{LogLevel, Logger, integration::LogScope},

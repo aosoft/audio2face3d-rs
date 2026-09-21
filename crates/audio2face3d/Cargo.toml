@@ -17,18 +17,17 @@ all-features = false
 default-features = true
 
 [features]
-tracing = ["dep:tracing", "dep:tracing-subscriber"]
 default = []
-animation = ["dep:thiserror", "tracing", "dep:serde", "dep:serde_json", "dep:zip"]
+animation = ["dep:thiserror", "dep:serde", "dep:serde_json", "dep:zip"]
 emotion = ["animation"]
 cuda = ["animation", "dep:cudarc", "dep:cc", "dep:toml", "dep:libloading", "dep:windows-sys", "dep:libc"]
 tensorrt = ["cuda"]
-mock = ["tracing"]
+mock = []
 native = ["animation", "emotion", "tensorrt"]
-client-grpc = ["tracing", "dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tokio", "dep:tokio-stream", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
-grpc-server = ["tracing", "dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
-runtime-cli = ["dep:clap", "dep:toml", "dep:libloading", "dep:windows-sys", "dep:libc"]
-cli = ["runtime-cli", "dep:clap", "dep:hf-hub", "dep:sha2", "dep:thiserror", "dep:serde", "dep:serde_json", "tracing", "dep:zip"]
+client-grpc = ["dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tokio", "dep:tokio-stream", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
+grpc-server = ["dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
+runtime-cli = [ "dep:clap", "dep:toml", "dep:libloading", "dep:windows-sys", "dep:libc"]
+cli = ["dep:tracing", "dep:tracing-subscriber", "runtime-cli", "dep:clap", "dep:hf-hub", "dep:sha2", "dep:thiserror", "dep:serde", "dep:serde_json", "dep:zip"]
 [dependencies]
 toml = { version = "1.1", optional = true, default-features = false, features = ["parse", "std", "serde"] }
 libloading = { version = "0.9", optional = true }
@@ -62,6 +61,8 @@ cc = { version = "1.2", optional = true }
 tonic-prost-build = { version = "=0.14.6", optional = true }
 protoc-bin-vendored = { version = "=3.2.0", optional = true }
 [dev-dependencies]
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 libloading = "0.9"
 toml = { version = "1.1", default-features = false, features = ["parse", "std", "serde"] }
 tokio = { version = "1.53.1", features = ["macros", "rt", "rt-multi-thread"] }
@@ -76,3 +77,4 @@ workspace = true
 [[example]]
 name = "stream"
 required-features = ["mock"]
+
