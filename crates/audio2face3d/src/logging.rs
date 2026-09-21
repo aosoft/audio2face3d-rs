@@ -114,3 +114,11 @@ impl Logger for NoopLogger {
 }
 pub mod integration;
 mod scope;
+
+#[cfg(any(
+    feature = "mock",
+    feature = "native",
+    feature = "client-grpc",
+    feature = "grpc-server"
+))]
+pub(crate) mod operation;

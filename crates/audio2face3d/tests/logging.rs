@@ -188,7 +188,7 @@ fn direct_and_factory_keep_logger_after_initialization() {
             .lock()
             .unwrap()
             .iter()
-            .any(|(_, m)| m.contains("inference prepared"))
+            .any(|(_, m)| m.contains("inference preparation finished"))
     );
     assert!(
         b.lines
@@ -374,4 +374,30 @@ fn native_noop_client_completes_without_tokio() {
     support::wait(control.closed()).unwrap();
     support::wait(client.shutdown()).unwrap();
     assert!(curves > 0 && completed);
+}
+
+#[cfg(feature = "client-grpc")]
+#[tokio::test]
+async fn refused_connection_emits_one_categorized_terminal_record() {
+    use audio2face3d::client::{Client, ServerConfig};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let sink = Arc::new(Sink::default());
+    let result = Client::server_with_context(
+        ServerConfig::builder(format!("http://{addr}"))
+            .connect_timeout(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap(),
+        context(sink.clone()),
+    )
+    .await;
+    assert!(result.is_err());
+    let lines = sink.lines.lock().unwrap();
+    let terminal: Vec<_> = lines
+        .iter()
+        .filter(|(_, m)| m == "remote connection finished")
+        .collect();
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].0, LogLevel::Warn);
 }

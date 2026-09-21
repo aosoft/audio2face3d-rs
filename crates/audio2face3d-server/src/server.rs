@@ -45,6 +45,43 @@ async fn run<A: Authenticator>(
     shutdown: CancellationToken,
     sender: tokio::sync::oneshot::Sender<lifecycle::Overdue>,
 ) -> Result<ShutdownReport, ServerError> {
+    let started = std::time::Instant::now();
+    let result = run_inner(
+        config,
+        authenticator,
+        health_auth,
+        listener,
+        shutdown,
+        sender,
+    )
+    .await;
+    if let Err(error) = &result {
+        audio2face3d::logging::integration::log(audio2face3d::logging::LogLevel::Error, || {
+            let stage = match error {
+                ServerError::Config(_) => "configuration",
+                ServerError::Prepare(_) => "prepare",
+                ServerError::Transport(_) => "transport",
+                ServerError::Io(_) => "io",
+                ServerError::Cleanup(_) => "cleanup",
+                ServerError::ShutdownTimeout { .. } => "shutdown",
+                ServerError::SupervisorStopped => "supervisor",
+            };
+            audio2face3d::logging::LogRecord::new("server stopped with error")
+                .field("source", module_path!())
+                .field("stage", stage)
+                .field("elapsed_us", started.elapsed().as_micros() as u64)
+        });
+    }
+    result
+}
+async fn run_inner<A: Authenticator>(
+    config: Config,
+    authenticator: Option<Arc<A>>,
+    health_auth: HealthAuth,
+    listener: TcpListener,
+    shutdown: CancellationToken,
+    sender: tokio::sync::oneshot::Sender<lifecycle::Overdue>,
+) -> Result<ShutdownReport, ServerError> {
     let mut sender = Some(sender);
     let timeout = Duration::from_millis(config.shutdown_timeout_ms);
     let prepared = crate::backend::Factory::prepare(&config);

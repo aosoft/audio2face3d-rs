@@ -97,10 +97,17 @@ impl Driver for Direct {
         let factory = self.factory.clone();
         self.executor.spawn(async move {
             let (mut reader, mut writer, guard) = session.split();
+            let mut observation = crate::logging::operation::Operation::new(
+                "direct inference request finished",
+                module_path!(),
+            );
+            observation.stage = "admission";
             let work = async {
                 let permit = interrupt(admission, &guard, &cancellation).await?;
                 // Loading cannot be abandoned: its owner must complete native cleanup.
+                observation.stage = "backend_start";
                 let mut backend = factory.start(options).await?;
+                observation.stage = "streaming";
                 let result = run(
                     &mut reader,
                     &mut writer,
@@ -109,15 +116,23 @@ impl Driver for Direct {
                     backend.as_mut(),
                 )
                 .await;
+
                 if let Err(e) = &result {
                     guard.fail(e.clone());
                 }
+                let failed_stage = observation.stage;
+                observation.stage = "cleanup";
                 let cleanup = backend.close().await;
+                observation.cleanup_failed = cleanup.is_err();
+                if result.is_err() && cleanup.is_ok() {
+                    observation.stage = failed_stage;
+                }
                 drop(backend);
                 drop(permit);
                 result.and(cleanup)
             }
             .await;
+            observation.finish(&work);
             guard.finish(work);
         })
     }

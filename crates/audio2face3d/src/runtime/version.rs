@@ -79,8 +79,10 @@ pub(crate) fn verify(
         )),
         VersionCompatibility::MinorMismatch => {
             context.logger().log(LogLevel::Warn, || {
-                format!("{name} minor mismatch: built with {build}, loaded {runtime}; continuing")
-                    .into()
+                crate::logging::LogRecord::new(format!(
+                    "{name} minor mismatch: built with {build}, loaded {runtime}; continuing"
+                ))
+                .field("source", module_path!())
             });
             Ok(())
         }

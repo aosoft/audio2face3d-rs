@@ -103,51 +103,55 @@ struct Server {
 }
 impl Client {
     async fn server_inner(mut config: ServerConfig) -> Result<Self> {
-        crate::logging::integration::log(crate::logging::LogLevel::Info, || {
-            crate::logging::LogRecord::new("connecting remote inference client")
-                .field("source", module_path!())
-        });
-        config.validate()?;
-        let authorization = authorization(config.api_key.take().as_deref())?;
-        let handle = config
-            .runtime
-            .or_else(|| Handle::try_current().ok())
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::RuntimeUnavailable,
-                    "server mode requires a driven Tokio runtime with I/O and time enabled",
-                )
-            })?;
-        let selected = handle.clone();
-        handle
-            .spawn(LogScope::capture().wrap_future(async move {
-                let endpoint = Endpoint::from_shared(config.endpoint)
-                    .map_err(|e| Error::invalid(e.to_string()))?
-                    .connect_timeout(config.connect_timeout)
-                    .buffer_size(config.limits.max_requests)
-                    .initial_stream_window_size(config.http2_window_bytes)
-                    .initial_connection_window_size(config.http2_window_bytes)
-                    .http2_adaptive_window(false);
-                let channel = endpoint
-                    .connect()
-                    .await
-                    .map_err(|e| Error::new(ErrorKind::Transport, e.to_string()))?;
-                crate::logging::integration::log(crate::logging::LogLevel::Info, || {
-                    crate::logging::LogRecord::new("remote inference client connected")
-                        .field("source", module_path!())
-                });
-                Self::with_driver(
-                    config.limits,
-                    Arc::new(Server {
-                        handle: selected,
-                        channel: Mutex::new(Some(channel)),
-                        authorization,
-                        max_message_bytes: config.max_message_bytes,
-                    }),
-                )
-            }))
-            .await
-            .map_err(|e| Error::new(ErrorKind::RuntimeUnavailable, e.to_string()))?
+        let mut observation =
+            crate::logging::operation::Operation::new("remote connection finished", module_path!());
+        let result = async {
+            crate::logging::integration::log(crate::logging::LogLevel::Info, || {
+                crate::logging::LogRecord::new("connecting remote inference client")
+                    .field("source", module_path!())
+            });
+            config.validate()?;
+            let authorization = authorization(config.api_key.take().as_deref())?;
+            let handle = config
+                .runtime
+                .or_else(|| Handle::try_current().ok())
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::RuntimeUnavailable,
+                        "server mode requires a driven Tokio runtime with I/O and time enabled",
+                    )
+                })?;
+            observation.stage = "connect";
+            let selected = handle.clone();
+            handle
+                .spawn(LogScope::capture().wrap_future(async move {
+                    let endpoint = Endpoint::from_shared(config.endpoint)
+                        .map_err(|e| Error::invalid(e.to_string()))?
+                        .connect_timeout(config.connect_timeout)
+                        .buffer_size(config.limits.max_requests)
+                        .initial_stream_window_size(config.http2_window_bytes)
+                        .initial_connection_window_size(config.http2_window_bytes)
+                        .http2_adaptive_window(false);
+                    let channel = endpoint
+                        .connect()
+                        .await
+                        .map_err(|e| Error::new(ErrorKind::Transport, e.to_string()))?;
+                    Self::with_driver(
+                        config.limits,
+                        Arc::new(Server {
+                            handle: selected,
+                            channel: Mutex::new(Some(channel)),
+                            authorization,
+                            max_message_bytes: config.max_message_bytes,
+                        }),
+                    )
+                }))
+                .await
+                .map_err(|e| Error::new(ErrorKind::RuntimeUnavailable, e.to_string()))?
+        }
+        .await;
+        observation.finish(&result);
+        result
     }
 }
 impl Driver for Server {
@@ -164,15 +168,16 @@ impl Driver for Server {
         guard.runtime_owned();
         self.handle
             .spawn(LogScope::capture().wrap_future(async move {
+                let mut observation = crate::logging::operation::Operation::new(
+                    "remote inference request finished",
+                    module_path!(),
+                );
+                observation.stage = "streaming";
                 let result = tokio::select! {biased;
                     error=guard.cancelled()=>Err(error),
                     result=run(channel,max,authorization,options,reader,&mut writer)=>result,
                 };
-                crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
-                    crate::logging::LogRecord::new("remote inference request finished")
-                        .field("source", module_path!())
-                        .field("success", result.is_ok())
-                });
+                observation.finish(&result);
                 guard.finish(result);
             }));
         Ok(())

@@ -74,3 +74,15 @@ After inference/server cleanup, the CLI closes the queue, drains pending records
 The former `write_log(LogLevel, String)` signature is replaced by `write_log(LogLevel, LogRecord)`. Change a sink to use `record.message` and `record.fields`. A message-only closure can return `LogRecord::new(message)` or `message.into()`. Closures can now move captured values because they implement `FnOnce`.
 
 The old library `tracing` feature and compatibility behavior that inherited the caller's subscriber are removed. Select `cli` for executable tracing output, or inject your own Logger into a library Context. There is no implicit subscriber installation in a Logger implementation. The executables explicitly own subscriber initialization and report initialization conflicts.
+
+## Diagnostic events and levels
+
+Each inference RPC that reaches the server handler records `received` and one terminal observation: `completed`, `cancelled`, or `failed`. The terminal record contains `rpc_id`, `outcome`, `stage`, `code`, `elapsed_us`, `input_audio_bytes`, `output_batches_enqueued`, and `cleanup_failed`. It covers metadata/authentication/header rejection, admission failures, input/output timeouts, inference failures, and dropped handler futures as well as successful workers. Transport rejection before entering the handler is outside these application diagnostics.
+
+Success and normal cancellation/shutdown are Info. Invalid input or credentials, exhausted capacity, deadlines and unavailable services are Warn. Internal faults and cleanup failures are Error. Detailed authentication outcomes, queue wait time, CUDA allocations and the first inference close attempt remain Debug. Authentication details contain the RPC method and status code, never the supplied credential. Expected shutdown is identified separately from a service outage.
+
+`input_audio_bytes` counts received audio payload, including a payload subsequently rejected by inference. `output_batches_enqueued` counts animation batches accepted by the server's output queue, not client receipt or rendered frames. `completed` is a server-side processing result, not an acknowledgment from the client. A disconnect after processing completes does not retract that result.
+
+Model preparation, remote connection, remote request and direct request boundaries also record categorized outcomes, stage and elapsed time. Cleanup stage timeout records include the stage and unfinished count while cleanup continues. Server transport/cleanup failures produce a server-level error observation. Repeated idempotent close calls do not repeat the close diagnostic.
+
+Terminal diagnostics use status/error categories rather than copying arbitrary remote error strings, authenticator errors, request metadata, or endpoint credentials. The original error is still returned through the API for caller-controlled handling. Disabled levels do not construct these messages or fields; counters and timers are lightweight operation state.

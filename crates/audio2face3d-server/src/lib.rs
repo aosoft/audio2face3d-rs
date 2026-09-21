@@ -4,6 +4,7 @@ pub mod animation;
 pub mod audio;
 pub mod backend;
 pub mod config;
+mod diagnostics;
 pub mod proto;
 pub mod server;
 mod service;

@@ -37,6 +37,8 @@ impl<A: Authenticator> AuthGate<A> {
         method: RpcMethod,
         shutdown: &CancellationToken,
     ) -> Result<Option<Principal>, Status> {
+        let started = std::time::Instant::now();
+        let result=async {
         if shutdown.is_cancelled() {
             return Err(Status::unavailable("server shutting down"));
         }
@@ -70,13 +72,25 @@ impl<A: Authenticator> AuthGate<A> {
             _ = shutdown.cancelled() => Err(Status::unavailable("server shutting down")),
             result = tokio::time::timeout(self.timeout, protected) => result.unwrap_or_else(|_| Err(Status::unavailable("authentication timed out"))),
         };
-        // Neither credentials nor application error strings are included.
-        audio2face3d::logging::integration::log(audio2face3d::logging::LogLevel::Debug, || {
+        result.map(Some)
+        }.await;
+        // Request outcome is logged at the RPC boundary; this is detailed auth diagnostics.
+        let code = result.as_ref().err().map_or(tonic::Code::Ok, Status::code);
+        let level = if matches!(method, RpcMethod::ProcessAudioStream) || result.is_ok() {
+            audio2face3d::logging::LogLevel::Debug
+        } else {
+            crate::diagnostics::classification(code).0
+        };
+        audio2face3d::logging::integration::log(level, || {
             audio2face3d::logging::LogRecord::new("authentication finished")
                 .field("source", module_path!())
+                .field("rpc_id", id.0)
+                .field("method", format!("{method:?}"))
+                .field("code", format!("{code:?}"))
                 .field("accepted", result.is_ok())
+                .field("elapsed_us", started.elapsed().as_micros() as u64)
         });
-        result.map(Some)
+        result
     }
 }
 fn status(error: AuthError) -> Status {

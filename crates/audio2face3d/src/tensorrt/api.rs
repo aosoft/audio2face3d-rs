@@ -197,7 +197,8 @@ impl NativeApi {
                 libraries,
             };
             context.logger().log(LogLevel::Debug, || {
-                format!("Native runtime initialized: {info:?}").into()
+                crate::logging::LogRecord::new(format!("Native runtime initialized: {info:?}"))
+                    .field("source", module_path!())
             });
             Ok(Self {
                 info,

@@ -321,11 +321,16 @@ impl CudaApi {
                 })
                 .collect();
             context.logger().log(LogLevel::Debug, || {
-                format!("CUDA Driver API version: {version}").into()
+                crate::logging::LogRecord::new(format!("CUDA Driver API version: {version}"))
+                    .field("source", module_path!())
             });
             for library in &api.libraries {
                 context.logger().log(LogLevel::Debug, || {
-                    format!("Loaded native library: {}", library.file.path.display()).into()
+                    crate::logging::LogRecord::new(format!(
+                        "Loaded native library: {}",
+                        library.file.path.display()
+                    ))
+                    .field("source", module_path!())
                 });
             }
             Ok(api)
