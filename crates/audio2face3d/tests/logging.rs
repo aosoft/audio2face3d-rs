@@ -22,7 +22,8 @@ impl Logger for Sink {
             _ => LogLevel::Off,
         }
     }
-    fn write_log(&self, level: LogLevel, text: String) {
+    fn write_log(&self, level: LogLevel, text: audio2face3d::logging::LogRecord) {
+        let text = text.message;
         self.lines.lock().unwrap().push((level, text));
     }
 }
@@ -54,7 +55,7 @@ fn lazy_log_contract_and_owned_message() {
     let erased: Arc<dyn Logger> = sink.clone();
     erased.log(LogLevel::Error, || {
         count.set(count.get() + 1);
-        slot.borrow_mut().take().unwrap()
+        slot.borrow_mut().take().unwrap().into()
     });
     assert_eq!(count.get(), 1);
     assert_eq!(sink.lines.lock().unwrap()[0].1.as_ptr() as usize, ptr);
@@ -163,7 +164,7 @@ mod bridge {
             fn log_level(&self) -> LogLevel {
                 LogLevel::Trace
             }
-            fn write_log(&self, _: LogLevel, _: String) {
+            fn write_log(&self, _: LogLevel, _: audio2face3d::logging::LogRecord) {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 tracing::warn!("reentrant");
             }
@@ -293,4 +294,47 @@ fn native_logger_reaches_model_worker_and_cleanup_without_tokio() {
             .iter()
             .any(|(_, m)| m.contains("release prepared inference"))
     );
+}
+
+#[test]
+fn structured_fields_are_lazy_owned_and_replace_duplicate_keys() {
+    use audio2face3d::logging::{LogRecord, LogValue, NoopLogger};
+    struct Records(Mutex<Vec<LogRecord>>);
+    impl Logger for Records {
+        fn log_level(&self) -> LogLevel {
+            LogLevel::Info
+        }
+        fn write_log(&self, _: LogLevel, record: LogRecord) {
+            self.0.lock().unwrap().push(record);
+        }
+    }
+    let sink = Arc::new(Records(Mutex::new(Vec::new())));
+    let logger: Arc<dyn Logger> = sink.clone();
+    let count = std::cell::Cell::new(0);
+    logger.log(LogLevel::Debug, || {
+        count.set(count.get() + 1);
+        LogRecord::new("hidden").field("cost", count.get() as u64)
+    });
+    NoopLogger.log(LogLevel::Error, || panic!("must not build record"));
+    assert_eq!(count.get(), 0);
+    let message = String::from("owned");
+    let pointer = message.as_ptr();
+    logger.log(LogLevel::Info, move || {
+        LogRecord::new(message)
+            .field("id", 1_u64)
+            .field("id", 2_u64)
+            .field("signed", -1_i64)
+            .field("ratio", 0.5_f64)
+            .field("ok", true)
+            .field("label", "value")
+    });
+    let records = sink.0.lock().unwrap();
+    assert_eq!(records[0].message.as_ptr(), pointer);
+    assert_eq!(records[0].fields.len(), 5);
+    assert_eq!(records[0].fields[0].1, LogValue::U64(2));
+    assert_eq!(records[0].fields[1].1, LogValue::I64(-1));
+    assert_eq!(records[0].fields[2].1, LogValue::F64(0.5));
+    assert_eq!(records[0].fields[3].1, LogValue::Bool(true));
+    assert_eq!(records[0].fields[4].1, LogValue::String("value".into()));
+    assert_eq!(LogRecord::new("empty").fields.capacity(), 0);
 }

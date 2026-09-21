@@ -74,7 +74,7 @@ impl Factory {
             .context()
             .logger()
             .log(crate::logging::LogLevel::Debug, || {
-                "audio2face3d::inference release prepared inference resources".to_owned()
+                "audio2face3d::inference release prepared inference resources".into()
             });
         #[cfg(feature = "native")]
         {

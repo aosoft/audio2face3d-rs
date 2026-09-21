@@ -12,7 +12,7 @@ impl Logger for Sink {
     fn log_level(&self) -> LogLevel {
         LogLevel::Trace
     }
-    fn write_log(&self, _: LogLevel, _: String) {
+    fn write_log(&self, _: LogLevel, _: audio2face3d::logging::LogRecord) {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }

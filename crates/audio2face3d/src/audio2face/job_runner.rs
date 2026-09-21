@@ -697,7 +697,7 @@ mod logging_tests {
         fn log_level(&self) -> LogLevel {
             LogLevel::Trace
         }
-        fn write_log(&self, _: LogLevel, _: String) {
+        fn write_log(&self, _: LogLevel, _: crate::logging::LogRecord) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }

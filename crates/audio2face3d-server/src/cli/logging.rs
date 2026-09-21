@@ -58,7 +58,8 @@ impl Logger for StderrLogger {
             .map(|(_, v)| *v)
             .fold(self.default, LogLevel::min)
     }
-    fn write_log(&self, level: LogLevel, message: String) {
+    fn write_log(&self, level: LogLevel, message: audio2face3d::logging::LogRecord) {
+        let message = message.message;
         let target = message.split_whitespace().next().unwrap_or("");
         let threshold = self
             .targets

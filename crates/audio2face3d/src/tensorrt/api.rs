@@ -197,7 +197,7 @@ impl NativeApi {
                 libraries,
             };
             context.logger().log(LogLevel::Debug, || {
-                format!("Native runtime initialized: {info:?}")
+                format!("Native runtime initialized: {info:?}").into()
             });
             Ok(Self {
                 info,

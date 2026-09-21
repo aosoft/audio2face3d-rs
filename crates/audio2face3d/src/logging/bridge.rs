@@ -136,6 +136,6 @@ where
         event.record(&mut text);
         self.context
             .logger()
-            .write_log(level(event.metadata().level()), text.value);
+            .write_log(level(event.metadata().level()), text.value.into());
     }
 }

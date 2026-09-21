@@ -186,7 +186,8 @@ fn version_fixture_uses_production_policy_and_emits_one_warning_per_initializati
         fn log_level(&self) -> LogLevel {
             LogLevel::Warn
         }
-        fn write_log(&self, level: LogLevel, message: String) {
+        fn write_log(&self, level: LogLevel, message: crate::logging::LogRecord) {
+            let message = message.message;
             assert_eq!(level, LogLevel::Warn);
             self.0.lock().unwrap().push(message);
         }

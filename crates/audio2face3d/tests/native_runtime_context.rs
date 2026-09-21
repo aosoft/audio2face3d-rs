@@ -115,7 +115,7 @@ fn real_native_logger_reentry_and_concurrent_initialization() {
         fn log_level(&self) -> LogLevel {
             LogLevel::Debug
         }
-        fn write_log(&self, _: LogLevel, _: String) {
+        fn write_log(&self, _: LogLevel, _: audio2face3d::logging::LogRecord) {
             let context = self.context.lock().unwrap().clone().unwrap();
             assert_eq!(
                 context.initialize_native().unwrap_err().kind(),
