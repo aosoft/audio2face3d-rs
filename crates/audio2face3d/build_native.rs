@@ -1,4 +1,6 @@
-//! Build-only SDK discovery. Runtime paths are configured independently.
+//! Build-time SDK discovery using the shared platform.toml format.
+#[path = "src/platform_config_file.rs"]
+mod config_file;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -32,50 +34,29 @@ fn string(table: &toml::Table, name: &str) -> Result<Option<String>, String> {
         .transpose()
 }
 pub fn parse_config(text: &str, file: &Path, tensorrt: bool) -> Result<BuildConfig, String> {
-    let table = text
-        .parse::<toml::Table>()
-        .map_err(|e| format!("{}: {e}", file.display()))?;
-    for key in table.keys() {
-        if ![
-            "schema_version",
-            "cuda_root",
-            "tensorrt_root",
-            "cuda_archs",
-            "cuda_host_compiler",
-        ]
-        .contains(&key.as_str())
-        {
-            return Err(format!("unknown native build setting: {key}"));
-        }
-    }
-    if table
-        .get("schema_version")
-        .and_then(toml::Value::as_integer)
-        != Some(1)
-    {
-        return Err("native build schema_version must be 1".into());
-    }
+    let table =
+        config_file::parse(text, "build").map_err(|e| format!("{}: {e}", file.display()))?;
     let base = file.parent().ok_or("configuration file has no parent")?;
     let cuda_root = absolute(
         base,
-        &string(&table, "cuda_root")?.ok_or("cuda_root is required")?,
+        &string(&table, "cuda-root")?.ok_or("cuda-root is required")?,
     );
-    let tensorrt_root = string(&table, "tensorrt_root")?.map(|p| absolute(base, &p));
+    let tensorrt_root = string(&table, "tensorrt-root")?.map(|p| absolute(base, &p));
     if tensorrt && tensorrt_root.is_none() {
-        return Err("tensorrt_root is required for TensorRT".into());
+        return Err("tensorrt-root is required for TensorRT".into());
     }
-    let cuda_archs = match table.get("cuda_archs") {
+    let cuda_archs = match table.get("cuda-archs") {
         None => "86".into(),
         Some(value) => {
             let values = value
                 .as_array()
-                .ok_or("cuda_archs must be an array of strings")?;
+                .ok_or("cuda-archs must be an array of strings")?;
             if values.is_empty() {
-                return Err("cuda_archs must not be empty".into());
+                return Err("cuda-archs must not be empty".into());
             }
             values
                 .iter()
-                .map(|v| v.as_str().ok_or("cuda_archs must contain strings"))
+                .map(|v| v.as_str().ok_or("cuda-archs must contain strings"))
                 .collect::<Result<Vec<_>, _>>()?
                 .join(",")
         }
@@ -84,7 +65,7 @@ pub fn parse_config(text: &str, file: &Path, tensorrt: bool) -> Result<BuildConf
         cuda_root,
         tensorrt_root,
         cuda_archs,
-        cuda_host_compiler: string(&table, "cuda_host_compiler")?.map(|p| absolute(base, &p)),
+        cuda_host_compiler: string(&table, "cuda-host-compiler")?.map(|p| absolute(base, &p)),
     })
 }
 
@@ -104,7 +85,7 @@ pub fn config_candidates(
         && root.join("crates/audio2face3d").canonicalize().ok() == Some(actual_manifest)
         && fs::read_to_string(root.join("Cargo.toml")).is_ok_and(|s| s.contains("[workspace]"))
     {
-        candidates.push(root.join("native-build.toml"));
+        candidates.push(root.join("platform.toml"));
     }
     if let Some(user) = user {
         candidates.push(user);
@@ -112,23 +93,17 @@ pub fn config_candidates(
     candidates
 }
 
-fn user_config() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let root = env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    #[cfg(not(windows))]
-    let root = env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|v| PathBuf::from(v).join(".config")));
-    root.map(|p| p.join("audio2face3d/native-build.toml"))
-}
-
-fn unique_root(label: &str, mut candidates: Vec<PathBuf>, marker: &str) -> Result<PathBuf, String> {
+pub fn first_installed_root(
+    label: &str,
+    mut candidates: Vec<PathBuf>,
+    marker: &str,
+) -> Result<PathBuf, String> {
     candidates.retain(|p| p.join(marker).is_file());
     candidates.sort();
     candidates.dedup();
-    if candidates.len() != 1 {
+    if candidates.is_empty() {
         return Err(format!(
-            "specify {label} in native-build.toml (found {} SDK candidates)",
+            "specify {label} in platform.toml (found {} SDK candidates)",
             candidates.len()
         ));
     }
@@ -150,7 +125,7 @@ fn installed_cuda() -> Result<PathBuf, String> {
             paths.extend(entries.filter_map(Result::ok).map(|e| e.path()));
         }
     }
-    unique_root("cuda_root", paths, "include/cuda.h")
+    first_installed_root("cuda-root", paths, "include/cuda.h")
 }
 fn installed_tensorrt() -> Result<PathBuf, String> {
     #[cfg(windows)]
@@ -168,7 +143,7 @@ fn installed_tensorrt() -> Result<PathBuf, String> {
         .collect();
     #[cfg(not(windows))]
     let paths = vec![PathBuf::from("/usr"), PathBuf::from("/usr/local/TensorRT")];
-    unique_root("tensorrt_root", paths, "include/NvInfer.h")
+    first_installed_root("tensorrt-root", paths, "include/NvInfer.h")
 }
 
 pub fn resolve(tensorrt: bool) -> Result<BuildConfig, String> {
@@ -178,7 +153,7 @@ pub fn resolve(tensorrt: bool) -> Result<BuildConfig, String> {
         return Err("CUDARC_CUDA_VERSION conflicts with the required cuda-12090 bindings".into());
     }
     for name in [
-        "AUDIO2FACE3D_BUILD_CONFIG",
+        "AUDIO2FACE3D_PLATFORM_CONFIG",
         "CUDA_PATH",
         "TENSORRT_ROOT_DIR",
         "AUDIO2FACE3D_CUDA_ARCHS",
@@ -193,8 +168,11 @@ pub fn resolve(tensorrt: bool) -> Result<BuildConfig, String> {
     }
     let manifest =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("missing manifest directory")?);
-    let explicit = env::var_os("AUDIO2FACE3D_BUILD_CONFIG").map(PathBuf::from);
-    let candidates = config_candidates(&manifest, user_config(), explicit.clone());
+    let explicit = env::var_os("AUDIO2FACE3D_PLATFORM_CONFIG")
+        .map(|value| env::current_dir().map(|cwd| cwd.join(value)))
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let candidates = config_candidates(&manifest, config_file::user_config(), explicit.clone());
     for path in &candidates {
         println!("cargo:rerun-if-changed={}", path.display());
     }

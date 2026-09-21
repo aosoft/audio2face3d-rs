@@ -8,6 +8,32 @@ pub(crate) enum Sdk {
     Cuda,
     TensorRt,
 }
+impl Sdk {
+    pub(crate) fn environment_variable(self) -> &'static str {
+        match self {
+            Self::Cuda => "CUDA_PATH",
+            Self::TensorRt => "TENSORRT_ROOT_DIR",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CandidateSelection {
+    Unique,
+    First,
+}
+pub(crate) fn selection(config: &NativeRuntimeConfig, sdk: Sdk) -> CandidateSelection {
+    let explicit = match sdk {
+        Sdk::Cuda => config.cuda_root().is_some() || !config.cuda_library_dirs().is_empty(),
+        Sdk::TensorRt => {
+            config.tensorrt_root().is_some() || !config.tensorrt_library_dirs().is_empty()
+        }
+    };
+    if explicit || config.search_policy() == NativeSearchPolicy::ExplicitOnly {
+        CandidateSelection::Unique
+    } else {
+        CandidateSelection::First
+    }
+}
 pub(crate) fn directories(
     config: &NativeRuntimeConfig,
     sdk: Sdk,
@@ -36,6 +62,14 @@ pub(crate) fn directories(
         return root_directories(&PathBuf::from(root));
     }
     let mut paths = Vec::new();
+    let path_variable = if cfg!(windows) {
+        "PATH"
+    } else {
+        "LD_LIBRARY_PATH"
+    };
+    if let Some(value) = std::env::var_os(path_variable) {
+        paths.extend(std::env::split_paths(&value).filter(|p| p.is_absolute() && p.is_dir()));
+    }
     #[cfg(windows)]
     if let Some(program_files) = std::env::var_os("ProgramFiles") {
         let base = match sdk {
@@ -43,7 +77,9 @@ pub(crate) fn directories(
             Sdk::TensorRt => PathBuf::from(program_files),
         };
         if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
+            let mut entries = entries.flatten().collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.path());
+            for entry in entries {
                 if matches!(sdk, Sdk::TensorRt)
                     && !entry.file_name().to_string_lossy().starts_with("TensorRT")
                 {
@@ -65,14 +101,6 @@ pub(crate) fn directories(
         .map(PathBuf::from)
         .filter(|p| p.is_dir()),
     );
-    let path_variable = if cfg!(windows) {
-        "PATH"
-    } else {
-        "LD_LIBRARY_PATH"
-    };
-    if let Some(value) = std::env::var_os(path_variable) {
-        paths.extend(std::env::split_paths(&value).filter(|p| p.is_absolute() && p.is_dir()));
-    }
     normalize(paths)
 }
 fn existing_root_directories(root: &Path) -> Vec<PathBuf> {
@@ -112,12 +140,13 @@ fn normalize(paths: impl IntoIterator<Item = PathBuf>) -> Result<Vec<PathBuf>, N
     }
     Ok(output)
 }
-/// Resolve one component without choosing a version when multiple binaries exist.
+/// Explicit locations require a unique file; discovery follows directory order.
 #[cfg(any(feature = "cuda", feature = "runtime-cli", test))]
 pub(crate) fn library(
     directories: &[PathBuf],
     prefix: &str,
     suffix: &str,
+    selection: CandidateSelection,
 ) -> Result<LibraryFile, NativeRuntimeError> {
     let mut candidates: Vec<LibraryFile> = Vec::new();
     for directory in directories {
@@ -125,11 +154,12 @@ pub(crate) fn library(
             NativeRuntimeError::new(NativeRuntimeErrorKind::LibraryNotFound, e.to_string())
                 .with_path(directory)
         })?;
+        let mut entries = entries.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            NativeRuntimeError::new(NativeRuntimeErrorKind::LibraryNotFound, e.to_string())
+                .with_path(directory)
+        })?;
+        entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
-            let entry = entry.map_err(|e| {
-                NativeRuntimeError::new(NativeRuntimeErrorKind::LibraryNotFound, e.to_string())
-                    .with_path(directory)
-            })?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if !name.starts_with(prefix) || !name.ends_with(suffix) {
@@ -140,6 +170,9 @@ pub(crate) fn library(
                 continue;
             }
             let candidate = LibraryFile::resolve(&entry.path())?;
+            if selection == CandidateSelection::First {
+                return Ok(candidate);
+            }
             if !candidates
                 .iter()
                 .any(|existing| existing.identity == candidate.identity)
@@ -203,7 +236,7 @@ pub(crate) fn driver() -> Result<LibraryFile, NativeRuntimeError> {
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
         .collect::<Vec<_>>();
-        library(&dirs, "libcuda.so.", "")
+        library(&dirs, "libcuda.so.", "", CandidateSelection::First)
     }
 }
 
@@ -213,25 +246,27 @@ impl NativeRuntimeConfig {
     pub fn discover(&self) -> Result<super::NativeRuntimeInfo, NativeRuntimeError> {
         let cuda = directories(self, Sdk::Cuda)?;
         let trt = directories(self, Sdk::TensorRt)?;
+        let cuda_selection = selection(self, Sdk::Cuda);
+        let trt_selection = selection(self, Sdk::TensorRt);
         let mut files = vec![driver()?];
         #[cfg(windows)]
         let names = [
-            (&cuda, "cublasLt64_", ".dll"),
-            (&cuda, "cublas64_", ".dll"),
-            (&cuda, "curand64_", ".dll"),
-            (&cuda, "cudart64_", ".dll"),
-            (&trt, "nvinfer_", ".dll"),
+            (&cuda, "cublasLt64_", ".dll", cuda_selection),
+            (&cuda, "cublas64_", ".dll", cuda_selection),
+            (&cuda, "curand64_", ".dll", cuda_selection),
+            (&cuda, "cudart64_", ".dll", cuda_selection),
+            (&trt, "nvinfer_", ".dll", trt_selection),
         ];
         #[cfg(unix)]
         let names = [
-            (&cuda, "libcublasLt.so", ""),
-            (&cuda, "libcublas.so", ""),
-            (&cuda, "libcurand.so", ""),
-            (&cuda, "libcudart.so", ""),
-            (&trt, "libnvinfer.so", ""),
+            (&cuda, "libcublasLt.so", "", cuda_selection),
+            (&cuda, "libcublas.so", "", cuda_selection),
+            (&cuda, "libcurand.so", "", cuda_selection),
+            (&cuda, "libcudart.so", "", cuda_selection),
+            (&trt, "libnvinfer.so", "", trt_selection),
         ];
-        for (dirs, prefix, suffix) in names {
-            files.push(library(dirs, prefix, suffix)?);
+        for (dirs, prefix, suffix, selection) in names {
+            files.push(library(dirs, prefix, suffix, selection)?);
         }
         Ok(super::NativeRuntimeInfo {
             state: super::NativeRuntimeState::Discovered,
@@ -250,5 +285,55 @@ impl NativeRuntimeConfig {
                 })
                 .collect(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn default_discovery_accepts_duplicates_in_search_order_but_explicit_locations_do_not() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../temp/platform-config-work/discovery")
+            .join(std::process::id().to_string());
+        let first = root.join("z-first");
+        let second = root.join("a-second");
+        for dir in [&first, &second] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("fixture_12.dll"), "fixture").unwrap();
+        }
+        let dirs = [first, second];
+        let default = NativeRuntimeConfig::default();
+        let mode = selection(&default, Sdk::Cuda);
+        assert_eq!(mode, CandidateSelection::First);
+        let file = library(&dirs, "fixture_", ".dll", mode).unwrap();
+        assert_eq!(
+            file.path,
+            dirs[0].join("fixture_12.dll").canonicalize().unwrap()
+        );
+        let reversed = [dirs[1].clone(), dirs[0].clone()];
+        let file = library(&reversed, "fixture_", ".dll", mode).unwrap();
+        assert_eq!(
+            file.path,
+            dirs[1].join("fixture_12.dll").canonicalize().unwrap()
+        );
+        let explicit = NativeRuntimeConfig::builder()
+            .cuda_library_dirs(dirs.clone())
+            .build()
+            .unwrap();
+        assert_eq!(
+            selection(&explicit, Sdk::TensorRt),
+            CandidateSelection::First
+        );
+        assert_eq!(
+            library(&dirs, "fixture_", ".dll", selection(&explicit, Sdk::Cuda))
+                .unwrap_err()
+                .kind(),
+            NativeRuntimeErrorKind::RuntimeConflict
+        );
+        assert_eq!(
+            library(&dirs, "missing_", ".dll", mode).unwrap_err().kind(),
+            NativeRuntimeErrorKind::LibraryNotFound
+        );
     }
 }

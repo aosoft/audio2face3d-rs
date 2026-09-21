@@ -2,7 +2,7 @@
 use super::{NativeRuntimeConfig, NativeRuntimeError, NativeRuntimeErrorKind, NativeSearchPolicy};
 use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Default, clap::Args)]
-pub struct NativeRuntimeArgs {
+pub struct PlatformArgs {
     #[arg(long, global = true)]
     cuda_root: Option<PathBuf>,
     #[arg(long, global = true)]
@@ -11,8 +11,9 @@ pub struct NativeRuntimeArgs {
     cuda_library_dir: Vec<PathBuf>,
     #[arg(long, global = true, conflicts_with = "tensorrt_root")]
     tensorrt_library_dir: Vec<PathBuf>,
+    /// Platform configuration file shared by build and runtime.
     #[arg(long, global = true)]
-    runtime_config: Option<PathBuf>,
+    platform_config: Option<PathBuf>,
     #[arg(long, global = true, value_parser = ["explicit", "discover"])]
     runtime_search: Option<String>,
 }
@@ -27,30 +28,7 @@ fn absolute(base: &Path, path: &Path) -> PathBuf {
     }
 }
 fn parse(text: &str, base: &Path) -> Result<NativeRuntimeConfig, NativeRuntimeError> {
-    let table = text
-        .parse::<toml::Table>()
-        .map_err(|e| error(e.to_string()))?;
-    for key in table.keys() {
-        if ![
-            "schema_version",
-            "search_policy",
-            "cuda_root",
-            "tensorrt_root",
-            "cuda_library_dirs",
-            "tensorrt_library_dirs",
-        ]
-        .contains(&key.as_str())
-        {
-            return Err(error(format!("unknown runtime setting: {key}")));
-        }
-    }
-    if table
-        .get("schema_version")
-        .and_then(toml::Value::as_integer)
-        != Some(1)
-    {
-        return Err(error("runtime schema_version must be 1"));
-    }
+    let table = crate::platform_config_file::parse(text, "runtime").map_err(error)?;
     let mut builder = NativeRuntimeConfig::builder();
     let string = |key: &str| -> Result<Option<&str>, NativeRuntimeError> {
         table
@@ -63,13 +41,13 @@ fn parse(text: &str, base: &Path) -> Result<NativeRuntimeConfig, NativeRuntimeEr
             })
             .transpose()
     };
-    if let Some(value) = string("cuda_root")? {
+    if let Some(value) = string("cuda-root")? {
         builder = builder.cuda_root(absolute(base, Path::new(value)));
     }
-    if let Some(value) = string("tensorrt_root")? {
+    if let Some(value) = string("tensorrt-root")? {
         builder = builder.tensorrt_root(absolute(base, Path::new(value)));
     }
-    for key in ["cuda_library_dirs", "tensorrt_library_dirs"] {
+    for key in ["cuda-library-dirs", "tensorrt-library-dirs"] {
         if let Some(value) = table.get(key) {
             let dirs = value
                 .as_array()
@@ -83,14 +61,14 @@ fn parse(text: &str, base: &Path) -> Result<NativeRuntimeConfig, NativeRuntimeEr
                         .ok_or_else(|| error(format!("{key} must contain nonempty paths")))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            builder = if key == "cuda_library_dirs" {
+            builder = if key == "cuda-library-dirs" {
                 builder.cuda_library_dirs(dirs)
             } else {
                 builder.tensorrt_library_dirs(dirs)
             };
         }
     }
-    if let Some(policy) = string("search_policy")? {
+    if let Some(policy) = string("search-policy")? {
         builder = builder.search_policy(policy_value(policy)?);
     }
     builder.build()
@@ -99,17 +77,32 @@ fn policy_value(value: &str) -> Result<NativeSearchPolicy, NativeRuntimeError> {
     match value {
         "explicit" => Ok(NativeSearchPolicy::ExplicitOnly),
         "discover" => Ok(NativeSearchPolicy::Discover),
-        _ => Err(error("search_policy must be explicit or discover")),
+        _ => Err(error("search-policy must be explicit or discover")),
     }
 }
-impl NativeRuntimeArgs {
+fn select_file(cwd: &Path, explicit: Option<PathBuf>, user: Option<PathBuf>) -> Option<PathBuf> {
+    explicit.map(|path| absolute(cwd, &path)).or_else(|| {
+        std::iter::once(cwd.join("platform.toml"))
+            .chain(user)
+            .find(|path| path.exists())
+    })
+}
+
+impl PlatformArgs {
     pub fn resolve(&self) -> Result<NativeRuntimeConfig, NativeRuntimeError> {
         let cwd = std::env::current_dir().map_err(|e| error(e.to_string()))?;
-        let base = if let Some(file) = &self.runtime_config {
+        let selected = select_file(
+            &cwd,
+            self.platform_config
+                .clone()
+                .or_else(|| std::env::var_os("AUDIO2FACE3D_PLATFORM_CONFIG").map(PathBuf::from)),
+            crate::platform_config_file::user_config(),
+        );
+        let base = if let Some(file) = &selected {
             let file = absolute(&cwd, file);
             let text = std::fs::read_to_string(&file)
                 .map_err(|e| error(e.to_string()).with_path(&file))?;
-            parse(&text, file.parent().unwrap())?
+            parse(&text, file.parent().unwrap()).map_err(|e| e.with_path(&file))?
         } else {
             NativeRuntimeConfig::default()
         };
@@ -186,9 +179,13 @@ mod tests {
     fn file_paths_and_cli_overrides_use_their_own_bases_and_replace_groups() {
         let cwd = std::env::current_dir().unwrap();
         let file_base = cwd.join("temp/config");
-        let base=parse("schema_version=1\nsearch_policy='explicit'\ncuda_root='cuda'\ntensorrt_library_dirs=['trt']", &file_base).unwrap();
+        let base = parse(
+            "cuda-root='cuda'\n[runtime]\nsearch-policy='explicit'\ntensorrt-library-dirs=['trt']",
+            &file_base,
+        )
+        .unwrap();
         assert_eq!(base.cuda_root(), Some(file_base.join("cuda").as_path()));
-        let args = NativeRuntimeArgs {
+        let args = PlatformArgs {
             cuda_library_dir: vec!["custom".into()],
             tensorrt_root: Some("sdk".into()),
             ..Default::default()
@@ -204,14 +201,95 @@ mod tests {
     fn malformed_files_are_not_supplemented_from_other_configuration() {
         let cwd = std::env::current_dir().unwrap();
         for text in [
-            "schema_version=2",
-            "schema_version=1\nunknown=true",
-            "schema_version=1\ncuda_root=''",
-            "schema_version=1\ncuda_library_dirs=[]",
-            "schema_version=1\ncuda_root='a'\ncuda_library_dirs=['b']",
-            "schema_version=1\nsearch_policy='latest'",
+            "schema_version=1",
+            "schema-version=1",
+            "cuda_root='cuda'",
+            "unknown=true",
+            "cuda-root=''",
+            "[runtime]\ncuda-library-dirs=[]",
+            "[runtime]\ncuda-root='a'\ncuda-library-dirs=['b']",
+            "[runtime]\nsearch-policy='latest'",
+            "[build]\ncuda-archs=false",
         ] {
             assert!(parse(text, &cwd).is_err(), "{text}");
         }
+    }
+    #[test]
+    fn shared_file_separates_build_settings_and_runtime_overrides() {
+        let base = std::env::current_dir().unwrap().join("temp/config");
+        let config = parse(
+            include_str!("../../tests/fixtures/platform-config.toml"),
+            &base,
+        )
+        .unwrap();
+        assert!(config.cuda_root().is_none());
+        assert_eq!(config.cuda_library_dirs(), &[base.join("deploy/cuda")]);
+        assert_eq!(
+            config.tensorrt_root(),
+            Some(base.join("deploy/trt").as_path())
+        );
+        assert_eq!(config.search_policy(), NativeSearchPolicy::ExplicitOnly);
+        let common = parse(
+            "cuda-root='sdk'\n[build]\ncuda-host-compiler='missing/compiler'",
+            &base,
+        )
+        .unwrap();
+        assert_eq!(common.cuda_root(), Some(base.join("sdk").as_path()));
+    }
+    #[test]
+    fn file_selection_prefers_explicit_then_local_then_user_without_merging() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../temp/platform-config-work/tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        let user = root.join("user.toml");
+        let local = root.join("platform.toml");
+        assert_eq!(select_file(&root, None, Some(user.clone())), None);
+        std::fs::write(&user, "").unwrap();
+        assert_eq!(
+            select_file(&root, None, Some(user.clone())),
+            Some(user.clone())
+        );
+        std::fs::write(&local, "invalid").unwrap();
+        assert_eq!(select_file(&root, None, Some(user.clone())), Some(local));
+        assert_eq!(
+            select_file(&root, Some("missing.toml".into()), Some(user)),
+            Some(root.join("missing.toml"))
+        );
+    }
+    #[test]
+    fn both_cli_and_file_option_names_are_kebab_case() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            platform: PlatformArgs,
+        }
+        let args = Args::try_parse_from([
+            "test",
+            "--platform-config",
+            "config.toml",
+            "--cuda-root",
+            "cuda",
+            "--runtime-search",
+            "explicit",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.platform.platform_config.as_deref(),
+            Some(Path::new("config.toml"))
+        );
+        assert!(Args::try_parse_from(["test", "--runtime-config", "config.toml"]).is_err());
+        assert!(
+            Args::try_parse_from(["test", "--cuda-root", "cuda", "--cuda-library-dir", "lib"])
+                .is_err()
+        );
     }
 }

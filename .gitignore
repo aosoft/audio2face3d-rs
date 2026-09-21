@@ -30,5 +30,5 @@ target
 *.plan
 .audio2x-engine*.json
 
-# Local SDK build configuration
-/native-build.toml
+# Local SDK configuration
+/platform.toml

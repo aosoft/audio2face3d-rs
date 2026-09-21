@@ -6,7 +6,7 @@ Run these commands from the workspace root. Native inference requires separately
 
 ## Install from this checkout
 
-The packages are not yet published to crates.io. After preparing the native SDK build configuration below, install the executables from source:
+The packages are not yet published to crates.io. After configuring the SDK locations below, install the executables from source:
 
 ```powershell
 cargo install --path crates/audio2face3d --locked --features cli,native
@@ -24,16 +24,16 @@ shim and CUDA compilation. On Windows, install the MSVC C++ build tools;
 the Visual Studio IDE itself is not required. The default portable features
 do not compile the CUDA kernels or TensorRT shim.
 
-Configure the build with `native-build.toml` and the runtime with an application-owned configuration file. SDK environment variables and PATH edits are optional. See [native SDK configuration](native-runtime.md) for complete schemas, search precedence, and library embedding.
+Optionally configure both build and runtime with one `platform.toml`. Without a selected or discovered file, the existing SDK environment variables and runtime search paths remain available. See [platform configuration](platform.md) for the complete file format, search precedence, and library embedding.
 
-For example, after preparing the two files described there:
+For example, after preparing the file described there:
 
 ```powershell
-cargo run -p audio2face3d --features cli -- --runtime-config native-runtime.toml doctor
-cargo run -p audio2face3d --features cli,native -- --runtime-config native-runtime.toml doctor --load --device 0
+cargo run -p audio2face3d --features cli -- --platform-config platform.toml doctor
+cargo run -p audio2face3d --features cli,native -- --platform-config platform.toml doctor --load --device 0
 ```
 
-The samples below use default discovery; add `--runtime-config native-runtime.toml` after Cargo's `--` separator to use explicit locations with any command. Runtime minor differences warn, major differences fail, and patch/build differences are allowed. Required API or engine incompatibilities still fail.
+The samples below automatically read `platform.toml` from this checkout; add `--platform-config platform.toml` after Cargo's `--` separator to select another runtime file with any command. Runtime minor differences warn, major differences fail, and patch/build differences are allowed. Required API or engine incompatibilities still fail.
 
 The model tool uses `clap` for argument parsing. Top-level help, command-specific options, accepted values, defaults, and the package version are available directly from the CLI:
 

@@ -16,9 +16,9 @@ impl Drop for Process {
     }
 }
 #[tokio::test]
-#[ignore = "requires AUDIO2FACE3D_TEST_RUNTIME_CONFIG and A2F_MODEL"]
+#[ignore = "requires AUDIO2FACE3D_TEST_PLATFORM_CONFIG and A2F_MODEL"]
 async fn native_cli_serves_with_config_file_and_no_sdk_environment() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../temp/native-runtime-work/N08");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../temp/native-cli-tests");
     std::fs::create_dir_all(&root).unwrap();
     let log =
         std::fs::File::create(root.join(format!("server-cli-{}.log", std::process::id()))).unwrap();
@@ -27,8 +27,8 @@ async fn native_cli_serves_with_config_file_and_no_sdk_environment() {
     drop(reservation);
     let mut command = Command::new(env!("CARGO_BIN_EXE_audio2face3d-server"));
     command
-        .args(["--runtime-config"])
-        .arg(std::env::var_os("AUDIO2FACE3D_TEST_RUNTIME_CONFIG").unwrap())
+        .args(["--platform-config"])
+        .arg(std::env::var_os("AUDIO2FACE3D_TEST_PLATFORM_CONFIG").unwrap())
         .arg("--model")
         .arg(std::env::var_os("A2F_MODEL").unwrap())
         .args(["--listen", &address.to_string()]);

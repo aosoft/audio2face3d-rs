@@ -41,7 +41,7 @@ const DEFAULT_TOKEN_ENVIRONMENT: &str = "HF_TOKEN";
 )]
 struct Cli {
     #[command(flatten)]
-    runtime: audio2face3d::runtime::cli::NativeRuntimeArgs,
+    runtime: audio2face3d::runtime::cli::PlatformArgs,
     #[command(subcommand)]
     command: Command,
 }

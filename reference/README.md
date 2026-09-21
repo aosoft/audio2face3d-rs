@@ -99,7 +99,7 @@ sequence. Set `AUDIO2FACE3D_REFERENCE_WAV_SHA256` when the source WAV digest
 must be pinned, and set `AUDIO2FACE3D_REFERENCE_WAV_LICENSE` to record a license
 label other than the default `user-provided-not-for-redistribution`.
 
-Use `ci/run-tier.ps1 reference-parity -RuntimeConfig native-runtime.toml -BuildConfig native-build.toml` to select SDKs without parent environment changes. Direct invocation of this legacy harness still reads SDK roots from its environment. Original SDK and input-license parameters remain separate. See [native configuration](../docs/native-runtime.md).
+Use `ci/run-tier.ps1 reference-parity -PlatformConfig platform.toml` to select SDKs without parent environment changes. Direct invocation of this legacy harness still reads SDK roots from its environment. Original SDK and input-license parameters remain separate. See [platform configuration](../docs/platform.md).
 
 ```powershell
 $env:AUDIO2FACE_SDK_ROOT = '<Audio2Face-3D-SDK checkout>'

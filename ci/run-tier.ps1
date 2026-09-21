@@ -2,8 +2,7 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateSet("portable", "cuda-lifetime", "tensorrt-model", "reference-parity", "release")]
     [string]$Tier,
-    [string]$RuntimeConfig,
-    [string]$BuildConfig
+    [string]$PlatformConfig
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,7 +25,7 @@ function Invoke-Checked {
     $start.Arguments = $quoted -join ' '
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    if ($BuildConfig) { $start.EnvironmentVariables['AUDIO2FACE3D_BUILD_CONFIG'] = [IO.Path]::GetFullPath([IO.Path]::Combine($repoRoot, $BuildConfig)) }
+    if ($PlatformConfig) { $start.EnvironmentVariables['AUDIO2FACE3D_PLATFORM_CONFIG'] = [IO.Path]::GetFullPath([IO.Path]::Combine($repoRoot, $PlatformConfig)) }
     if ($script:runtimeInfo) {
         # Legacy native tests consume SDK roots. These settings belong only to this child.
         $start.EnvironmentVariables['CUDA_PATH'] = $script:runtimeInfo.cuda_root
@@ -48,13 +47,13 @@ function Invoke-Checked {
 }
 
 $script:runtimeInfo = $null
-if ($RuntimeConfig) {
+if ($PlatformConfig) {
     # Parse through the same Rust CLI implementation used by applications; this does not load DLLs.
-    $diagnostic = & cargo run --quiet --locked -p audio2face3d --no-default-features --features cli -- --runtime-config $RuntimeConfig doctor --json
+    $diagnostic = & cargo run --quiet --locked -p audio2face3d --no-default-features --features cli -- --platform-config $PlatformConfig doctor --json
     if ($LASTEXITCODE -ne 0) { throw 'runtime configuration discovery failed' }
     $script:runtimeInfo = $diagnostic | ConvertFrom-Json
     if (-not $script:runtimeInfo.cuda_root -or -not $script:runtimeInfo.tensorrt_root) {
-        throw 'Native CI legacy tests require cuda_root and tensorrt_root in RuntimeConfig; library directory layouts are tested through the explicit client API.'
+        throw 'Native CI legacy tests require SDK roots (cuda-root and tensorrt-root) resolved from PlatformConfig; library directory layouts are tested through the explicit client API.'
     }
 }
 function Require-Environment {

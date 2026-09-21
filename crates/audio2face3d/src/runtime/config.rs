@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NativeSearchPolicy {
     ExplicitOnly,
+    /// Unspecified SDK locations follow environment/search-path order, accepting the first match.
+    /// Explicit roots and directory lists still require unique component binaries.
     #[default]
     Discover,
 }

@@ -21,7 +21,7 @@ and original-SDK reference parity:
 ./ci/run-tier.ps1 reference-parity
 ```
 
-Native tiers accept `-RuntimeConfig native-runtime.toml -BuildConfig native-build.toml`. The runtime file must use SDK roots for legacy test adapters; only child processes receive their SDK environment. Existing environment-based runs still work. See [native configuration](native-runtime.md). Real-model tests require `AUDIO2FACE3D_TEST_FACADE_MODELS`. See the
+Native tiers accept `-PlatformConfig platform.toml`. Runtime SDK locations must resolve to roots (from common settings or `[runtime]`) for legacy test adapters; only child processes receive their SDK environment. Existing environment-based runs still work. See [platform configuration](platform.md). Real-model tests require `AUDIO2FACE3D_TEST_FACADE_MODELS`. See the
 [reference guide](../reference/README.md) for original-SDK comparison setup.
 Machine-local SDK/model/audio paths and generated captures are not committed.
 The `release` tier verifies native documentation and publishable packages.

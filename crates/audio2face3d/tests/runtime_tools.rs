@@ -62,3 +62,66 @@ fn tool_selection_changes_only_the_child_environment() {
         .unwrap();
     assert!(missing.tool_command(NativeTool::Trtexec, None).is_err());
 }
+
+#[test]
+fn unconfigured_tools_follow_path_order_with_multiple_sdk_candidates() {
+    const CHILD_ROOT: &str = "AUDIO2FACE3D_TEST_TOOL_PATH";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = PathBuf::from(root);
+        let default = NativeRuntimeConfig::default();
+        let command = default.tool_command(NativeTool::Nvcc, None).unwrap();
+        let tool = if cfg!(windows) { "nvcc.exe" } else { "nvcc" };
+        assert_eq!(
+            PathBuf::from(command.get_program()),
+            root.join("z-first").join(tool).canonicalize().unwrap()
+        );
+        let explicit = NativeRuntimeConfig::builder()
+            .cuda_library_dirs([root.join("z-first"), root.join("a-second")])
+            .build()
+            .unwrap();
+        assert!(explicit.tool_command(NativeTool::Nvcc, None).is_err());
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../temp/platform-config-work/tools-path")
+        .join(std::process::id().to_string());
+    let dirs = [root.join("z-first"), root.join("a-second")];
+    for dir in &dirs {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(if cfg!(windows) { "nvcc.exe" } else { "nvcc" }),
+            "fixture",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(if cfg!(windows) {
+                "cudart64_12.dll"
+            } else {
+                "libcudart.so.12"
+            }),
+            "fixture",
+        )
+        .unwrap();
+    }
+    let root = root.canonicalize().unwrap();
+    let path = std::env::join_paths(dirs).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "unconfigured_tools_follow_path_order_with_multiple_sdk_candidates",
+            "--nocapture",
+        ])
+        .env(CHILD_ROOT, &root)
+        .env_remove("CUDA_PATH")
+        .env_remove("TENSORRT_ROOT_DIR")
+        .env("PATH", &path)
+        .env("LD_LIBRARY_PATH", &path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

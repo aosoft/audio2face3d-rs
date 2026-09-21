@@ -55,7 +55,7 @@ let client = audio2face3d::client::Client::server(config).await?;
 
 ## Native runtime paths
 
-Attach `NativeRuntimeConfig` with `.native_runtime(config)` when building `Audio2Face3DContext`. This supplies direct inference and embedded servers with the same SDK locations and shared native ownership. Configuration and diagnostics remain GPU-free until native preparation. See [native SDK configuration](native-runtime.md) for an example, version checks and process lifetime rules.
+Attach `NativeRuntimeConfig` with `.native_runtime(config)` when building `Audio2Face3DContext`. This supplies direct inference and embedded servers with the same SDK locations and shared native ownership. Configuration and diagnostics remain GPU-free until native preparation. See [platform configuration](platform.md) for an example, version checks and process lifetime rules.
 
 ## Shared context and logging
 

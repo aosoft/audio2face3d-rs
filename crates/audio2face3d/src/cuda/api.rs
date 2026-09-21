@@ -250,7 +250,12 @@ impl CudaApi {
         ];
         let mut files = vec![driver];
         for (prefix, suffix) in names {
-            files.push(discovery::library(&dirs, prefix, suffix)?);
+            files.push(discovery::library(
+                &dirs,
+                prefix,
+                suffix,
+                discovery::selection(context.native_runtime(), Sdk::Cuda),
+            )?);
         }
         let key = files.iter().map(|f| f.identity.clone()).collect();
         let api = REGISTRY.initialize(key, |attempt| {

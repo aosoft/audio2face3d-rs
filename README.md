@@ -31,7 +31,7 @@ Models and native SDKs are obtained separately.
 After preparing the SDKs and Mark model, start the native server:
 
 ```powershell
-cargo run -p audio2face3d-server --features cli -- --runtime-config native-runtime.toml --model models/mark/model.json
+cargo run -p audio2face3d-server --features cli -- --platform-config platform.toml --model models/mark/model.json
 ```
 
 ## Documentation
@@ -39,7 +39,7 @@ cargo run -p audio2face3d-server --features cli -- --runtime-config native-runti
 | Guide | Contents |
 |---|---|
 | [Getting started](docs/getting-started.md) | SDK setup, source installation, model downloads, engine generation, CLI samples |
-| [Native SDK configuration](docs/native-runtime.md) | Build/runtime path selection, diagnostics, version policy, loader lifetime |
+| [Platform configuration](docs/platform.md) | Build/runtime path selection, diagnostics, version policy, loader lifetime |
 | [Packages and features](docs/features.md) | Package boundaries, feature selection, SDK module mapping |
 | [Client library](docs/library.md) | Configuration builders, direct/remote execution, authentication, shared context and logging |
 | [Low-level runtime APIs](docs/runtime-api.md) | Executor composition, callbacks, interactive execution, safety contracts |

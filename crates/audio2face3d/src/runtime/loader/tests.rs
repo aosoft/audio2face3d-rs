@@ -140,9 +140,14 @@ fn native_fixture_absolute_path_dependencies_symbols_identity_and_conflicts() {
         .unwrap();
     let dirs = discovery::directories(&config, discovery::Sdk::Cuda).unwrap();
     assert_eq!(
-        discovery::library(&dirs, "does_not_exist", ".dll")
-            .unwrap_err()
-            .kind(),
+        discovery::library(
+            &dirs,
+            "does_not_exist",
+            ".dll",
+            discovery::CandidateSelection::Unique
+        )
+        .unwrap_err()
+        .kind(),
         NativeRuntimeErrorKind::LibraryNotFound
     );
     assert!(
@@ -159,7 +164,8 @@ fn native_fixture_absolute_path_dependencies_symbols_identity_and_conflicts() {
         discovery::library(
             &[valid, other],
             &format!("{}a2f_fixture_main", std::env::consts::DLL_PREFIX),
-            std::env::consts::DLL_SUFFIX
+            std::env::consts::DLL_SUFFIX,
+            discovery::CandidateSelection::Unique
         )
         .unwrap_err()
         .kind(),

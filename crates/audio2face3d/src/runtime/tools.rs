@@ -1,7 +1,7 @@
 //! Absolute executable selection and child-only dependency search paths.
 use super::{
     NativeRuntimeConfig, NativeRuntimeError, NativeRuntimeErrorKind, NativeSearchPolicy,
-    discovery::{self, Sdk},
+    discovery::{self, CandidateSelection, Sdk},
 };
 use std::{
     path::{Path, PathBuf},
@@ -23,7 +23,19 @@ impl NativeTool {
 fn error(message: impl Into<String>) -> NativeRuntimeError {
     NativeRuntimeError::new(NativeRuntimeErrorKind::LibraryNotFound, message)
 }
-fn unique(mut paths: Vec<PathBuf>, label: &str) -> Result<PathBuf, NativeRuntimeError> {
+fn select(
+    mut paths: Vec<PathBuf>,
+    label: &str,
+    selection: CandidateSelection,
+) -> Result<PathBuf, NativeRuntimeError> {
+    if selection == CandidateSelection::First {
+        return paths
+            .into_iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| error(format!("{label} was not found")))?
+            .canonicalize()
+            .map_err(|e| error(e.to_string()));
+    }
     paths = paths
         .into_iter()
         .filter(|path| path.is_file())
@@ -75,16 +87,25 @@ impl NativeRuntimeConfig {
         };
         let requested = executable.unwrap_or_else(|| Path::new(tool.name()));
         let selected = if requested.is_absolute() || requested.components().count() > 1 {
-            unique(
+            select(
                 vec![
                     std::env::current_dir()
                         .map_err(|e| error(e.to_string()))?
                         .join(requested),
                 ],
                 tool.name(),
+                CandidateSelection::Unique,
             )?
         } else {
             let mut candidates = Vec::new();
+            if !explicit_sdk
+                && std::env::var_os(sdk.environment_variable()).is_none()
+                && let Some(path) = std::env::var_os("PATH")
+            {
+                for dir in std::env::split_paths(&path).filter(|p| p.is_absolute()) {
+                    candidates.extend(executable_in(&dir, requested));
+                }
+            }
             for dir in &dirs {
                 candidates.extend(executable_in(dir, requested));
                 if let Some(parent) = dir.parent() {
@@ -100,13 +121,13 @@ impl NativeRuntimeConfig {
                     candidates.extend(executable_in(&dir, requested));
                 }
             }
-            unique(candidates, tool.name())?
+            select(candidates, tool.name(), discovery::selection(self, sdk))?
         };
         let mut child_dirs = dirs;
         if matches!(tool, NativeTool::Trtexec) {
             child_dirs.extend(discovery::directories(self, Sdk::Cuda)?);
         }
-        // Reject ambiguous CUDA Runtime installations before relying on child PATH ordering.
+        // Explicit CUDA locations retain ambiguity checks; default discovery follows child PATH.
         let mut runtimes = Vec::new();
         for dir in &child_dirs {
             if let Ok(entries) = std::fs::read_dir(dir) {
@@ -121,7 +142,11 @@ impl NativeRuntimeConfig {
             }
         }
         if !runtimes.is_empty() {
-            unique(runtimes, "CUDA Runtime for child process")?;
+            select(
+                runtimes,
+                "CUDA Runtime for child process",
+                discovery::selection(self, Sdk::Cuda),
+            )?;
         }
         if let Some(parent) = selected.parent() {
             child_dirs.insert(0, parent.to_owned());

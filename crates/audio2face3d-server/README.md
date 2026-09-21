@@ -21,11 +21,11 @@ Run commands from the workspace root. Requirements:
   and [engine generation](../../docs/getting-started.md#tensorrt-engine-generation).
   Model files and native SDKs are separate downloads.
 
-Prepare separate [build and runtime configuration files](../../docs/native-runtime.md). SDK environment variables and PATH edits are optional. The default `native` feature provides Regression inference. Enable `cli` to build the executable:
+Optionally prepare a [shared platform configuration file](../../docs/platform.md) for build and runtime SDK locations. Without a selected or discovered file, existing SDK environment variables and runtime search paths are used. The default `native` feature provides Regression inference. Enable `cli` to build the executable:
 
 ```powershell
 cargo build --release --locked -p audio2face3d-server --features cli
-.\target\release\audio2face3d-server.exe --runtime-config native-runtime.toml --backend regression --model models/mark/model.json
+.\target\release\audio2face3d-server.exe --platform-config platform.toml --backend regression --model models/mark/model.json
 ```
 
 The model path above assumes Mark was prepared under `models/mark`.

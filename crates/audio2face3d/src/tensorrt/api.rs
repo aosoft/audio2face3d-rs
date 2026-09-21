@@ -92,8 +92,18 @@ impl NativeApi {
         let (runtime_name, trt_name, suffix) = ("cudart64_", "nvinfer_", ".dll");
         #[cfg(unix)]
         let (runtime_name, trt_name, suffix) = ("libcudart.so", "libnvinfer.so", "");
-        let runtime = discovery::library(&cuda_dirs, runtime_name, suffix)?;
-        let tensorrt = discovery::library(&trt_dirs, trt_name, suffix)?;
+        let runtime = discovery::library(
+            &cuda_dirs,
+            runtime_name,
+            suffix,
+            discovery::selection(context.native_runtime(), Sdk::Cuda),
+        )?;
+        let tensorrt = discovery::library(
+            &trt_dirs,
+            trt_name,
+            suffix,
+            discovery::selection(context.native_runtime(), Sdk::TensorRt),
+        )?;
         let mut key = cuda
             .libraries
             .iter()
