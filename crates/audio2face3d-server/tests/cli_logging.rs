@@ -48,7 +48,7 @@ fn cli_logs_append_and_preserve_typed_json_fields() {
             .collect();
         if let Some(serving) = values.iter().find(|v| v["message"] == "serving") {
             assert_eq!(values[0]["existing"], true);
-            assert!(serving["timestamp_unix_ms"].is_u64());
+            assert!(serving["timestamp"].as_str().unwrap().ends_with("+00:00"));
             assert!(
                 serving["fields"]["address"]
                     .as_str()
@@ -88,6 +88,8 @@ fn cli_reports_file_open_failure_and_help_lists_logging_options() {
     for option in [
         "--log-format",
         "--log-file",
+        "--log-dir",
+        "--log-timezone",
         "--log-overflow",
         "--log-queue-capacity",
     ] {

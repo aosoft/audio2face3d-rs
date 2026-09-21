@@ -55,10 +55,10 @@ For example:
 audio2face3d-server --model models/mark/model.json --log-format json --log-file server.jsonl
 ```
 
-JSONL records have `timestamp_unix_ms`, `level`, `message`, and a `fields` object. Time is recorded on the producer before enqueueing. Numeric and boolean fields retain their JSON types; non-finite floats become strings such as `NaN`, `inf`, and `-inf`. Messages containing newlines are escaped onto one physical line. Help, command results and progress messages are not written into the log file.
+JSONL records have an RFC 3339 `timestamp`, `level`, `message`, and a `fields` object. Time is recorded on the producer before enqueueing. Numeric and boolean fields retain their JSON types; non-finite floats become strings such as `NaN`, `inf`, and `-inf`. Messages containing newlines are escaped onto one physical line. Help, command results and progress messages are not written into the log file.
 
 ```json
-{"timestamp_unix_ms":1789985567488,"level":"info","message":"completed","fields":{"rpc_id":2,"source":"audio2face3d_server::service"}}
+{"timestamp":"2026-09-21T10:12:47.488+00:00","level":"info","message":"completed","fields":{"rpc_id":2,"source":"audio2face3d_server::service"}}
 ```
 
 In JSON mode, dependency tracing diagnostics use stderr separately and do not enter the application JSONL file. When no file is specified, both outputs share stderr; specify `--log-file` when a consumer needs a stream containing only JSONL. Text forwarding does not provide arbitrary fields as independently typed tracing fields; choose the custom JSONL output for that requirement.
@@ -86,3 +86,17 @@ Success and normal cancellation/shutdown are Info. Invalid input or credentials,
 Model preparation, remote connection, remote request and direct request boundaries also record categorized outcomes, stage and elapsed time. Cleanup stage timeout records include the stage and unfinished count while cleanup continues. Server transport/cleanup failures produce a server-level error observation. Repeated idempotent close calls do not repeat the close diagnostic.
 
 Terminal diagnostics use status/error categories rather than copying arbitrary remote error strings, authenticator errors, request metadata, or endpoint credentials. The original error is still returned through the API for caller-controlled handling. Disabled levels do not construct these messages or fields; counters and timers are lightweight operation state.
+
+### Directory output and time zone
+
+Both CLIs accept --log-dir DIR to create a directory if needed and a new timestamped file on each startup (.jsonl for JSON, .log for text). It is mutually exclusive with --log-file, which retains append behavior. With neither option, output goes to stderr. File creation errors fail startup.
+
+Use --log-timezone utc|local to select the time zone for record timestamps and generated filenames. The default is utc (+00:00). Local mode uses the operating system's local time zone, including daylight-saving changes applicable to the record time. JSONL timestamp values and text timestamps include the UTC offset, for example 2026-09-21T19:12:47.488+09:00. Dependency diagnostics on stderr use the same zone.
+
+Generated names contain the executable name, date/time to the second and UTC offset, for example audio2face3d-server-20260921T191247+0900.jsonl. Only when that filename exists, a suffix such as -1 is added before the extension. Existing files are never overwritten. This creates one file per startup; it does not rotate files during a run.
+
+Example: audio2face3d-server --model models/mark/model.json --log-format json --log-dir logs --log-timezone local
+
+JSONL continues to capture the event time on the producer before enqueueing; formatting occurs on the writer thread.
+
+Log files remain open during execution. Each JSONL record is flushed immediately after writing; text output is flushed after each write. On Windows files permit shared reading while excluding other writers and deletion. On Unix an advisory exclusive lock excludes cooperating writers. Flush errors are reported through the existing logging shutdown error path. Flush does not guarantee disk persistence in a power failure, and queued records remain vulnerable to abrupt process termination.

@@ -113,6 +113,7 @@ name = "audio2face3d"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "chrono",
  "clap",
  "cudarc",
  "hf-hub",
@@ -143,6 +144,7 @@ name = "audio2face3d-server"
 version = "0.1.0"
 dependencies = [
  "audio2face3d",
+ "chrono",
  "clap",
  "h2",
  "http",

@@ -1,4 +1,4 @@
-use super::{LogLevel, LogRecord, LogValue, SharedWriter, json_line};
+use super::{LogLevel, LogRecord, LogValue, SharedWriter, Timezone, json_line};
 use std::{
     io,
     sync::{
@@ -75,7 +75,12 @@ pub(super) struct Worker {
     thread: Option<JoinHandle<()>>,
 }
 impl Worker {
-    pub fn start(writer: SharedWriter, capacity: usize, overflow: Overflow) -> io::Result<Self> {
+    pub fn start(
+        writer: SharedWriter,
+        capacity: usize,
+        overflow: Overflow,
+        timezone: Timezone,
+    ) -> io::Result<Self> {
         let (tx, rx) = mpsc::sync_channel::<Entry>(capacity);
         let (done_tx, done) = mpsc::channel();
         let sender = Sender {
@@ -88,8 +93,10 @@ impl Worker {
             .spawn(move || {
                 let result = (|| {
                     for entry in rx {
-                        let bytes = json_line(entry.level, entry.record, entry.received)?;
-                        writer.0.lock().unwrap().output.write_all(&bytes)?;
+                        let bytes = json_line(entry.level, entry.record, entry.received, timezone)?;
+                        let mut output = writer.0.lock().unwrap();
+                        output.output.write_all(&bytes)?;
+                        output.output.flush()?;
                     }
                     writer.0.lock().unwrap().output.flush()
                 })();
@@ -156,7 +163,7 @@ mod tests {
             }),
             error: None,
         })));
-        let mut worker = Worker::start(writer, 1, Overflow::Drop).unwrap();
+        let mut worker = Worker::start(writer, 1, Overflow::Drop, Timezone::Utc).unwrap();
         let sender = worker.sender();
         sender.send(LogLevel::Info, LogRecord::new("first"));
         started.recv().unwrap();
@@ -188,7 +195,7 @@ mod tests {
             output: Box::new(Capture(bytes.clone())),
             error: None,
         })));
-        let mut worker = Worker::start(writer, 1, Overflow::Wait).unwrap();
+        let mut worker = Worker::start(writer, 1, Overflow::Wait, Timezone::Utc).unwrap();
         let sender = worker.sender();
         for id in 0..100_u64 {
             sender.send(LogLevel::Info, LogRecord::new("record").field("id", id));
@@ -232,6 +239,7 @@ mod performance {
                             LogLevel::Info,
                             LogRecord::new("short").field("id", id as u64),
                             SystemTime::now(),
+                            Timezone::Utc,
                         )
                         .unwrap(),
                     )
@@ -242,7 +250,7 @@ mod performance {
                 output: Box::new(Delay(delay)),
                 error: None,
             })));
-            let mut worker = Worker::start(writer, count, Overflow::Wait).unwrap();
+            let mut worker = Worker::start(writer, count, Overflow::Wait, Timezone::Utc).unwrap();
             let sender = worker.sender();
             let start = Instant::now();
             for id in 0..count {
@@ -285,7 +293,7 @@ mod performance {
             output: Box::new(Fail),
             error: None,
         })));
-        let mut worker = Worker::start(writer, 1, Overflow::Wait).unwrap();
+        let mut worker = Worker::start(writer, 1, Overflow::Wait, Timezone::Utc).unwrap();
         worker
             .sender()
             .send(LogLevel::Error, LogRecord::new("failure"));

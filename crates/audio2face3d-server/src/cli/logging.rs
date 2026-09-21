@@ -1,14 +1,111 @@
 mod worker;
 use audio2face3d::logging::{LogLevel, LogRecord, LogValue, Logger};
 use clap::{Args, ValueEnum};
+#[cfg(test)]
+use std::time::UNIX_EPOCH;
 use std::{
     fs::OpenOptions,
     io::{self, Write},
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::SystemTime,
 };
 use tracing_subscriber::{Layer, prelude::*};
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum, PartialEq, Eq)]
+pub enum Timezone {
+    #[default]
+    Utc,
+    Local,
+}
+impl Timezone {
+    fn datetime(self, time: SystemTime) -> chrono::DateTime<chrono::FixedOffset> {
+        let utc: chrono::DateTime<chrono::Utc> = time.into();
+        match self {
+            Self::Utc => utc.fixed_offset(),
+            Self::Local => utc.with_timezone(&chrono::Local).fixed_offset(),
+        }
+    }
+    fn timestamp(self, time: SystemTime) -> String {
+        self.datetime(time)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+    }
+}
+impl tracing_subscriber::fmt::time::FormatTime for Timezone {
+    fn format_time(
+        &self,
+        writer: &mut tracing_subscriber::fmt::format::Writer<'_>,
+    ) -> std::fmt::Result {
+        write!(writer, "{}", self.timestamp(SystemTime::now()))
+    }
+}
+
+fn file_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Readers may observe the live log; other writers and deletion are excluded.
+        const FILE_SHARE_READ: u32 = 1;
+        options.share_mode(FILE_SHARE_READ);
+    }
+    options.append(true);
+    options
+}
+fn open_log_file(path: &std::path::Path, create_new: bool) -> io::Result<std::fs::File> {
+    let mut options = file_options();
+    if create_new {
+        options.create_new(true);
+    } else {
+        options.create(true);
+    }
+    let file = options.open(path)?;
+    // Advisory on Unix: cooperating writers must acquire the same lock.
+    #[cfg(not(windows))]
+    file.try_lock().map_err(io::Error::other)?;
+    Ok(file)
+}
+
+fn open_output(args: &LogArgs) -> io::Result<Box<dyn Write + Send>> {
+    match (&args.log_file, &args.log_dir) {
+        (Some(_), Some(_)) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--log-file and --log-dir are mutually exclusive",
+        )),
+        (Some(path), None) => Ok(Box::new(open_log_file(path, false)?)),
+        (None, Some(dir)) => {
+            std::fs::create_dir_all(dir)?;
+            let stamp = args
+                .log_timezone
+                .datetime(SystemTime::now())
+                .format("%Y%m%dT%H%M%S%z")
+                .to_string();
+            let extension = if args.log_format == Format::Json {
+                "jsonl"
+            } else {
+                "log"
+            };
+            for sequence in 0..1000 {
+                let suffix = if sequence == 0 {
+                    String::new()
+                } else {
+                    format!("-{sequence}")
+                };
+                let name = format!("{}-{stamp}{suffix}.{extension}", env!("CARGO_PKG_NAME"));
+                match open_log_file(&dir.join(name), true) {
+                    Ok(file) => return Ok(Box::new(file)),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "could not allocate a unique log filename",
+            ))
+        }
+        (None, None) => Ok(Box::new(io::stderr())),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum, PartialEq, Eq)]
 pub enum Format {
@@ -31,6 +128,12 @@ pub struct LogArgs {
     /// Append application logs to this file. Dependency diagnostics use stderr in json mode.
     #[arg(long, global = true)]
     pub log_file: Option<PathBuf>,
+    /// Create a timestamped log file in this directory (created if missing).
+    #[arg(long, global = true, conflicts_with = "log_file")]
+    pub log_dir: Option<PathBuf>,
+    /// Time zone for log timestamps and generated filenames.
+    #[arg(long, global = true, value_enum, default_value = "utc")]
+    pub log_timezone: Timezone,
 }
 #[derive(Clone)]
 struct Filter {
@@ -119,7 +222,10 @@ struct SharedWriter(Arc<Mutex<Writer>>);
 impl Write for SharedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let mut writer = self.0.lock().unwrap();
-        match writer.output.write(bytes) {
+        match writer.output.write(bytes).and_then(|n| {
+            writer.output.flush()?;
+            Ok(n)
+        }) {
             Ok(n) => Ok(n),
             Err(e) => {
                 writer.error = Some(e.to_string());
@@ -138,7 +244,12 @@ impl Write for SharedWriter {
         }
     }
 }
-fn json_line(level: LogLevel, record: LogRecord, received: SystemTime) -> io::Result<Vec<u8>> {
+fn json_line(
+    level: LogLevel,
+    record: LogRecord,
+    received: SystemTime,
+    timezone: Timezone,
+) -> io::Result<Vec<u8>> {
     let fields: serde_json::Map<String, serde_json::Value> = record
         .fields
         .into_iter()
@@ -155,12 +266,9 @@ fn json_line(level: LogLevel, record: LogRecord, received: SystemTime) -> io::Re
             (key, value)
         })
         .collect();
-    let timestamp = received
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let timestamp = timezone.timestamp(received);
     let mut bytes = serde_json::to_vec(
-        &serde_json::json!({"timestamp_unix_ms":timestamp as u64,"level":format!("{level:?}").to_ascii_lowercase(),"message":record.message,"fields":fields}),
+        &serde_json::json!({"timestamp":timestamp,"level":format!("{level:?}").to_ascii_lowercase(),"message":record.message,"fields":fields}),
     )?;
     bytes.push(b'\n');
     Ok(bytes)
@@ -169,6 +277,7 @@ struct OutputLogger {
     sender: Option<worker::Sender>,
     filter: Filter,
     format: Format,
+    timezone: Timezone,
     writer: SharedWriter,
 }
 impl Logger for OutputLogger {
@@ -192,14 +301,18 @@ impl Logger for OutputLogger {
             return;
         }
         if self.format == Format::Json {
-            let result = json_line(level, record, SystemTime::now()).and_then(|bytes| {
-                let mut writer = self.writer.0.lock().unwrap();
-                let result = writer.output.write_all(&bytes);
-                if let Err(error) = &result {
-                    writer.error = Some(error.to_string());
-                }
-                result
-            });
+            let result =
+                json_line(level, record, SystemTime::now(), self.timezone).and_then(|bytes| {
+                    let mut writer = self.writer.0.lock().unwrap();
+                    let result = writer
+                        .output
+                        .write_all(&bytes)
+                        .and_then(|()| writer.output.flush());
+                    if let Err(error) = &result {
+                        writer.error = Some(error.to_string());
+                    }
+                    result
+                });
             if let Err(error) = result {
                 self.writer.0.lock().unwrap().error = Some(error.to_string());
             }
@@ -224,10 +337,7 @@ pub struct Logging {
 impl Logging {
     pub fn start(args: &LogArgs) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let filter = Filter::from_env()?;
-        let output: Box<dyn Write + Send> = match &args.log_file {
-            Some(path) => Box::new(OpenOptions::new().create(true).append(true).open(path)?),
-            None => Box::new(io::stderr()),
-        };
+        let output = open_output(args)?;
         let writer = SharedWriter(Arc::new(Mutex::new(Writer {
             output,
             error: None,
@@ -243,6 +353,7 @@ impl Logging {
         let trace_filter = filter.clone();
         let layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
+            .with_timer(args.log_timezone)
             .with_writer(move || trace_writer.clone())
             .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
                 meta.target() == "audio2face3d_log"
@@ -255,6 +366,7 @@ impl Logging {
                 writer.clone(),
                 usize::from(args.log_queue_capacity),
                 args.log_overflow,
+                args.log_timezone,
             )?)
         } else {
             None
@@ -266,6 +378,7 @@ impl Logging {
                 sender,
                 filter,
                 format: args.log_format,
+                timezone: args.log_timezone,
                 writer: writer.clone(),
             }),
             writer,
@@ -289,6 +402,158 @@ impl Logging {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_allows_reading_and_excludes_other_writers() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../temp/logging-directory-work/sharing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!(
+            "{}-{}.log",
+            env!("CARGO_PKG_NAME"),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut file = open_log_file(&path, true).unwrap();
+        file.write_all(b"visible").unwrap();
+        file.flush().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"visible");
+        assert!(open_log_file(&path, false).is_err());
+        assert!(open_log_file(&path, true).is_err());
+        #[cfg(windows)]
+        assert!(OpenOptions::new().append(true).open(&path).is_err());
+        drop(file);
+        let file = open_log_file(&path, false).unwrap();
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn flush_occurs_per_record_and_errors_propagate() {
+        struct CountFlush(Arc<std::sync::atomic::AtomicUsize>, bool);
+        impl Write for CountFlush {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if self.1 {
+                    Err(io::Error::other("flush failed"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        for fails in [false, true] {
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let writer = SharedWriter(Arc::new(Mutex::new(Writer {
+                output: Box::new(CountFlush(count.clone(), fails)),
+                error: None,
+            })));
+            let mut worker =
+                worker::Worker::start(writer.clone(), 8, worker::Overflow::Wait, Timezone::Utc)
+                    .unwrap();
+            for _ in 0..3 {
+                worker.sender().send(LogLevel::Info, LogRecord::new("test"));
+            }
+            let result = worker.finish(std::time::Duration::from_secs(2));
+            assert_eq!(result.is_err(), fails);
+            assert_eq!(
+                count.load(std::sync::atomic::Ordering::SeqCst),
+                if fails { 1 } else { 4 }
+            );
+            count.store(0, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(writer.clone().write_all(b"text").is_err(), fails);
+            assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(writer.0.lock().unwrap().error.is_some(), fails);
+        }
+    }
+
+    #[test]
+    fn timezone_and_directory_outputs() {
+        let time = UNIX_EPOCH + std::time::Duration::from_millis(123);
+        let local = Timezone::Local.timestamp(time);
+        let parsed = chrono::DateTime::parse_from_rfc3339(&local).unwrap();
+        let expected: chrono::DateTime<chrono::Local> = time.into();
+        assert_eq!(parsed.timestamp_millis(), 123);
+        assert_eq!(
+            parsed.offset().local_minus_utc(),
+            expected.offset().local_minus_utc()
+        );
+        for timezone in [Timezone::Utc, Timezone::Local] {
+            let bytes = json_line(LogLevel::Info, LogRecord::new("test"), time, timezone).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["timestamp"], timezone.timestamp(time));
+            let mut text = String::new();
+            use tracing_subscriber::fmt::time::FormatTime;
+            timezone
+                .format_time(&mut tracing_subscriber::fmt::format::Writer::new(&mut text))
+                .unwrap();
+            chrono::DateTime::parse_from_rfc3339(&text).unwrap();
+        }
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../temp/logging-directory-work/tests")
+            .join(format!(
+                "{}-{}",
+                env!("CARGO_PKG_NAME"),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        for format in [Format::Json, Format::Text] {
+            for timezone in [Timezone::Utc, Timezone::Local] {
+                let dir = root.join(format!("{format:?}-{timezone:?}"));
+                let args = LogArgs {
+                    log_dir: Some(dir.clone()),
+                    log_format: format,
+                    log_timezone: timezone,
+                    ..Default::default()
+                };
+                for _ in 0..2 {
+                    let mut output = open_output(&args).unwrap();
+                    output.write_all(b"test").unwrap();
+                    output.flush().unwrap();
+                }
+                let files: Vec<_> = std::fs::read_dir(&dir)
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                assert_eq!(files.len(), 2);
+                for file in files {
+                    let name = file.file_name().into_string().unwrap();
+                    assert!(name.starts_with(env!("CARGO_PKG_NAME")));
+                    assert!(name.ends_with(if format == Format::Json {
+                        ".jsonl"
+                    } else {
+                        ".log"
+                    }));
+                    assert!(!name.contains(':'));
+                    let stamp = name
+                        .strip_prefix(concat!(env!("CARGO_PKG_NAME"), "-"))
+                        .unwrap()
+                        .split('.')
+                        .next()
+                        .unwrap();
+                    let parsed =
+                        chrono::DateTime::parse_from_str(&stamp[..20], "%Y%m%dT%H%M%S%z").unwrap();
+                    if timezone == Timezone::Utc {
+                        assert_eq!(parsed.offset().local_minus_utc(), 0);
+                    }
+                    assert_eq!(std::fs::read(file.path()).unwrap(), b"test");
+                }
+                let invalid = LogArgs {
+                    log_file: Some(root.join("both.log")),
+                    ..args
+                };
+                assert!(open_output(&invalid).is_err());
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn levels_targets_and_invalid_syntax() {
         let f = Filter::parse("off,audio2face3d=debug").unwrap();
@@ -313,6 +578,7 @@ mod tests {
             LogLevel::Info,
             r,
             UNIX_EPOCH + std::time::Duration::from_millis(123),
+            Timezone::Utc,
         )
         .unwrap();
         assert_eq!(bytes.iter().filter(|&&c| c == b'\n').count(), 1);
@@ -321,7 +587,7 @@ mod tests {
         assert_eq!(v["fields"]["ok"], true);
         assert_eq!(v["fields"]["ratio"], 0.5);
         assert_eq!(v["fields"]["negative"], -2);
-        assert_eq!(v["timestamp_unix_ms"], 123);
+        assert_eq!(v["timestamp"], "1970-01-01T00:00:00.123+00:00");
         assert!(v["fields"]["nan"].is_string());
         assert!(v["fields"]["inf"].is_string());
         assert_eq!(v["message"], "quote\"\n日本語");
@@ -350,6 +616,7 @@ mod output_tests {
             sender: None,
             filter: Filter::parse("trace").unwrap(),
             format: Format::Json,
+            timezone: Timezone::Utc,
             writer: writer.clone(),
         });
         logger.log(LogLevel::Info, || "event".into());
@@ -372,7 +639,13 @@ mod output_tests {
     }
     #[test]
     fn empty_fields_are_json_object() {
-        let bytes = json_line(LogLevel::Error, LogRecord::new("empty"), UNIX_EPOCH).unwrap();
+        let bytes = json_line(
+            LogLevel::Error,
+            LogRecord::new("empty"),
+            UNIX_EPOCH,
+            Timezone::Utc,
+        )
+        .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["fields"], serde_json::json!({}));
     }
