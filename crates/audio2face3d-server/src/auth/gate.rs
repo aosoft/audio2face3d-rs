@@ -71,7 +71,14 @@ impl<A: Authenticator> AuthGate<A> {
             result = tokio::time::timeout(self.timeout, protected) => result.unwrap_or_else(|_| Err(Status::unavailable("authentication timed out"))),
         };
         // Neither credentials nor application error strings are included.
-        tracing::debug!(accepted = result.is_ok(), "authentication finished");
+        audio2face3d::logging::integration::LogScope::capture().log(
+            audio2face3d::logging::LogLevel::Debug,
+            || {
+                audio2face3d::logging::LogRecord::new("authentication finished")
+                    .field("source", module_path!())
+                    .field("accepted", result.is_ok())
+            },
+        );
         result.map(Some)
     }
 }

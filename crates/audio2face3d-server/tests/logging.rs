@@ -12,13 +12,12 @@ use audio2face3d_server::{
 };
 use std::sync::{Arc, Mutex};
 #[derive(Default)]
-struct Sink(Mutex<Vec<String>>);
+struct Sink(Mutex<Vec<audio2face3d::logging::LogRecord>>);
 impl Logger for Sink {
     fn log_level(&self) -> LogLevel {
         LogLevel::Info
     }
     fn write_log(&self, _: LogLevel, message: audio2face3d::logging::LogRecord) {
-        let message = message.message;
         self.0.lock().unwrap().push(message);
     }
 }
@@ -76,15 +75,10 @@ async fn two_servers_remote_clients_and_direct_have_separate_contexts() {
         )
         .await
         .unwrap();
-        utterance(&client).await;
-        assert!(
-            remote_sink
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|s| s.contains("remote inference client connected"))
-        );
+        tokio::join!(utterance(&client), utterance(&client));
+        assert!(remote_sink.0.lock().unwrap().iter().any(|s| {
+            format!("{} {:?}", s.message, s.fields).contains("remote inference client connected")
+        }));
         clients.push(client);
         running.push((tx, handle));
         sinks.push(sink);
@@ -110,8 +104,36 @@ async fn two_servers_remote_clients_and_direct_have_separate_contexts() {
     }
     for i in 0..2 {
         let lines = sinks[i].0.lock().unwrap();
-        assert!(lines.iter().any(|s| s.contains(&addresses[i])));
-        assert!(!lines.iter().any(|s| s.contains(&addresses[1 - i])));
+        let mut completed = std::collections::BTreeSet::new();
+        for line in lines.iter().filter(|r| r.message == "completed") {
+            let id = line
+                .fields
+                .iter()
+                .find(|(k, _)| k == "rpc_id")
+                .expect("RPC field");
+            let audio2face3d::logging::LogValue::U64(id) = id.1 else {
+                panic!("typed RPC ID");
+            };
+            assert!(completed.insert(id), "duplicate completion");
+            assert!(lines.iter().any(|r| {
+                r.message == "received"
+                    && r.fields.iter().any(|(k, v)| {
+                        k == "rpc_id" && *v == audio2face3d::logging::LogValue::U64(id)
+                    })
+            }));
+        }
+        assert_eq!(completed.len(), 2);
+
+        assert!(
+            lines
+                .iter()
+                .any(|s| format!("{} {:?}", s.message, s.fields).contains(&addresses[i]))
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|s| format!("{} {:?}", s.message, s.fields).contains(&addresses[1 - i]))
+        );
     }
     assert!(
         direct_sink
@@ -119,6 +141,6 @@ async fn two_servers_remote_clients_and_direct_have_separate_contexts() {
             .lock()
             .unwrap()
             .iter()
-            .any(|s| s.contains("inference prepared"))
+            .any(|s| format!("{} {:?}", s.message, s.fields).contains("inference prepared"))
     );
 }

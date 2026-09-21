@@ -63,6 +63,12 @@ impl ResponseStream {
 impl Drop for ResponseStream {
     fn drop(&mut self) {
         let _scope = self.scope.activate();
+        if !self.ended {
+            self.scope.log(audio2face3d::logging::LogLevel::Debug, || {
+                audio2face3d::logging::LogRecord::new("response stream dropped; cancelling request")
+                    .field("source", module_path!())
+            });
+        }
         self.cancel.cancel();
     }
 }

@@ -127,7 +127,7 @@ async fn core_logging_and_status_never_include_credentials() {
             LogLevel::Trace
         }
         fn write_log(&self, _: LogLevel, message: audio2face3d::logging::LogRecord) {
-            let message = message.message;
+            let message = format!("{} {:?}", message.message, message.fields);
             self.0.lock().unwrap().push(message);
         }
     }

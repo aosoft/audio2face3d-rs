@@ -96,9 +96,23 @@ async fn run<A: Authenticator>(
                     health
                         .set_service_status(SERVICE_NAME, ServingStatus::NotServing)
                         .await;
-                    tracing::info!("stopping");
+                    audio2face3d::logging::integration::LogScope::capture().log(
+                        audio2face3d::logging::LogLevel::Info,
+                        || {
+                            audio2face3d::logging::LogRecord::new("stopping")
+                                .field("source", module_path!())
+                        },
+                    );
                 };
-                tracing::info!(address = ?listener.local_addr(), backend = ?config.backend, "serving");
+                audio2face3d::logging::integration::LogScope::capture().log(
+                    audio2face3d::logging::LogLevel::Info,
+                    || {
+                        audio2face3d::logging::LogRecord::new("serving")
+                            .field("source", module_path!())
+                            .field("address", format!("{:?}", listener.local_addr()))
+                            .field("backend", format!("{:?}", config.backend))
+                    },
+                );
                 // This scope drops a timed-out transport before waiting for workers.
                 let transport = Server::builder()
                     .http2_max_header_list_size(16 * 1024)
@@ -139,10 +153,14 @@ async fn run<A: Authenticator>(
     cleanup.map_err(ServerError::Cleanup)?;
     outcome?;
     let report = metrics.snapshot();
-    tracing::info!(
-        started = report.inference_workers_started,
-        finished = report.inference_workers_finished,
-        "server cleanup complete"
+    audio2face3d::logging::integration::LogScope::capture().log(
+        audio2face3d::logging::LogLevel::Info,
+        || {
+            audio2face3d::logging::LogRecord::new("server cleanup complete")
+                .field("source", module_path!())
+                .field("started", report.inference_workers_started)
+                .field("finished", report.inference_workers_finished)
+        },
     );
     Ok(report)
 }
