@@ -1,7 +1,7 @@
 # Audio2Face-3D for Rust
 
-This project is an independently maintained Rust port of NVIDIA’s Audio2Face-3D SDK,
-covering facial animation and Audio2Emotion inference.
+This project is an **unofficial Rust port of NVIDIA’s Audio2Face-3D SDK**,
+maintained independently and not an official NVIDIA SDK release.
 
 It also provides a unified client library for direct and remote inference and an
 embeddable gRPC server.

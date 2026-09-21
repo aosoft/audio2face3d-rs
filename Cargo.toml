@@ -17,7 +17,6 @@ readme = "README.md"
 [workspace.dependencies]
 audio2face3d = { version = "0.1.0", path = "crates/audio2face3d", default-features = false }
 clap = { version = "4.5", features = ["derive"] }
-hf-hub = { version = "1.0.0", features = ["blocking", "rustls-tls"] }
 sha2 = "0.11"
 thiserror = "2.0"
 tracing = "0.1"

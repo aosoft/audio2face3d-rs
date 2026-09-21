@@ -4,7 +4,7 @@
 
 Use the SDK-shaped executors when you need direct control over geometry, device buffers, or interactive execution.
 
-## Inference-free Audio2Emotion
+## Emotion post-processing without inference
 
 `PostProcessEmotionExecutorFactory` creates the original post-process-only
 executor without loading a TensorRT engine. Its `load` method returns a

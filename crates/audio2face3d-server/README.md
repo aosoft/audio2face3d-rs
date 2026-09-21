@@ -4,7 +4,6 @@ Generate facial animation from audio through the ACE
 `A2FControllerService/ProcessAudioStream` bidirectional RPC. The server uses
 the workspace's [shared inference layer](../../README.md) for Regression inference and the
 host BlendShape solver, returning 52 face curves together with audio.
-Audio2Emotion classifier inference is optional.
 
 This crate provides both a server library and a CLI executable.
 A separate mock backend is available for development diagnostics.
