@@ -6,7 +6,7 @@ the workspace's [shared inference layer](../../README.md) for Regression inferen
 host BlendShape solver, returning 52 face curves together with audio.
 Audio2Emotion classifier inference is optional.
 
-This crate is built from the workspace and is not published to crates.io.
+This crate provides both a server library and a CLI executable.
 A separate mock backend is available for development diagnostics.
 
 ## Build and run Regression inference

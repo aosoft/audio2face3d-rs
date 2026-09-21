@@ -87,7 +87,7 @@ jobs:
         if: ${{ inputs.mode == 'publish' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATESIO_TOKEN }}
-        run: cargo publish --workspace --locked --registry crates-io --verbose
+        run: cargo publish --workspace --locked --no-default-features --registry crates-io --verbose
 
       - name: Write summary
         if: ${{ always() }}
