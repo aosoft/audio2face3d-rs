@@ -502,15 +502,12 @@ impl ExecutionCompletion {
             self.ready_wakers_locked(&mut state)
         };
         if let Some(error) = detached_error {
-            crate::logging::integration::LogScope::capture().log(
-                crate::logging::LogLevel::Warn,
-                || {
-                    crate::logging::LogRecord::new("detached execution worker failed")
-                        .field("source", module_path!())
-                        .field("track", (track) as u64)
-                        .field("error", error.to_string())
-                },
-            );
+            crate::logging::integration::log(crate::logging::LogLevel::Warn, || {
+                crate::logging::LogRecord::new("detached execution worker failed")
+                    .field("source", module_path!())
+                    .field("track", (track) as u64)
+                    .field("error", error.to_string())
+            });
         }
         self.changed.notify_all();
         wake_all(all, tracks);
@@ -558,17 +555,12 @@ impl ExecutionCompletion {
         };
         drop(state);
         for (track, error) in errors {
-            crate::logging::integration::LogScope::capture().log(
-                crate::logging::LogLevel::Warn,
-                || {
-                    crate::logging::LogRecord::new(
-                        "execution dropped with an unobserved worker error",
-                    )
+            crate::logging::integration::log(crate::logging::LogLevel::Warn, || {
+                crate::logging::LogRecord::new("execution dropped with an unobserved worker error")
                     .field("source", module_path!())
                     .field("track", (track) as u64)
                     .field("error", error.to_string())
-                },
-            );
+            });
         }
     }
 

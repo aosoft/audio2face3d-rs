@@ -66,18 +66,13 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
             .inference_requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let scope = self.scope.clone();
-        let request_context =
-            crate::request::RequestContext::new(self.gate.next_id(), request.metadata());
-        let id = request_context.as_ref().map(|c| c.id.0).unwrap_or(0);
-        let scope = scope.field("rpc_id", id);
+        let id = self.gate.next_id();
+        let request_context = crate::request::RequestContext::new(id, request.metadata());
+        let scope = scope.field("rpc_id", id.0);
         Box::pin(scope.wrap_future(async move {
-            audio2face3d::logging::integration::LogScope::capture().log(
-                audio2face3d::logging::LogLevel::Info,
-                || {
-                    audio2face3d::logging::LogRecord::new("received")
-                        .field("source", module_path!())
-                },
-            );
+            audio2face3d::logging::integration::log(audio2face3d::logging::LogLevel::Info, || {
+                audio2face3d::logging::LogRecord::new("received").field("source", module_path!())
+            });
             let request_context = request_context?;
             request_context
                 .run(async move {
@@ -146,7 +141,7 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     self.workers.spawn(worker_scope.wrap_future(async move {
                         let _permit = permit;
-                        audio2face3d::logging::integration::LogScope::capture().log(
+                        audio2face3d::logging::integration::log(
                             audio2face3d::logging::LogLevel::Info,
                             || {
                                 audio2face3d::logging::LogRecord::new("started")
@@ -169,7 +164,7 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                         }
                         .await;
                         if let Err(error) = &result {
-                            audio2face3d::logging::integration::LogScope::capture().log(
+                            audio2face3d::logging::integration::log(
                                 audio2face3d::logging::LogLevel::Warn,
                                 || {
                                     audio2face3d::logging::LogRecord::new("failed")
@@ -179,7 +174,7 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                                 },
                             );
                         } else {
-                            audio2face3d::logging::integration::LogScope::capture().log(
+                            audio2face3d::logging::integration::log(
                                 audio2face3d::logging::LogLevel::Info,
                                 || {
                                     audio2face3d::logging::LogRecord::new("completed")

@@ -38,13 +38,9 @@ pub struct Factory {
 }
 impl Factory {
     async fn prepare_inner(config: Config, scope: LogScope) -> Result<Self> {
-        crate::logging::integration::LogScope::capture().log(
-            crate::logging::LogLevel::Info,
-            || {
-                crate::logging::LogRecord::new("preparing inference")
-                    .field("source", module_path!())
-            },
-        );
+        crate::logging::integration::log(crate::logging::LogLevel::Info, || {
+            crate::logging::LogRecord::new("preparing inference").field("source", module_path!())
+        });
         config.validate()?;
         #[cfg(not(feature = "native"))]
         if config.backend == BackendKind::Regression {
@@ -144,13 +140,10 @@ impl Factory {
                 }
             }
         };
-        crate::logging::integration::LogScope::capture().log(
-            crate::logging::LogLevel::Debug,
-            || {
-                crate::logging::LogRecord::new("starting inference request")
-                    .field("source", module_path!())
-            },
-        );
+        crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
+            crate::logging::LogRecord::new("starting inference request")
+                .field("source", module_path!())
+        });
         Ok(Box::new(ScopedBackend {
             scope: LogScope::capture(),
             inner: Box::new(ResamplingBackend {
@@ -276,13 +269,10 @@ impl Backend for ScopedBackend {
     fn close(&mut self) -> EngineFuture<'_, ()> {
         let scope = self.scope.clone();
         Box::pin(scope.wrap_future(async move {
-            crate::logging::integration::LogScope::capture().log(
-                crate::logging::LogLevel::Debug,
-                || {
-                    crate::logging::LogRecord::new("closing inference request")
-                        .field("source", module_path!())
-                },
-            );
+            crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
+                crate::logging::LogRecord::new("closing inference request")
+                    .field("source", module_path!())
+            });
             self.inner.close().await
         }))
     }

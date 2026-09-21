@@ -34,13 +34,10 @@ pub struct Model {
 
 impl Model {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        crate::logging::integration::LogScope::capture().log(
-            crate::logging::LogLevel::Debug,
-            || {
-                crate::logging::LogRecord::new("loading model descriptor")
-                    .field("source", module_path!())
-            },
-        );
+        crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
+            crate::logging::LogRecord::new("loading model descriptor")
+                .field("source", module_path!())
+        });
         let descriptor_path = path.as_ref().to_owned();
         let descriptor = load_model(&descriptor_path)?;
         let (network_path, engine_path, config_paths, model_data_paths, blendshape_paths) =

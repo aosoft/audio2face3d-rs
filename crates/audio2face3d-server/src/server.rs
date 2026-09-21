@@ -96,7 +96,7 @@ async fn run<A: Authenticator>(
                     health
                         .set_service_status(SERVICE_NAME, ServingStatus::NotServing)
                         .await;
-                    audio2face3d::logging::integration::LogScope::capture().log(
+                    audio2face3d::logging::integration::log(
                         audio2face3d::logging::LogLevel::Info,
                         || {
                             audio2face3d::logging::LogRecord::new("stopping")
@@ -104,7 +104,7 @@ async fn run<A: Authenticator>(
                         },
                     );
                 };
-                audio2face3d::logging::integration::LogScope::capture().log(
+                audio2face3d::logging::integration::log(
                     audio2face3d::logging::LogLevel::Info,
                     || {
                         audio2face3d::logging::LogRecord::new("serving")
@@ -153,15 +153,12 @@ async fn run<A: Authenticator>(
     cleanup.map_err(ServerError::Cleanup)?;
     outcome?;
     let report = metrics.snapshot();
-    audio2face3d::logging::integration::LogScope::capture().log(
-        audio2face3d::logging::LogLevel::Info,
-        || {
-            audio2face3d::logging::LogRecord::new("server cleanup complete")
-                .field("source", module_path!())
-                .field("started", report.inference_workers_started)
-                .field("finished", report.inference_workers_finished)
-        },
-    );
+    audio2face3d::logging::integration::log(audio2face3d::logging::LogLevel::Info, || {
+        audio2face3d::logging::LogRecord::new("server cleanup complete")
+            .field("source", module_path!())
+            .field("started", report.inference_workers_started)
+            .field("finished", report.inference_workers_finished)
+    });
     Ok(report)
 }
 

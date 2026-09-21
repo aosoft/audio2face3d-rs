@@ -704,13 +704,9 @@ mod logging_tests {
     struct Resource;
     impl Drop for Resource {
         fn drop(&mut self) {
-            crate::logging::integration::LogScope::capture().log(
-                crate::logging::LogLevel::Info,
-                || {
-                    crate::logging::LogRecord::new("resource dropped")
-                        .field("source", module_path!())
-                },
-            );
+            crate::logging::integration::log(crate::logging::LogLevel::Info, || {
+                crate::logging::LogRecord::new("resource dropped").field("source", module_path!())
+            });
         }
     }
     #[test]

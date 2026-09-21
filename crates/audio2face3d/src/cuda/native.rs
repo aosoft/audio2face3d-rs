@@ -91,14 +91,11 @@ impl GpuDevice {
             )?;
         }
         scope.context().native_device_ready();
-        crate::logging::integration::LogScope::capture().log(
-            crate::logging::LogLevel::Debug,
-            || {
-                crate::logging::LogRecord::new("retained CUDA primary context")
-                    .field("source", module_path!())
-                    .field("device", (ordinal) as u64)
-            },
-        );
+        crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
+            crate::logging::LogRecord::new("retained CUDA primary context")
+                .field("source", module_path!())
+                .field("device", (ordinal) as u64)
+        });
         Ok(Arc::new(Self {
             scope,
             api,
@@ -147,14 +144,13 @@ impl GpuDevice {
                 "cuStreamCreate",
             )?
         };
-        crate::logging::integration::LogScope::capture().log(
-            crate::logging::LogLevel::Debug,
-            || {
+        self.scope
+            .for_current()
+            .log(crate::logging::LogLevel::Debug, || {
                 crate::logging::LogRecord::new("created CUDA stream")
                     .field("source", module_path!())
                     .field("device", (self.id().ordinal()) as u64)
-            },
-        );
+            });
         Ok(CudaStream {
             device: Arc::clone(self),
             raw,
@@ -183,16 +179,15 @@ impl GpuDevice {
                 "cuMemAlloc",
             )?
         };
-        crate::logging::integration::LogScope::capture().log(
-            crate::logging::LogLevel::Debug,
-            || {
+        self.scope
+            .for_current()
+            .log(crate::logging::LogLevel::Debug, || {
                 crate::logging::LogRecord::new("allocated CUDA device memory")
                     .field("source", module_path!())
                     .field("device", (self.id().ordinal()) as u64)
                     .field("elements", (len) as u64)
                     .field("bytes", (bytes) as u64)
-            },
-        );
+            });
         Ok(DeviceBuffer {
             device: Arc::clone(self),
             pointer,

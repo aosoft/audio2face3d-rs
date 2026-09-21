@@ -50,7 +50,7 @@ impl LogScope {
     }
     pub fn for_current(&self) -> Self {
         let current = Self::capture();
-        if self.fields.is_empty() && current.context.shares_resources(&self.context) {
+        if !current.fields.is_empty() && current.context.shares_resources(&self.context) {
             current
         } else {
             self.clone()
@@ -120,4 +120,17 @@ impl std::fmt::Debug for LogScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogScope").finish_non_exhaustive()
     }
+}
+
+/// Emits only when an application scope exists; the unconfigured path allocates nothing.
+pub fn log(level: super::LogLevel, make_record: impl FnOnce() -> super::LogRecord) {
+    if let Some(scope) = CURRENT.with(|current| current.borrow().clone()) {
+        scope.log(level, make_record);
+    }
+}
+pub fn enabled(level: super::LogLevel) -> bool {
+    let scope = CURRENT.with(|current| current.borrow().clone());
+    scope.is_some_and(|scope| {
+        level != super::LogLevel::Off && level >= scope.context.logger().log_level()
+    })
 }

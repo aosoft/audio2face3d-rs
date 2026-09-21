@@ -62,7 +62,7 @@ impl ResponseStream {
 }
 impl Drop for ResponseStream {
     fn drop(&mut self) {
-        let _scope = self.scope.activate();
+        let _scope = self.scope.enter();
         if !self.ended {
             self.scope.log(audio2face3d::logging::LogLevel::Debug, || {
                 audio2face3d::logging::LogRecord::new("response stream dropped; cancelling request")
@@ -75,7 +75,7 @@ impl Drop for ResponseStream {
 impl Stream for ResponseStream {
     type Item = Result<controller::AnimationDataStream, Status>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let _scope = self.scope.activate();
+        let _scope = self.scope.enter();
         if self.ended {
             return Poll::Ready(None);
         }

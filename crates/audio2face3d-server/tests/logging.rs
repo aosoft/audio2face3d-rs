@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 struct Sink(Mutex<Vec<audio2face3d::logging::LogRecord>>);
 impl Logger for Sink {
     fn log_level(&self) -> LogLevel {
-        LogLevel::Info
+        LogLevel::Debug
     }
     fn write_log(&self, _: LogLevel, message: audio2face3d::logging::LogRecord) {
         self.0.lock().unwrap().push(message);
@@ -54,14 +54,19 @@ async fn two_servers_remote_clients_and_direct_have_separate_contexts() {
     let mut clients = vec![];
     let mut sinks = vec![];
     let mut addresses = vec![];
-    for _ in 0..2 {
+    for active in 1..=2 {
         let sink = Arc::new(Sink::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = Server::builder(Config::builder(BackendKind::Mock).build().unwrap())
-            .context(context(sink.clone()))
-            .build()
-            .unwrap();
+        let server = Server::builder(
+            Config::builder(BackendKind::Mock)
+                .max_streams(active)
+                .build()
+                .unwrap(),
+        )
+        .context(context(sink.clone()))
+        .build()
+        .unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(server.serve(listener, async {
             let _ = rx.await;
@@ -143,4 +148,112 @@ async fn two_servers_remote_clients_and_direct_have_separate_contexts() {
             .iter()
             .any(|s| format!("{} {:?}", s.message, s.fields).contains("inference prepared"))
     );
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_request_keeps_id_after_active_cancellation() {
+    let sink = Arc::new(Sink::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = Server::builder(
+        Config::builder(BackendKind::Mock)
+            .max_streams(1)
+            .build()
+            .unwrap(),
+    )
+    .context(context(sink.clone()))
+    .build()
+    .unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(server.serve(listener, async {
+        let _ = rx.await;
+    }));
+    let client = Client::server(
+        ServerConfig::builder(format!("http://{addr}"))
+            .build()
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let options = || {
+        RequestOptions::builder(AudioFormat::MONO_16KHZ)
+            .build()
+            .unwrap()
+    };
+    let (mut input1, output1, control1) = client.start(options()).unwrap().split();
+    input1
+        .send(InputChunk::new(
+            PcmBuffer::from_vec(vec![0; 320]).unwrap(),
+            vec![],
+        ))
+        .await
+        .unwrap();
+    async fn until(sink: &Sink, message: &str, count: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if sink
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| r.message == message)
+                    .count()
+                    >= count
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    until(&sink, "started", 1).await;
+    let (mut input2, mut output2, control2) = client.start(options()).unwrap().split();
+    input2
+        .send(InputChunk::new(
+            PcmBuffer::from_vec(vec![0; 320]).unwrap(),
+            vec![],
+        ))
+        .await
+        .unwrap();
+    input2.finish().await.unwrap();
+    until(&sink, "waiting for execution slot", 2).await;
+    control1.cancel();
+    drop(output1);
+    drop(input1);
+    let mut completed = false;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(event) = output2.recv().await.unwrap() {
+            completed |= matches!(event, OutputEvent::Completed(_));
+        }
+    })
+    .await
+    .unwrap();
+    assert!(completed);
+    control2.closed().await.unwrap();
+    client.shutdown().await.unwrap();
+    tx.send(()).unwrap();
+    handle.await.unwrap().unwrap();
+    let records = sink.0.lock().unwrap();
+    let id = |r: &audio2face3d::logging::LogRecord| {
+        r.fields
+            .iter()
+            .find_map(|(k, v)| if k == "rpc_id" { Some(v.clone()) } else { None })
+            .unwrap()
+    };
+    let started: Vec<_> = records
+        .iter()
+        .filter(|r| r.message == "started")
+        .map(id)
+        .collect();
+    assert_eq!(started.len(), 2);
+    assert_ne!(started[0], started[1]);
+    assert!(
+        records
+            .iter()
+            .any(|r| r.message == "completed" && id(r) == started[1])
+    );
+    assert!(records.iter().any(|r| (r.message == "failed"
+        || r.message.contains("response stream dropped"))
+        && id(r) == started[0]));
 }
