@@ -148,6 +148,7 @@ dependencies = [
  "http",
  "prost",
  "prost-types",
+ "serde_json",
  "subtle",
  "tokio",
  "tokio-stream",
@@ -155,6 +156,7 @@ dependencies = [
  "tonic",
  "tonic-health",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

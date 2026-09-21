@@ -16,9 +16,11 @@ features = ["mock"]
 default = ["native"]
 native = ["audio2face3d/native"]
 mock = ["audio2face3d/mock"]
-cli = ["dep:tracing", "audio2face3d/runtime-cli", "dep:subtle", "dep:clap", "tokio/signal"]
+cli = ["dep:serde_json", "dep:tracing-subscriber", "dep:tracing", "audio2face3d/runtime-cli", "dep:subtle", "dep:clap", "tokio/signal"]
 
 [dependencies]
+serde_json = { workspace = true, optional = true }
+tracing-subscriber = { version = "0.3.23", optional = true, default-features = false, features = ["registry", "fmt"] }
 subtle = { version = "2.6.1", optional = true }
 audio2face3d = { version = "0.1.0", path = "../audio2face3d", default-features = false, features = ["grpc-server"] }
 clap = { workspace = true, optional = true }

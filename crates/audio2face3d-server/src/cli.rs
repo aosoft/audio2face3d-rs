@@ -26,9 +26,10 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         return Ok(());
     }
     let authenticator = auth::resolve(args.api_key.take())?;
-    let logger = logging::StderrLogger::from_env()?;
+    let logging = logging::Logging::start(&args.logging)?;
+    let result = async {
     let context = audio2face3d::Audio2Face3DContext::builder()
-        .logger(std::sync::Arc::new(logger))
+        .logger(logging.logger.clone())
         .native_runtime(args.runtime.resolve()?)
         .build();
     let server = Server::builder(args.config()?)
@@ -60,4 +61,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         Err(error) => Err(Box::new(error) as Box<dyn Error + Send + Sync>),
     }
+    }.await;
+    logging.finish()?;
+    result
 }

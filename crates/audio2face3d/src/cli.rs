@@ -41,6 +41,8 @@ const DEFAULT_TOKEN_ENVIRONMENT: &str = "HF_TOKEN";
 )]
 struct Cli {
     #[command(flatten)]
+    logging: logging::LogArgs,
+    #[command(flatten)]
     runtime: audio2face3d::runtime::cli::PlatformArgs,
     #[command(subcommand)]
     command: Command,
@@ -448,12 +450,16 @@ struct EngineOptions {
 pub fn run() {
     let cli = Cli::parse();
     let result = (|| {
-        let logger = logging::StderrLogger::from_env()?;
+        let logging =
+            logging::Logging::start(&cli.logging).map_err(|e| e as Box<dyn std::error::Error>)?;
         let context = audio2face3d::Audio2Face3DContext::builder()
-            .logger(std::sync::Arc::new(logger))
+            .logger(logging.logger.clone())
             .native_runtime(cli.runtime.resolve()?)
             .build();
-        audio2face3d::logging::integration::LogScope::new(context).in_scope(|| execute(cli))
+        let outcome =
+            audio2face3d::logging::integration::LogScope::new(context).in_scope(|| execute(cli));
+        logging.finish()?;
+        outcome
     })();
     if let Err(error) = result {
         eprintln!("audio2face3d: {error}");
