@@ -103,7 +103,13 @@ struct Server {
 }
 impl Client {
     async fn server_inner(mut config: ServerConfig) -> Result<Self> {
-        tracing::info!("connecting remote inference client");
+        crate::logging::integration::LogScope::capture().log(
+            crate::logging::LogLevel::Info,
+            || {
+                crate::logging::LogRecord::new("connecting remote inference client")
+                    .field("source", module_path!())
+            },
+        );
         config.validate()?;
         let authorization = authorization(config.api_key.take().as_deref())?;
         let handle = config
@@ -129,7 +135,13 @@ impl Client {
                     .connect()
                     .await
                     .map_err(|e| Error::new(ErrorKind::Transport, e.to_string()))?;
-                tracing::info!("remote inference client connected");
+                crate::logging::integration::LogScope::capture().log(
+                    crate::logging::LogLevel::Info,
+                    || {
+                        crate::logging::LogRecord::new("remote inference client connected")
+                            .field("source", module_path!())
+                    },
+                );
                 Self::with_driver(
                     config.limits,
                     Arc::new(Server {
@@ -162,9 +174,13 @@ impl Driver for Server {
                     error=guard.cancelled()=>Err(error),
                     result=run(channel,max,authorization,options,reader,&mut writer)=>result,
                 };
-                tracing::debug!(
-                    success = result.is_ok(),
-                    "remote inference request finished"
+                crate::logging::integration::LogScope::capture().log(
+                    crate::logging::LogLevel::Debug,
+                    || {
+                        crate::logging::LogRecord::new("remote inference request finished")
+                            .field("source", module_path!())
+                            .field("success", result.is_ok())
+                    },
                 );
                 guard.finish(result);
             }));

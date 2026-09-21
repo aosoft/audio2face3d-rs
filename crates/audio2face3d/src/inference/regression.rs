@@ -169,7 +169,13 @@ fn load_sync(config: &Config, header: &RequestOptions) -> Result<Runtime, Error>
     if executor.weight_count() != 52 {
         return Err(internal("solver output must contain 52 weights"));
     }
-    tracing::info!(model = %path.display(), device = config.device, load_ms = loaded_at.elapsed().as_millis(), "regression model and host solver ready");
+    crate::logging::integration::LogScope::capture().log(crate::logging::LogLevel::Info, || {
+        crate::logging::LogRecord::new("regression model and host solver ready")
+            .field("source", module_path!())
+            .field("model", path.display().to_string())
+            .field("device", (config.device) as u64)
+            .field("load_ms", (loaded_at.elapsed().as_millis()) as u64)
+    });
     Ok(Runtime {
         executor,
         order,

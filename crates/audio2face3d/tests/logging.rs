@@ -78,8 +78,7 @@ fn context_clones_share_resources_without_requiring_a_runtime() {
         LogLevel::Off
     );
 }
-#[cfg(feature = "tracing")]
-mod bridge {
+mod scopes {
     use super::*;
     use audio2face3d::logging::integration::LogScope;
     use std::{
@@ -91,7 +90,10 @@ mod bridge {
         counter.fetch_add(1, Ordering::SeqCst)
     }
     fn emit(counter: &AtomicUsize) {
-        tracing::info!(cost = expensive(counter), "dynamic");
+        LogScope::capture().log(LogLevel::Info, || {
+            audio2face3d::logging::LogRecord::new("dynamic")
+                .field("cost", expensive(counter) as u64)
+        });
     }
     #[test]
     fn dynamic_level_suppresses_expression_before_formatting() {
@@ -114,13 +116,13 @@ mod bridge {
     impl Future for PendingLog {
         type Output = ();
         fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
-            tracing::info!("poll");
+            LogScope::capture().log(LogLevel::Info, || "poll".into());
             Poll::Pending
         }
     }
     impl Drop for PendingLog {
         fn drop(&mut self) {
-            tracing::warn!("drop");
+            LogScope::capture().log(LogLevel::Warn, || "drop".into());
         }
     }
     #[test]
@@ -142,39 +144,6 @@ mod bridge {
             assert!(lines[0].1.contains("poll"));
             assert!(lines[1].1.contains("drop"));
         }
-    }
-    #[test]
-    fn span_fields_and_messages_are_bounded() {
-        let sink = Arc::new(Sink::default());
-        let scope = LogScope::new(context(sink.clone()));
-        scope.in_scope(|| {
-            let span = tracing::info_span!("request", id = 123, field = "値".repeat(5000));
-            let _entered = span.enter();
-            tracing::info!(payload=%"文".repeat(30000),"bounded");
-        });
-        let lines = sink.lines.lock().unwrap();
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].1.contains("id=123"));
-        assert!(lines[0].1.len() <= 16384);
-    }
-    #[test]
-    fn logger_reentry_is_suppressed() {
-        struct Reentrant(AtomicUsize);
-        impl Logger for Reentrant {
-            fn log_level(&self) -> LogLevel {
-                LogLevel::Trace
-            }
-            fn write_log(&self, _: LogLevel, _: audio2face3d::logging::LogRecord) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                tracing::warn!("reentrant");
-            }
-        }
-        let logger = Arc::new(Reentrant(AtomicUsize::new(0)));
-        let ctx = Audio2Face3DContext::builder()
-            .logger(logger.clone())
-            .build();
-        LogScope::new(ctx).in_scope(|| tracing::info!("outer"));
-        assert_eq!(logger.0.load(Ordering::SeqCst), 1);
     }
 }
 #[cfg(feature = "mock")]

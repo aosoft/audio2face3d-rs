@@ -38,7 +38,13 @@ pub struct Factory {
 }
 impl Factory {
     async fn prepare_inner(config: Config, scope: LogScope) -> Result<Self> {
-        tracing::info!("preparing inference");
+        crate::logging::integration::LogScope::capture().log(
+            crate::logging::LogLevel::Info,
+            || {
+                crate::logging::LogRecord::new("preparing inference")
+                    .field("source", module_path!())
+            },
+        );
         config.validate()?;
         #[cfg(not(feature = "native"))]
         if config.backend == BackendKind::Regression {
@@ -59,7 +65,10 @@ impl Factory {
         } else {
             None
         };
-        tracing::info!("inference prepared");
+        crate::logging::integration::LogScope::capture()
+            .log(crate::logging::LogLevel::Info, || {
+                crate::logging::LogRecord::new("inference prepared").field("source", module_path!())
+            });
         Ok(Self {
             scope,
             config,
@@ -135,7 +144,13 @@ impl Factory {
                 }
             }
         };
-        tracing::debug!("starting inference request");
+        crate::logging::integration::LogScope::capture().log(
+            crate::logging::LogLevel::Debug,
+            || {
+                crate::logging::LogRecord::new("starting inference request")
+                    .field("source", module_path!())
+            },
+        );
         Ok(Box::new(ScopedBackend {
             scope: LogScope::capture(),
             inner: Box::new(ResamplingBackend {
@@ -261,7 +276,13 @@ impl Backend for ScopedBackend {
     fn close(&mut self) -> EngineFuture<'_, ()> {
         let scope = self.scope.clone();
         Box::pin(scope.wrap_future(async move {
-            tracing::debug!("closing inference request");
+            crate::logging::integration::LogScope::capture().log(
+                crate::logging::LogLevel::Debug,
+                || {
+                    crate::logging::LogRecord::new("closing inference request")
+                        .field("source", module_path!())
+                },
+            );
             self.inner.close().await
         }))
     }

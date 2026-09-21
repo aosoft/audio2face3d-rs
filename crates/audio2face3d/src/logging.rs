@@ -112,7 +112,5 @@ impl Logger for NoopLogger {
     }
     fn write_log(&self, _: LogLevel, _: LogRecord) {}
 }
-#[cfg(feature = "tracing")]
-mod bridge;
 pub mod integration;
 mod scope;

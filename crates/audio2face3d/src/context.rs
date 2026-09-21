@@ -19,8 +19,6 @@ struct ContextInner {
     resources: NativeResources,
     logger: Arc<dyn Logger>,
     native_runtime: NativeRuntimeConfig,
-    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
-    legacy: bool,
 }
 pub struct Audio2Face3DContextBuilder {
     logger: Arc<dyn Logger>,
@@ -36,23 +34,8 @@ impl Audio2Face3DContext {
     pub fn native_runtime(&self) -> &NativeRuntimeConfig {
         &self.inner.native_runtime
     }
-    pub(crate) fn legacy() -> Self {
-        Self {
-            inner: Arc::new(ContextInner {
-                #[cfg(feature = "cuda")]
-                resources: NativeResources::default(),
-                logger: Arc::new(NoopLogger),
-                native_runtime: NativeRuntimeConfig::default(),
-                legacy: true,
-            }),
-        }
-    }
     pub(crate) fn shares_resources(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
-    }
-    #[cfg(feature = "tracing")]
-    pub(crate) fn is_legacy(&self) -> bool {
-        self.inner.legacy
     }
 }
 impl Default for Audio2Face3DContext {
@@ -84,7 +67,6 @@ impl Audio2Face3DContextBuilder {
                 resources: NativeResources::default(),
                 logger: self.logger,
                 native_runtime: self.native_runtime,
-                legacy: false,
             }),
         }
     }

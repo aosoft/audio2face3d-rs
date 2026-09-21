@@ -24,7 +24,7 @@ impl Logger for Local {
     }
 }
 #[test]
-fn explicit_noop_overrides_existing_global_and_legacy_preserves_it() {
+fn application_subscriber_is_untouched_by_library_scopes() {
     let global = Arc::new(AtomicUsize::new(0));
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry().with(Global(global.clone())),
@@ -32,12 +32,18 @@ fn explicit_noop_overrides_existing_global_and_legacy_preserves_it() {
     .unwrap();
     LogScope::capture().in_scope(|| tracing::info!("legacy"));
     let cost = AtomicUsize::new(0);
-    LogScope::new(Audio2Face3DContext::default())
-        .in_scope(|| tracing::error!(cost = cost.fetch_add(1, Ordering::SeqCst), "suppressed"));
+    LogScope::new(Audio2Face3DContext::default()).in_scope(|| {
+        LogScope::capture().log(LogLevel::Error, || {
+            cost.fetch_add(1, Ordering::SeqCst);
+            "suppressed".into()
+        })
+    });
     let local = Arc::new(Local(AtomicUsize::new(0)));
-    LogScope::new(Audio2Face3DContext::builder().logger(local.clone()).build())
-        .in_scope(|| tracing::info!("local"));
-    assert_eq!(global.load(Ordering::SeqCst), 1);
+    LogScope::new(Audio2Face3DContext::builder().logger(local.clone()).build()).in_scope(|| {
+        LogScope::capture().log(LogLevel::Info, || "local".into());
+        tracing::info!("application");
+    });
+    assert_eq!(global.load(Ordering::SeqCst), 2);
     assert_eq!(local.0.load(Ordering::SeqCst), 1);
     assert_eq!(cost.load(Ordering::SeqCst), 0);
 }

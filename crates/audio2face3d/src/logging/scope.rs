@@ -12,45 +12,45 @@ thread_local! {static CURRENT:RefCell<Option<LogScope>>=const{RefCell::new(None)
 #[derive(Clone)]
 pub struct LogScope {
     context: Audio2Face3DContext,
-    #[cfg(feature = "tracing")]
-    dispatch: tracing::Dispatch,
-    #[cfg(feature = "tracing")]
-    span: tracing::Span,
+    fields: Vec<(String, super::LogValue)>,
 }
 impl LogScope {
     pub fn new(context: Audio2Face3DContext) -> Self {
-        #[cfg(feature = "tracing")]
-        let dispatch = if context.is_legacy() {
-            tracing::dispatcher::get_default(Clone::clone)
-        } else {
-            super::bridge::dispatch(context.clone())
-        };
         Self {
             context,
-            #[cfg(feature = "tracing")]
-            dispatch,
-            #[cfg(feature = "tracing")]
-            span: tracing::Span::none(),
+            fields: Vec::new(),
         }
     }
     pub fn capture() -> Self {
-        let scope = CURRENT
+        CURRENT
             .with(|v| v.borrow().clone())
-            .unwrap_or_else(|| Self::new(Audio2Face3DContext::legacy()));
-        #[cfg(feature = "tracing")]
-        {
-            let mut scope = scope;
-            scope.span = tracing::Span::current();
-            scope
+            .unwrap_or_else(|| Self::new(Audio2Face3DContext::default()))
+    }
+    /// Adds request-local context without modifying shared application resources.
+    pub fn field(mut self, key: impl Into<String>, value: impl Into<super::LogValue>) -> Self {
+        let record = super::LogRecord {
+            message: String::new(),
+            fields: self.fields,
         }
-        #[cfg(not(feature = "tracing"))]
-        {
-            scope
-        }
+        .field(key, value);
+        self.fields = record.fields;
+        self
+    }
+    pub fn log(&self, level: super::LogLevel, make_record: impl FnOnce() -> super::LogRecord) {
+        use super::Logger;
+        self.context.logger().log(level, || {
+            let mut record = make_record();
+            for (key, value) in &self.fields {
+                if !record.fields.iter().any(|(k, _)| k == key) {
+                    record.fields.push((key.clone(), value.clone()));
+                }
+            }
+            record
+        });
     }
     pub fn for_current(&self) -> Self {
         let current = Self::capture();
-        if current.context.shares_resources(&self.context) {
+        if self.fields.is_empty() && current.context.shares_resources(&self.context) {
             current
         } else {
             self.clone()
@@ -64,14 +64,8 @@ impl LogScope {
     }
     pub fn enter(&self) -> ScopeGuard {
         let previous = CURRENT.with(|v| v.replace(Some(self.clone())));
-        #[cfg(feature = "tracing")]
-        let dispatch = tracing::dispatcher::set_default(&self.dispatch);
         ScopeGuard {
             previous,
-            #[cfg(feature = "tracing")]
-            dispatch: Some(dispatch),
-            #[cfg(feature = "tracing")]
-            span: Some(self.span.clone().entered()),
             not_send: PhantomData,
         }
     }
@@ -88,18 +82,10 @@ impl LogScope {
 }
 pub struct ScopeGuard {
     previous: Option<LogScope>,
-    #[cfg(feature = "tracing")]
-    dispatch: Option<tracing::dispatcher::DefaultGuard>,
-    #[cfg(feature = "tracing")]
-    span: Option<tracing::span::EnteredSpan>,
     not_send: PhantomData<Rc<()>>,
 }
 impl Drop for ScopeGuard {
     fn drop(&mut self) {
-        #[cfg(feature = "tracing")]
-        drop(self.span.take());
-        #[cfg(feature = "tracing")]
-        drop(self.dispatch.take());
         CURRENT.with(|v| {
             v.replace(self.previous.take());
         });

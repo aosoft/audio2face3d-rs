@@ -1773,7 +1773,14 @@ impl HostBlendshapeSolveExecutor {
                 let tongue_solver = tongue_solvers[metadata.track_index].clone();
                 let task_callback = Arc::clone(&callback);
                 if let Err(error) = completion.add_task(metadata.track_index) {
-                    tracing::warn!(error = %error, "failed to register BlendShape task");
+                    crate::logging::integration::LogScope::capture().log(
+                        crate::logging::LogLevel::Warn,
+                        || {
+                            crate::logging::LogRecord::new("failed to register BlendShape task")
+                                .field("source", module_path!())
+                                .field("error", error.to_string())
+                        },
+                    );
                     return ControlFlow::Break(());
                 }
                 let task =
