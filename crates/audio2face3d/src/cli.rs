@@ -3,7 +3,7 @@ mod async_util;
 #[cfg(feature = "native")]
 mod benchmark_command;
 mod library;
-mod logging;
+use audio2face3d::cli_logging as logging;
 mod progress;
 mod raw_engine;
 #[cfg(feature = "native")]
@@ -450,8 +450,8 @@ struct EngineOptions {
 pub fn run() {
     let cli = Cli::parse();
     let result = (|| {
-        let logging =
-            logging::Logging::start(&cli.logging).map_err(|e| e as Box<dyn std::error::Error>)?;
+        let logging = logging::Logging::start(&cli.logging, env!("CARGO_PKG_NAME"))
+            .map_err(|e| e as Box<dyn std::error::Error>)?;
         let context = audio2face3d::Audio2Face3DContext::builder()
             .logger(logging.logger.clone())
             .native_runtime(cli.runtime.resolve()?)

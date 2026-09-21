@@ -113,3 +113,6 @@ pub use context::{Audio2Face3DContext, Audio2Face3DContextBuilder};
 
 #[cfg(feature = "runtime-cli")]
 mod platform_config_file;
+
+#[cfg(feature = "cli-logging")]
+pub mod cli_logging;

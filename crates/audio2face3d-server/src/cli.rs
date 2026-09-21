@@ -1,6 +1,6 @@
 mod args;
 mod auth;
-mod logging;
+use audio2face3d::cli_logging as logging;
 use audio2face3d_server::{Server, ServerError, proto::DESCRIPTOR};
 use clap::{Parser, error::ErrorKind};
 use std::error::Error;
@@ -26,7 +26,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         return Ok(());
     }
     let authenticator = auth::resolve(args.api_key.take())?;
-    let logging = logging::Logging::start(&args.logging)?;
+    let logging = logging::Logging::start(&args.logging, env!("CARGO_PKG_NAME"))?;
     let result = async {
     let context = audio2face3d::Audio2Face3DContext::builder()
         .logger(logging.logger.clone())
