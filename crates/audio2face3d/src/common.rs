@@ -1,8 +1,8 @@
 //! Shared errors, checked conversions, and tensor metadata.
 //!
-//! Explicit Audio2Face3DContext injection routes structured [`tracing`] events
-//! to the application Logger. Legacy constructors preserve the calling subscriber;
-//! the library never installs a global subscriber. Logs may
+//! Audio2Face3DContext routes library diagnostics to the application Logger.
+//! Unconfigured contexts are silent; the library never configures a subscriber.
+//! Logs may
 //! include operation names, device ordinals, tensor names, dtypes, and shapes;
 //! device pointers, model contents, audio samples, and credentials are never
 //! logged.

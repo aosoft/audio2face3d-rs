@@ -697,14 +697,16 @@ mod logging_tests {
         fn log_level(&self) -> LogLevel {
             LogLevel::Trace
         }
-        fn write_log(&self, _: LogLevel, _: String) {
+        fn write_log(&self, _: LogLevel, _: crate::logging::LogRecord) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
     struct Resource;
     impl Drop for Resource {
         fn drop(&mut self) {
-            tracing::info!("resource dropped");
+            crate::logging::integration::log(crate::logging::LogLevel::Info, || {
+                crate::logging::LogRecord::new("resource dropped").field("source", module_path!())
+            });
         }
     }
     #[test]

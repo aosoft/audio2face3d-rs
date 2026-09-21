@@ -38,52 +38,77 @@ pub struct Factory {
 }
 impl Factory {
     async fn prepare_inner(config: Config, scope: LogScope) -> Result<Self> {
-        tracing::info!("preparing inference");
-        config.validate()?;
-        #[cfg(not(feature = "native"))]
-        if config.backend == BackendKind::Regression {
-            return Err(Error::new(
-                ErrorKind::RuntimeUnavailable,
-                "regression requires --features native",
-            ));
-        }
-        #[cfg(feature = "native")]
-        let prepared = if config.backend == BackendKind::Regression {
-            Some(
-                crate::inference::regression::RegressionBackend::load(
-                    config.clone(),
-                    RequestOptions::default(),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-        tracing::info!("inference prepared");
-        Ok(Self {
-            scope,
-            config,
+        let mut observation = crate::logging::operation::Operation::new(
+            "inference preparation finished",
+            module_path!(),
+        );
+        let result = async {
+            crate::logging::integration::log(crate::logging::LogLevel::Info, || {
+                crate::logging::LogRecord::new("preparing inference")
+                    .field("source", module_path!())
+            });
+            observation.stage = "configuration";
+            config.validate()?;
+            observation.stage = "model_load";
+            #[cfg(not(feature = "native"))]
+            if config.backend == BackendKind::Regression {
+                return Err(Error::new(
+                    ErrorKind::RuntimeUnavailable,
+                    "regression requires --features native",
+                ));
+            }
             #[cfg(feature = "native")]
-            prepared: Mutex::new(prepared),
-        })
+            let prepared = if config.backend == BackendKind::Regression {
+                Some(
+                    crate::inference::regression::RegressionBackend::load(
+                        config.clone(),
+                        RequestOptions::default(),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            Ok(Self {
+                scope,
+                config,
+                #[cfg(feature = "native")]
+                prepared: Mutex::new(prepared),
+            })
+        }
+        .await;
+        observation.finish(&result);
+        result
     }
     /// Release unused warm state on its owner worker. Active backends remain independently owned.
     async fn release_prepared_inner(&self) -> Result<()> {
-        use crate::logging::Logger;
-        self.scope
-            .context()
-            .logger()
-            .log(crate::logging::LogLevel::Debug, || {
-                "audio2face3d::inference release prepared inference resources".to_owned()
-            });
-        #[cfg(feature = "native")]
-        {
-            let prepared = self.prepared.lock().unwrap().take();
-            if let Some(mut backend) = prepared {
-                backend.close().await?;
+        let mut observation = crate::logging::operation::Operation::new(
+            "prepared resource release finished",
+            module_path!(),
+        );
+        observation.stage = "cleanup";
+        let result = async {
+            use crate::logging::Logger;
+            self.scope
+                .context()
+                .logger()
+                .log(crate::logging::LogLevel::Debug, || {
+                    crate::logging::LogRecord::new("release prepared inference resources")
+                        .field("source", module_path!())
+                });
+            #[cfg(feature = "native")]
+            {
+                let prepared = self.prepared.lock().unwrap().take();
+                if let Some(mut backend) = prepared {
+                    backend.close().await?;
+                }
             }
+            Ok(())
         }
-        Ok(())
+        .await;
+        observation.cleanup_failed = result.is_err();
+        observation.finish(&result);
+        result
     }
     #[cfg(any(feature = "mock", feature = "native"))]
     async fn start_inner(&self, options: RequestOptions) -> Result<Box<dyn Backend>> {
@@ -135,9 +160,13 @@ impl Factory {
                 }
             }
         };
-        tracing::debug!("starting inference request");
+        crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
+            crate::logging::LogRecord::new("starting inference request")
+                .field("source", module_path!())
+        });
         Ok(Box::new(ScopedBackend {
             scope: LogScope::capture(),
+            close_logged: false,
             inner: Box::new(ResamplingBackend {
                 inner,
                 format: crate::types::AudioFormat::pcm16(rate, 1)?,
@@ -238,6 +267,7 @@ impl Factory {
 
 #[cfg(any(feature = "mock", feature = "native"))]
 struct ScopedBackend {
+    close_logged: bool,
     inner: Box<dyn Backend>,
     scope: LogScope,
 }
@@ -261,7 +291,13 @@ impl Backend for ScopedBackend {
     fn close(&mut self) -> EngineFuture<'_, ()> {
         let scope = self.scope.clone();
         Box::pin(scope.wrap_future(async move {
-            tracing::debug!("closing inference request");
+            if !self.close_logged {
+                self.close_logged = true;
+                crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
+                    crate::logging::LogRecord::new("closing inference request")
+                        .field("source", module_path!())
+                });
+            }
             self.inner.close().await
         }))
     }

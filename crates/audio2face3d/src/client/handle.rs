@@ -136,10 +136,9 @@ impl Client {
             deadline,
             bytes,
         )?;
-        #[cfg(feature = "tracing")]
-        let span = tracing::error_span!("client_request", id = request.id.0);
-        #[cfg(feature = "tracing")]
-        let _span = span.enter();
+        let request_scope = crate::logging::integration::LogScope::capture()
+            .field("client_request_id", request.id.0);
+        let _request_scope = request_scope.enter();
         let session = Session::new(request.clone());
         let worker = WorkerSession::new(request.clone(), lease);
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

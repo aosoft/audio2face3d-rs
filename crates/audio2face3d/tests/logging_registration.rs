@@ -1,4 +1,3 @@
-#![cfg(feature = "tracing")]
 use audio2face3d::{
     Audio2Face3DContext,
     logging::{LogLevel, Logger, integration::LogScope},
@@ -12,12 +11,12 @@ impl Logger for Sink {
     fn log_level(&self) -> LogLevel {
         LogLevel::Trace
     }
-    fn write_log(&self, _: LogLevel, _: String) {
+    fn write_log(&self, _: LogLevel, _: audio2face3d::logging::LogRecord) {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 fn shared_callsite() {
-    tracing::info!("callsite first encountered outside its sole scoped dispatcher");
+    LogScope::capture().log(LogLevel::Info, || "direct scoped event".into());
 }
 #[test]
 fn first_registration_without_current_dispatcher_does_not_disable_scoped_logging() {

@@ -16,13 +16,13 @@ features = ["mock"]
 default = ["native"]
 native = ["audio2face3d/native"]
 mock = ["audio2face3d/mock"]
-cli = ["audio2face3d/runtime-cli", "dep:subtle", "dep:clap", "tokio/signal"]
+cli = ["audio2face3d/cli-logging", "dep:tracing", "audio2face3d/runtime-cli", "dep:subtle", "dep:clap", "tokio/signal"]
 
 [dependencies]
 subtle = { version = "2.6.1", optional = true }
 audio2face3d = { version = "0.1.0", path = "../audio2face3d", default-features = false, features = ["grpc-server"] }
 clap = { workspace = true, optional = true }
-tracing.workspace = true
+tracing = { workspace = true, optional = true }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
 tokio-util = { version = "0.7.18", features = ["rt"] }
@@ -40,6 +40,7 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dev-dependencies]
+serde_json.workspace = true
 h2 = "0.4.18"
 http = "1.4.0"
 audio2face3d = { path = "../audio2face3d", default-features = false, features = ["client-grpc"] }

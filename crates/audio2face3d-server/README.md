@@ -86,12 +86,22 @@ runtime. Dropping the handle does not stop the supervisor. Dropping the serve
 future requests shutdown but does not synchronously join workers.
 
 Configure a shared `Audio2Face3DContext` with `Arc<dyn Logger>`; the default is
-`NoopLogger`. The standard-library-only `Logger` trait exposes `log_level`,
-`write_log`, and lazy `log(level, closure)`. Values below the threshold are not
-formatted. Runtime tasks, inference workers and cleanup retain their context.
-The executable writes synchronously to stderr; `RUST_LOG` supports levels and
-target directives, not span/field expressions. Target-specific rejection occurs
-in the writer after the global minimum level check.
+`NoopLogger`. The standard-library-only Logger receives an owned `LogRecord`
+(message and typed fields). Disabled levels do not generate messages or fields.
+All handwritten server diagnostics, including RPC events, use Logger with
+request-local `rpc_id` fields. Threads, future poll/drop and cleanup retain the
+owning context. Third-party tracing events are managed by the application and
+are not automatically forwarded into Logger.
+
+The executable defaults to text through tracing. Use `--log-format json
+--log-file server.jsonl` for typed application JSONL; dependency diagnostics
+remain on stderr. JSONL uses a bounded worker (`--log-queue-capacity 1024`),
+with `--log-overflow drop|wait`. Drop is the default and reports losses at exit;
+records over 64 KiB of owned payload are also dropped. Cleanup drains and flushes
+the worker with a five-second deadline. Writer failures or drain timeout fail
+the command. `RUST_LOG` supports levels and target prefixes, not span/field
+expressions; target filtering uses the optional `source` field after generation.
+See [Logging](../../docs/logging.md) for the full format, filtering and shutdown contract.
 
 The library supplies no credential database or single-key comparison policy.
 Inject a synchronous `Fn(AuthRequest) -> AuthResult` with

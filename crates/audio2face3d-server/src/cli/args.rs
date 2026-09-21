@@ -12,6 +12,8 @@ fn default_backend() -> &'static str {
 #[command(version, about = "Audio2Face-3D controller gRPC server")]
 pub struct Args {
     #[command(flatten)]
+    pub logging: super::logging::LogArgs,
+    #[command(flatten)]
     pub runtime: audio2face3d::runtime::cli::PlatformArgs,
     /// Single API key. Overrides AUDIO2FACE3D_API_KEY; neither means no authentication.
     #[arg(long, value_name = "KEY", allow_hyphen_values = false)]

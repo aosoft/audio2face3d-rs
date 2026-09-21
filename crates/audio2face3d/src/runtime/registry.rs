@@ -227,7 +227,7 @@ mod callback_tests {
         fn log_level(&self) -> LogLevel {
             LogLevel::Warn
         }
-        fn write_log(&self, _: LogLevel, _: String) {
+        fn write_log(&self, _: LogLevel, _: crate::logging::LogRecord) {
             assert_eq!(
                 self.0.initialize(1, |_| Ok(())).unwrap_err().kind(),
                 NativeRuntimeErrorKind::InitializationReentered

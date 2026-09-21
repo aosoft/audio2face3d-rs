@@ -117,6 +117,12 @@ pub(crate) fn notify(
     stage: CleanupStage,
     unfinished: usize,
 ) {
+    audio2face3d::logging::integration::log(audio2face3d::logging::LogLevel::Warn, || {
+        audio2face3d::logging::LogRecord::new("server cleanup stage timed out")
+            .field("source", module_path!())
+            .field("stage", format!("{stage:?}"))
+            .field("unfinished", unfinished as u64)
+    });
     if let Some(sender) = sender.take() {
         let _ = sender.send(Overdue { stage, unfinished });
     }
@@ -205,5 +211,66 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+    use audio2face3d::{
+        Audio2Face3DContext,
+        logging::{LogLevel, LogRecord, Logger},
+    };
+    use std::sync::{Arc, Mutex};
+    #[derive(Default)]
+    struct Sink(Mutex<Vec<(LogLevel, LogRecord)>>);
+    impl Logger for Sink {
+        fn log_level(&self) -> LogLevel {
+            LogLevel::Trace
+        }
+        fn write_log(&self, level: LogLevel, record: LogRecord) {
+            self.0.lock().unwrap().push((level, record));
+        }
+    }
+    #[tokio::test]
+    async fn overdue_stage_logs_but_still_waits_for_cleanup() {
+        let sink = Arc::new(Sink::default());
+        let scope = LogScope::new(Audio2Face3DContext::builder().logger(sink.clone()).build());
+        let (tx, rx) = oneshot::channel();
+        let mut tx = Some(tx);
+        let (release, complete) = oneshot::channel();
+        let waiting = scope.wrap_future(finish_stage(
+            async { complete.await.unwrap() },
+            Duration::from_millis(1),
+            &mut tx,
+            CleanupStage::Workers,
+            3,
+        ));
+        let (value, notice) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(waiting, async {
+                let notice = rx.await.unwrap();
+                release.send(42).unwrap();
+                notice
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, 42);
+        assert_eq!(notice.unfinished, 3);
+        let logs = sink.0.lock().unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].0, LogLevel::Warn);
+        assert!(
+            logs[0]
+                .1
+                .fields
+                .contains(&("stage".into(), "Workers".into()))
+        );
+        assert!(
+            logs[0]
+                .1
+                .fields
+                .contains(&("unfinished".into(), 3_u64.into()))
+        );
     }
 }

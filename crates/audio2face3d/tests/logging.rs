@@ -22,7 +22,8 @@ impl Logger for Sink {
             _ => LogLevel::Off,
         }
     }
-    fn write_log(&self, level: LogLevel, text: String) {
+    fn write_log(&self, level: LogLevel, text: audio2face3d::logging::LogRecord) {
+        let text = text.message;
         self.lines.lock().unwrap().push((level, text));
     }
 }
@@ -54,7 +55,7 @@ fn lazy_log_contract_and_owned_message() {
     let erased: Arc<dyn Logger> = sink.clone();
     erased.log(LogLevel::Error, || {
         count.set(count.get() + 1);
-        slot.borrow_mut().take().unwrap()
+        slot.borrow_mut().take().unwrap().into()
     });
     assert_eq!(count.get(), 1);
     assert_eq!(sink.lines.lock().unwrap()[0].1.as_ptr() as usize, ptr);
@@ -77,8 +78,7 @@ fn context_clones_share_resources_without_requiring_a_runtime() {
         LogLevel::Off
     );
 }
-#[cfg(feature = "tracing")]
-mod bridge {
+mod scopes {
     use super::*;
     use audio2face3d::logging::integration::LogScope;
     use std::{
@@ -90,7 +90,10 @@ mod bridge {
         counter.fetch_add(1, Ordering::SeqCst)
     }
     fn emit(counter: &AtomicUsize) {
-        tracing::info!(cost = expensive(counter), "dynamic");
+        LogScope::capture().log(LogLevel::Info, || {
+            audio2face3d::logging::LogRecord::new("dynamic")
+                .field("cost", expensive(counter) as u64)
+        });
     }
     #[test]
     fn dynamic_level_suppresses_expression_before_formatting() {
@@ -113,13 +116,13 @@ mod bridge {
     impl Future for PendingLog {
         type Output = ();
         fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
-            tracing::info!("poll");
+            LogScope::capture().log(LogLevel::Info, || "poll".into());
             Poll::Pending
         }
     }
     impl Drop for PendingLog {
         fn drop(&mut self) {
-            tracing::warn!("drop");
+            LogScope::capture().log(LogLevel::Warn, || "drop".into());
         }
     }
     #[test]
@@ -141,39 +144,6 @@ mod bridge {
             assert!(lines[0].1.contains("poll"));
             assert!(lines[1].1.contains("drop"));
         }
-    }
-    #[test]
-    fn span_fields_and_messages_are_bounded() {
-        let sink = Arc::new(Sink::default());
-        let scope = LogScope::new(context(sink.clone()));
-        scope.in_scope(|| {
-            let span = tracing::info_span!("request", id = 123, field = "値".repeat(5000));
-            let _entered = span.enter();
-            tracing::info!(payload=%"文".repeat(30000),"bounded");
-        });
-        let lines = sink.lines.lock().unwrap();
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].1.contains("id=123"));
-        assert!(lines[0].1.len() <= 16384);
-    }
-    #[test]
-    fn logger_reentry_is_suppressed() {
-        struct Reentrant(AtomicUsize);
-        impl Logger for Reentrant {
-            fn log_level(&self) -> LogLevel {
-                LogLevel::Trace
-            }
-            fn write_log(&self, _: LogLevel, _: String) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                tracing::warn!("reentrant");
-            }
-        }
-        let logger = Arc::new(Reentrant(AtomicUsize::new(0)));
-        let ctx = Audio2Face3DContext::builder()
-            .logger(logger.clone())
-            .build();
-        LogScope::new(ctx).in_scope(|| tracing::info!("outer"));
-        assert_eq!(logger.0.load(Ordering::SeqCst), 1);
     }
 }
 #[cfg(feature = "mock")]
@@ -218,7 +188,7 @@ fn direct_and_factory_keep_logger_after_initialization() {
             .lock()
             .unwrap()
             .iter()
-            .any(|(_, m)| m.contains("inference prepared"))
+            .any(|(_, m)| m.contains("inference preparation finished"))
     );
     assert!(
         b.lines
@@ -293,4 +263,141 @@ fn native_logger_reaches_model_worker_and_cleanup_without_tokio() {
             .iter()
             .any(|(_, m)| m.contains("release prepared inference"))
     );
+}
+
+#[test]
+fn structured_fields_are_lazy_owned_and_replace_duplicate_keys() {
+    use audio2face3d::logging::{LogRecord, LogValue, NoopLogger};
+    struct Records(Mutex<Vec<LogRecord>>);
+    impl Logger for Records {
+        fn log_level(&self) -> LogLevel {
+            LogLevel::Info
+        }
+        fn write_log(&self, _: LogLevel, record: LogRecord) {
+            self.0.lock().unwrap().push(record);
+        }
+    }
+    let sink = Arc::new(Records(Mutex::new(Vec::new())));
+    let logger: Arc<dyn Logger> = sink.clone();
+    let count = std::cell::Cell::new(0);
+    logger.log(LogLevel::Debug, || {
+        count.set(count.get() + 1);
+        LogRecord::new("hidden").field("cost", count.get() as u64)
+    });
+    NoopLogger.log(LogLevel::Error, || panic!("must not build record"));
+    assert_eq!(count.get(), 0);
+    let message = String::from("owned");
+    let pointer = message.as_ptr();
+    logger.log(LogLevel::Info, move || {
+        LogRecord::new(message)
+            .field("id", 1_u64)
+            .field("id", 2_u64)
+            .field("signed", -1_i64)
+            .field("ratio", 0.5_f64)
+            .field("ok", true)
+            .field("label", "value")
+    });
+    let records = sink.0.lock().unwrap();
+    assert_eq!(records[0].message.as_ptr(), pointer);
+    assert_eq!(records[0].fields.len(), 5);
+    assert_eq!(records[0].fields[0].1, LogValue::U64(2));
+    assert_eq!(records[0].fields[1].1, LogValue::I64(-1));
+    assert_eq!(records[0].fields[2].1, LogValue::F64(0.5));
+    assert_eq!(records[0].fields[3].1, LogValue::Bool(true));
+    assert_eq!(records[0].fields[4].1, LogValue::String("value".into()));
+    assert_eq!(LogRecord::new("empty").fields.capacity(), 0);
+}
+
+#[test]
+fn reusable_resource_scope_adopts_current_request_but_keeps_fallback() {
+    use audio2face3d::logging::{LogRecord, LogValue, integration::LogScope};
+    struct Records(Mutex<Vec<LogRecord>>);
+    impl Logger for Records {
+        fn log_level(&self) -> LogLevel {
+            LogLevel::Info
+        }
+        fn write_log(&self, _: LogLevel, record: LogRecord) {
+            self.0.lock().unwrap().push(record);
+        }
+    }
+    let sink = Arc::new(Records(Mutex::new(Vec::new())));
+    let ctx = Audio2Face3DContext::builder().logger(sink.clone()).build();
+    let first = LogScope::new(ctx.clone()).field("rpc_id", 1_u64);
+    LogScope::new(ctx.clone())
+        .field("rpc_id", 2_u64)
+        .in_scope(|| first.for_current().log(LogLevel::Info, || "reused".into()));
+    LogScope::new(ctx).in_scope(|| first.for_current().log(LogLevel::Info, || "cleanup".into()));
+    let lines = sink.0.lock().unwrap();
+    assert_eq!(lines[0].fields[0].1, LogValue::U64(2));
+    assert_eq!(lines[1].fields[0].1, LogValue::U64(1));
+}
+#[cfg(feature = "native")]
+#[test]
+#[ignore = "requires AUDIO2FACE3D_LOG_MODEL and native SDKs"]
+fn native_noop_client_completes_without_tokio() {
+    use audio2face3d::{
+        client::{Client, DirectConfig},
+        inference::{BackendKind, Config},
+        types::*,
+    };
+    let config = Config::builder(BackendKind::Regression)
+        .model(std::env::var_os("AUDIO2FACE3D_LOG_MODEL").unwrap())
+        .build()
+        .unwrap();
+    let client = support::wait(Client::direct(
+        DirectConfig::builder(config).build().unwrap(),
+    ))
+    .unwrap();
+    let (mut input, mut output, control) = client
+        .start(
+            RequestOptions::builder(AudioFormat::MONO_16KHZ)
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .split();
+    support::wait(input.send(InputChunk::new(
+        PcmBuffer::from_vec(vec![0; 3200]).unwrap(),
+        vec![],
+    )))
+    .unwrap();
+    support::wait(input.finish()).unwrap();
+    let mut curves = 0;
+    let mut completed = false;
+    while let Some(event) = support::wait(output.recv()).unwrap() {
+        match event {
+            OutputEvent::Curves(_) => curves += 1,
+            OutputEvent::Completed(_) => completed = true,
+            _ => {}
+        }
+    }
+    support::wait(control.closed()).unwrap();
+    support::wait(client.shutdown()).unwrap();
+    assert!(curves > 0 && completed);
+}
+
+#[cfg(feature = "client-grpc")]
+#[tokio::test]
+async fn refused_connection_emits_one_categorized_terminal_record() {
+    use audio2face3d::client::{Client, ServerConfig};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let sink = Arc::new(Sink::default());
+    let result = Client::server_with_context(
+        ServerConfig::builder(format!("http://{addr}"))
+            .connect_timeout(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap(),
+        context(sink.clone()),
+    )
+    .await;
+    assert!(result.is_err());
+    let lines = sink.lines.lock().unwrap();
+    let terminal: Vec<_> = lines
+        .iter()
+        .filter(|(_, m)| m == "remote connection finished")
+        .collect();
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].0, LogLevel::Warn);
 }

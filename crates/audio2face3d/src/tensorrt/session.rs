@@ -114,10 +114,8 @@ pub struct EngineEnvironment {
 
 impl TensorRtSession {
     pub fn load(device: Arc<GpuDevice>, engine: &Path) -> Result<Self, InferenceError> {
-        let mut scope = crate::logging::integration::LogScope::capture();
-        if scope.context().is_legacy() {
-            scope = crate::logging::integration::LogScope::new(device.runtime_context().clone());
-        }
+        let scope = crate::logging::integration::LogScope::new(device.runtime_context().clone())
+            .for_current();
         let native = super::api::NativeApi::initialize(scope.context())?;
         let _context = device.make_current().map_err(InferenceError::Cuda)?;
         let path = CString::new(engine.to_string_lossy().as_bytes())

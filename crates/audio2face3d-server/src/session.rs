@@ -62,14 +62,20 @@ impl ResponseStream {
 }
 impl Drop for ResponseStream {
     fn drop(&mut self) {
-        let _scope = self.scope.activate();
+        let _scope = self.scope.enter();
+        if !self.ended {
+            self.scope.log(audio2face3d::logging::LogLevel::Debug, || {
+                audio2face3d::logging::LogRecord::new("response stream dropped; cancelling request")
+                    .field("source", module_path!())
+            });
+        }
         self.cancel.cancel();
     }
 }
 impl Stream for ResponseStream {
     type Item = Result<controller::AnimationDataStream, Status>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let _scope = self.scope.activate();
+        let _scope = self.scope.enter();
         if self.ended {
             return Poll::Ready(None);
         }
@@ -149,11 +155,13 @@ pub async fn run(
     tx: &mpsc::Sender<controller::AnimationDataStream>,
     config: &Config,
     shutdown: &CancellationToken,
+    observation: &mut crate::diagnostics::RequestLog,
 ) -> Result<(), Status> {
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
+    observation.stage = "output";
     send(
         tx,
         animation::header(epoch).stream_part.unwrap(),
@@ -162,12 +170,17 @@ pub async fn run(
     )
     .await?;
     loop {
+        observation.stage = "input";
         let message = tokio::select! {
             _ = tx.closed() => return Err(Status::cancelled("response reader closed")),
             message = read_input(input, config, shutdown) => message?,
         };
+        observation.stage = "inference";
         let finished = match message.stream_part {
             Some(Input::AudioWithEmotion(audio)) => {
+                observation.input_audio_bytes = observation
+                    .input_audio_bytes
+                    .saturating_add(audio.audio_buffer.len() as u64);
                 backend.push(audio).await?;
                 false
             }
@@ -181,10 +194,18 @@ pub async fn run(
             None => return Err(Status::invalid_argument("missing or unknown stream_part")),
         };
         while let Some(frame) = backend.next_frame(shutdown).await? {
+            observation.stage = "output";
             send(tx, Output::AnimationData(frame), config, shutdown).await?;
+            observation.stage = "inference";
+            observation.output_batches = observation.output_batches.saturating_add(1);
         }
         if finished {
-            backend.close().await?;
+            observation.stage = "cleanup";
+            backend
+                .close()
+                .await
+                .inspect_err(|_| observation.cleanup_failed = true)?;
+            observation.stage = "output";
             send(
                 tx,
                 Output::Event(controller::Event {

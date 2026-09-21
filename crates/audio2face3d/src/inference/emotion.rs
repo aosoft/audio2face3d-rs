@@ -219,9 +219,12 @@ impl Stage {
             )
         } else {
             if header.emotion_post_processing.is_some() {
-                tracing::warn!(
-                    "A2E mixing parameters require --emotion-model; direct input emotion mode"
-                );
+                crate::logging::integration::log(crate::logging::LogLevel::Warn, || {
+                    crate::logging::LogRecord::new(
+                        "A2E mixing parameters require --emotion-model; direct input emotion mode",
+                    )
+                    .field("source", module_path!())
+                });
             }
             None
         };

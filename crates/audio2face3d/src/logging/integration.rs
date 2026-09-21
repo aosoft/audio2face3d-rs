@@ -1,3 +1,2 @@
-//! Scope propagation support for cooperating libraries. Applications normally
-//! only need Audio2Face3DContext and Logger.
-pub use super::scope::{LogScope, ScopeGuard, Scoped};
+//! Context and request-field propagation for cooperating libraries.
+pub use super::scope::{LogScope, ScopeGuard, Scoped, enabled, log};

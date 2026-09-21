@@ -94,7 +94,13 @@ pub fn blendshapes(
             if let Some(index) = CURVE_NAMES.iter().position(|v| v == name) {
                 target[order[index]] = value;
             } else if EXTENDED_TONGUE.contains(&name.as_str()) {
-                tracing::debug!(name, "extended tongue curve omitted from 52-curve output");
+                crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
+                    crate::logging::LogRecord::new(
+                        "extended tongue curve omitted from 52-curve output",
+                    )
+                    .field("source", module_path!())
+                    .field("name", name.as_str())
+                });
             } else {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,

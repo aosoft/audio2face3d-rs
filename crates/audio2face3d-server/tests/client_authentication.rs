@@ -22,7 +22,8 @@ impl Logger for Logs {
     fn log_level(&self) -> LogLevel {
         LogLevel::Trace
     }
-    fn write_log(&self, _: LogLevel, message: String) {
+    fn write_log(&self, _: LogLevel, message: audio2face3d::logging::LogRecord) {
+        let message = format!("{} {:?}", message.message, message.fields);
         self.0.lock().unwrap().push(message);
     }
 }

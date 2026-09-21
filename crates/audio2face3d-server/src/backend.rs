@@ -67,8 +67,11 @@ impl Factory {
                 || header.emotion_params.is_some()
                 || header.emotion_post_processing_params.is_some()
             {
-                tracing::warn!(
-                    "mock ignores face, blendshape and emotion settings; output is diagnostic only"
+                audio2face3d::logging::integration::log(
+                    audio2face3d::logging::LogLevel::Warn,
+                    || {
+                        audio2face3d::logging::LogRecord::new("mock ignores face, blendshape and emotion settings; output is diagnostic only").field("source", module_path!())
+                    },
                 );
             }
             RequestOptions::builder(
@@ -142,7 +145,10 @@ fn prepare_input(
 ) -> Result<audio2face3d::types::InputChunk, Status> {
     if kind == BackendKind::Mock {
         if !input.emotions.is_empty() {
-            tracing::debug!("mock ignores input emotion keyframes");
+            audio2face3d::logging::integration::log(audio2face3d::logging::LogLevel::Debug, || {
+                audio2face3d::logging::LogRecord::new("mock ignores input emotion keyframes")
+                    .field("source", module_path!())
+            });
             input.emotions.clear();
         }
     } else {

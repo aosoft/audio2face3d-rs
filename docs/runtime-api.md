@@ -4,6 +4,8 @@
 
 Use the SDK-shaped executors when you need direct control over geometry, device buffers, or interactive execution.
 
+Pass an explicit `Audio2Face3DContext` to the corresponding `*_with_context` factory to collect native initialization, worker and cleanup diagnostics. Logging uses owned records and is independent of an async runtime; see [Logging](logging.md). Unconfigured contexts are silent.
+
 ## Emotion post-processing without inference
 
 `PostProcessEmotionExecutorFactory` creates the original post-process-only

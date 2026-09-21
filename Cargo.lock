@@ -113,6 +113,7 @@ name = "audio2face3d"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "chrono",
  "clap",
  "cudarc",
  "hf-hub",
@@ -148,6 +149,7 @@ dependencies = [
  "http",
  "prost",
  "prost-types",
+ "serde_json",
  "subtle",
  "tokio",
  "tokio-stream",

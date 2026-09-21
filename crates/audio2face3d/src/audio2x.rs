@@ -490,7 +490,9 @@ impl ExecutionCompletion {
             }
             *pending -= 1;
             if let Err(error) = result {
-                if state.detached && tracing::enabled!(tracing::Level::WARN) {
+                if state.detached
+                    && crate::logging::integration::enabled(crate::logging::LogLevel::Warn)
+                {
                     detached_error = Some(error.to_string());
                 }
                 if state.errors_by_track[track].is_none() {
@@ -500,7 +502,12 @@ impl ExecutionCompletion {
             self.ready_wakers_locked(&mut state)
         };
         if let Some(error) = detached_error {
-            tracing::warn!(track,error=%error,"detached execution worker failed");
+            crate::logging::integration::log(crate::logging::LogLevel::Warn, || {
+                crate::logging::LogRecord::new("detached execution worker failed")
+                    .field("source", module_path!())
+                    .field("track", (track) as u64)
+                    .field("error", error.to_string())
+            });
         }
         self.changed.notify_all();
         wake_all(all, tracks);
@@ -536,7 +543,7 @@ impl ExecutionCompletion {
             return;
         }
         state.detached = true;
-        let errors = if tracing::enabled!(tracing::Level::WARN) {
+        let errors = if crate::logging::integration::enabled(crate::logging::LogLevel::Warn) {
             state
                 .errors_by_track
                 .iter()
@@ -548,7 +555,12 @@ impl ExecutionCompletion {
         };
         drop(state);
         for (track, error) in errors {
-            tracing::warn!(track,error=%error,"execution dropped with an unobserved worker error");
+            crate::logging::integration::log(crate::logging::LogLevel::Warn, || {
+                crate::logging::LogRecord::new("execution dropped with an unobserved worker error")
+                    .field("source", module_path!())
+                    .field("track", (track) as u64)
+                    .field("error", error.to_string())
+            });
         }
     }
 
