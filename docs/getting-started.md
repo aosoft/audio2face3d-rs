@@ -13,7 +13,7 @@ cargo install --path crates/audio2face3d --locked --features cli,native
 cargo install --path crates/audio2face3d-server --locked --features cli
 ```
 
-For a portable diagnostic server, use `--no-default-features --features cli,mock` when installing `audio2face3d-server`. Cargo features are selected at build time. For server startup and library embedding, see the [server guide](../crates/audio2face3d-server/README.md).
+For a portable diagnostic server, use `--no-default-features --features cli,mock` when installing `audio2face3d-server`. Cargo features are selected at build time. For server startup and library embedding, see the [server guide](server.md).
 
 ## Runtime setup
 

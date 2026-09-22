@@ -65,4 +65,4 @@ The standard-library-only `Logger` receives an owned `LogRecord` containing a me
 
 ## Server library
 
-Server construction, authenticator injection, health policy, and cleanup ownership are documented in the [server guide](../crates/audio2face3d-server/README.md#library-logging-and-authentication).
+Server construction, authenticator injection, health policy, and cleanup ownership are documented in the [server guide](server.md#library-logging-and-authentication).
