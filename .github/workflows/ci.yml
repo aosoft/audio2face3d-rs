@@ -10,6 +10,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.91.0
+      - name: Cache Cargo dependencies and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            ~/.cargo/git/checkouts
+            target
+            !target/**/incremental
+            !target/doc
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-rust-1.91.0-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/**', '.github/workflows/ci.yml', 'ci/run-tier.ps1') }}
+          restore-keys: |
+            cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-rust-1.91.0-
       - name: Check minimum supported Rust version
         run: cargo check --workspace --locked --no-default-features --features audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/mock --all-targets
 
@@ -20,6 +35,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
+      - name: Cache Cargo dependencies and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            ~/.cargo/git/checkouts
+            target
+            !target/**/incremental
+            !target/doc
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-rust-1.97.1-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/**', '.github/workflows/ci.yml', 'ci/run-tier.ps1') }}
+          restore-keys: |
+            cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-rust-1.97.1-
       - name: Run portable release tier
         shell: powershell
         run: ./ci/run-tier.ps1 portable
