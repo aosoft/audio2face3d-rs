@@ -39,6 +39,23 @@ installations; original-SDK reference comparison additionally requires the
 Audio2Face-3D SDK checkout.
 Passing portable checks does not imply model-runtime validation.
 
+## CI build cache
+
+Both portable CI jobs use GitHub's `actions/cache` to preserve Cargo registry/git
+dependencies and `target` build outputs. Incremental compilation artifacts and
+generated API documentation are excluded to limit cache size.
+
+Keys separate operating system, architecture, job, and pinned Rust version.
+They also hash Cargo manifests, the lockfile, Cargo configuration, and portable
+CI definitions. When these files change, a fallback can restore the same
+OS/architecture/job/Rust cache; Cargo still checks whether artifacts can be reused.
+Update the Rust version in the cache key when changing the job's toolchain.
+
+All checks and tests run even on a cache hit. The first successful run populates
+the cache; compare subsequent runs to measure the benefit. Cache availability
+follows GitHub's branch scope: a PR cache is not shared with unrelated PRs.
+Run the workflow manually on `main` to seed a base-branch cache for future PRs.
+
 ## Benchmarks
 
 The benchmark command separates build, descriptor-cache, warm-up, steady-state inference, post-process, and end-to-end phases. It reports P50/P95/P99 nanoseconds and peak process GPU memory when `nvidia-smi` exposes it. On Windows WDDM, where per-process accounting can be unavailable, it labels and reports device-wide used memory instead:

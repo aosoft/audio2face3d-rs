@@ -26,7 +26,7 @@ Models and native SDKs are obtained separately.
 
 1. Follow [runtime setup](docs/getting-started.md#runtime-setup).
 2. [Obtain models](docs/getting-started.md#explicit-model-acquisition) and [generate TensorRT engines](docs/getting-started.md#tensorrt-engine-generation).
-3. Run the [inference samples](docs/getting-started.md#samples), use the [client library](docs/library.md), or start the [gRPC server](crates/audio2face3d-server/README.md).
+3. Run the [inference samples](docs/getting-started.md#samples), use the [client library](docs/library.md), or start the [gRPC server](docs/server.md).
 
 After preparing the SDKs and Mark model, start the native server:
 
@@ -44,7 +44,7 @@ cargo run -p audio2face3d-server --features cli -- --platform-config platform.to
 | [Client library](docs/library.md) | Configuration builders, direct/remote execution, authentication, shared context and logging |
 | [Logging](docs/logging.md) | Lazy structured records, CLI JSONL output, tracing boundaries and shutdown |
 | [Low-level runtime APIs](docs/runtime-api.md) | Executor composition, callbacks, interactive execution, safety contracts |
-| [gRPC server](crates/audio2face3d-server/README.md) | Server CLI, embedding, authentication, health and streaming contracts |
+| [gRPC server](docs/server.md) | Server CLI, embedding, authentication, health and streaming contracts |
 | [Development and validation](docs/development.md) | Supported environments, test tiers, benchmarks |
 | [Reference comparison](reference/README.md) | Original-SDK parity setup and capture procedures |
 
