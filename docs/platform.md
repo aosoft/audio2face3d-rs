@@ -2,7 +2,7 @@
 
 [Project overview](../README.md) · [Getting started](getting-started.md)
 
-Use one `platform.toml` for native builds and both executables. SDK environment variables and PATH edits are optional. Keys use kebab-case; Rust fields and methods keep snake_case. There is no schema-version field.
+Use one `platform.toml` for native builds and the inference, server and GUI executables. SDK environment variables and PATH edits are optional. Keys use kebab-case; Rust fields and methods keep snake_case. There is no schema-version field.
 
 ## One file for build and runtime
 
@@ -48,7 +48,7 @@ A runtime library-directory list replaces that SDK's common root. A root and lib
 
 Only one file is read; files are not merged. Missing explicitly selected files and invalid selected files fail without falling back.
 
-| Priority | Native build | CLI runtime |
+| Priority | Native build | Executable runtime |
 | --- | --- | --- |
 | 1 | `AUDIO2FACE3D_PLATFORM_CONFIG` | `--platform-config <FILE>` |
 | 2 | This source workspace's `platform.toml` | `AUDIO2FACE3D_PLATFORM_CONFIG` |

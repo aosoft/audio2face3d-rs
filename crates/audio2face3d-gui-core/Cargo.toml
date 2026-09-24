@@ -1,0 +1,24 @@
+[package]
+name = "audio2face3d-gui-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Portable head model and GLB profile for Audio2Face-3D inspection"
+
+[features]
+default = []
+gltf-read = ["dep:gltf", "dep:serde_json"]
+gltf-write = ["dep:gltf-json", "dep:serde_json"]
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+serde_json = { workspace = true, optional = true }
+gltf = { version = "=1.4.1", default-features = false, features = ["utils", "names", "extras"], optional = true }
+gltf-json = { version = "=1.4.1", features = ["names", "extras"], optional = true }
+
+[lints]
+workspace = true

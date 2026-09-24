@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "segments": 32,
+  "rings": 20,
+  "width": 0.16,
+  "height": 0.24,
+  "depth": 0.14,
+  "expression_scale": 1.0
+}

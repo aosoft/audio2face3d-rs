@@ -28,6 +28,9 @@ jobs:
       - name: Check minimum supported Rust version
         run: cargo check --workspace --locked --no-default-features --features audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/mock --all-targets
 
+      - name: Check desktop gRPC on minimum supported Rust
+        run: cargo check --locked -p audio2face3d-gui --no-default-features --features desktop,grpc
+
   portable:
     runs-on: windows-latest
     steps:

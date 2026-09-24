@@ -12,10 +12,14 @@ embeddable gRPC server.
 |---|---|
 | `audio2face3d` | Shared types, direct/remote client, inference engines, and optional CLI |
 | `audio2face3d-server` | Embeddable gRPC server and optional server executable |
+| `audio2face3d-gui-core` | CPU head model, validation and GLB I/O |
+| `audio2face3d-gui` | Inspection library and optional desktop GUI |
+| `audio2face3d-headgen` | Procedural debug-head generator library and CLI |
 
 The base package has no default features. Select `native` for local CUDA/TensorRT
 inference, `client-grpc` for remote inference, or `mock` for diagnostics.
-Both executables require `cli`; the server enables `native` by default.
+The inference and server executables require `cli`; the server enables `native` by default.
+The GUI executable requires `desktop` plus `grpc` and/or `local`; see the [GUI guide](docs/gui.md).
 See [packages and features](docs/features.md) for the complete breakdown.
 
 ## Getting started
@@ -42,6 +46,7 @@ cargo run -p audio2face3d-server --features cli -- --platform-config platform.to
 | [Platform configuration](docs/platform.md) | Build/runtime path selection, diagnostics, version policy, loader lifetime |
 | [Packages and features](docs/features.md) | Package boundaries, feature selection, SDK module mapping |
 | [Client library](docs/library.md) | Configuration builders, direct/remote execution, authentication, shared context and logging |
+| [GUI inspection](docs/gui.md) | Desktop usage, streaming playback, head regeneration, packaging and host integration |
 | [Logging](docs/logging.md) | Lazy structured records, CLI JSONL output, tracing boundaries and shutdown |
 | [Low-level runtime APIs](docs/runtime-api.md) | Executor composition, callbacks, interactive execution, safety contracts |
 | [gRPC server](docs/server.md) | Server CLI, embedding, authentication, health and streaming contracts |

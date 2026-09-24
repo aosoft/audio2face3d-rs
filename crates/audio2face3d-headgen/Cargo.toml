@@ -1,0 +1,27 @@
+[package]
+name = "audio2face3d-headgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Procedural debug head generator for Audio2Face-3D"
+
+[features]
+default = []
+cli = ["dep:clap"]
+
+[dependencies]
+audio2face3d-gui-core = { path = "../audio2face3d-gui-core", features = ["gltf-write"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap = { workspace = true, optional = true }
+
+[[bin]]
+name = "audio2face3d-headgen"
+required-features = ["cli"]
+
+[lints]
+workspace = true
