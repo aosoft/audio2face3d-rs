@@ -5,6 +5,14 @@ use audio2face3d_gui_core::{HeadModel, Material, Mesh, Metadata, MorphTarget};
 #[test]
 #[ignore = "requires a GPU adapter; run explicitly in the GPU validation tier"]
 fn all_52_targets_match_cpu_after_name_reordering_and_resize() {
+    check_model(52);
+}
+#[test]
+#[ignore = "requires a GPU adapter; run explicitly in the GPU validation tier"]
+fn subset_ignores_unsupported_input_weights() {
+    check_model(2);
+}
+fn check_model(target_count: usize) {
     let instance = wgpu::Instance::default();
     let adapter =
         pollster::block_on(instance.request_adapter(&Default::default())).expect("GPU adapter");
@@ -28,6 +36,7 @@ fn all_52_targets_match_cpu_after_name_reordering_and_resize() {
             },
             targets: audio2face3d_gui_core::rig::CHANNELS
                 .iter()
+                .take(target_count)
                 .enumerate()
                 .map(|(i, &name)| MorphTarget {
                     name: name.into(),
@@ -85,4 +94,3 @@ fn all_52_targets_match_cpu_after_name_reordering_and_resize() {
     }
     assert!(pollster::block_on(device.pop_error_scope()).is_none());
 }
-

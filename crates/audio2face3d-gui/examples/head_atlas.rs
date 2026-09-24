@@ -22,7 +22,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    for (page, names) in audio2face3d_gui_core::rig::CHANNELS.chunks(9).enumerate() {
+    let supported = model.channel_names();
+    let names = audio2face3d_gui_core::rig::CHANNELS
+        .into_iter()
+        .filter(|n| supported.iter().any(|s| s == n))
+        .collect::<Vec<_>>();
+    println!(
+        "Unsupported channels: {}",
+        model.unsupported_channels().join(", ")
+    );
+    for (page, names) in names.chunks(9).enumerate() {
         let mut sheet = image::RgbaImage::new(192 * 4, 192 * names.len() as u32);
         for (row, name) in names.iter().enumerate() {
             for (column, (value, yaw)) in [(0., 0.), (0.5, 0.), (1., 0.), (1., 0.6)]

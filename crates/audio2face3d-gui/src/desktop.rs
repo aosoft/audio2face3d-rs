@@ -12,6 +12,7 @@ pub struct DesktopApp {
     filter: String,
     camera: Camera,
     message: String,
+    head_info: String,
     audio: crate::audio::AudioOutput,
     manual: bool,
     selected: std::collections::BTreeSet<usize>,
@@ -47,7 +48,8 @@ impl DesktopApp {
             weights: BTreeMap::new(),
             filter: String::new(),
             camera: Camera::default(),
-            message: "Choose a generated head GLB".into(),
+            message: "Choose a head GLB".into(),
+            head_info: String::new(),
             audio: crate::audio::AudioOutput::new(std::sync::Arc::new(std::sync::Mutex::new(
                 crate::playback::Player::default(),
             ))),
@@ -118,6 +120,7 @@ impl DesktopApp {
         })();
         match load {
             Ok((renderer, model)) => {
+                self.head_info = head_summary(&model);
                 self.renderer = Some(renderer);
                 self.weights = model.channel_names().into_iter().map(|n| (n, 0.)).collect();
                 self.message = format!(
@@ -384,6 +387,9 @@ impl eframe::App for DesktopApp {
                 }
             });
             ui.label(&self.message);
+            if !self.head_info.is_empty() {
+                ui.label(&self.head_info);
+            }
         });
         egui::TopBottomPanel::bottom("logs").show(ctx, |ui| {
             egui::CollapsingHeader::new(format!("Logs ({})", self.logs.entries.len()))
@@ -749,4 +755,37 @@ pub fn run_with_options(options: crate::startup::Options) -> eframe::Result {
         },
         Box::new(move |cc| Ok(Box::new(DesktopApp::with_options(cc, options)))),
     )
+}
+
+fn head_summary(model: &audio2face3d_gui_core::HeadModel) -> String {
+    let unsupported = model.unsupported_channels();
+    if unsupported.is_empty() {
+        "Head model: all 52 channels supported".into()
+    } else {
+        format!(
+            "Head model: {} channels supported; unsupported: {}",
+            model.channel_names().len(),
+            unsupported.join(", ")
+        )
+    }
+}
+#[cfg(test)]
+mod head_tests {
+    use super::*;
+    #[test]
+    fn subset_summary_does_not_mutate_the_head_or_input_values() {
+        let mut model =
+            audio2face3d_gui_core::gltf::from_glb(include_bytes!("../assets/default-head.glb"))
+                .unwrap();
+        assert!(head_summary(&model).contains("all 52"));
+        for mesh in &mut model.meshes {
+            mesh.targets.retain(|t| t.name != "TongueOut");
+        }
+        let before = model.clone();
+        assert_eq!(
+            head_summary(&model),
+            "Head model: 51 channels supported; unsupported: TongueOut"
+        );
+        assert_eq!(model, before);
+    }
 }
