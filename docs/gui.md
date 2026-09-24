@@ -29,9 +29,26 @@ Windows x64 is the tested desktop target; other desktop platforms are unvalidate
 3. Click `Infer WAV`. By default, wait for `Completed` then press `Play`.
    `Cancel` stops the current request; the next request is enabled after cleanup.
 4. Enable `Play while inferring` before starting to play as results arrive.
-5. Select channels in the right panel to show their graphs. Drag the timeline
+5. Select channels in `Channels` to show their graphs. Drag the timeline
    cursor to seek within received data; use zoom/scroll controls and loop/pause.
+   Pressing the time ruler or a track seeks immediately on mouse-down; dragging
+   continues seeking. The ruler shows seconds with zoom-dependent major/minor
+   ticks, and one yellow playhead spans the ruler and all visible channel rows.
+   The top seek bar represents the entire clip. The bar directly above the ruler
+   represents the visible time range: its thumb width is proportional to the
+   visible fraction, and dragging it pans without seeking. During playback or a
+   seek, the viewport stays still until the playhead leaves it, then recenters
+   on the playhead (clamped at the clip endpoints). Paused manual panning is retained.
    Bars clip to the display range; numeric/raw values preserve received data.
+   Channels fill multiple columns according to the available width, with one
+   compact row per channel. Hover over a numeric value to see its raw value.
+   Name fields fit the longest channel name rather than stretching with the
+   window. Numeric values and bars align within each column; gutters and vertical
+   separators distinguish neighboring columns.
+   In Channels only, names and numeric values turn dark gray when the current
+   value is exactly zero, including in Manual mode. Timeline colors stay unchanged.
+   The head occupies a narrow resizable panel on the left; the remaining width
+   is reserved for channels. Manual controls use the same column layout.
 6. Drag the head to rotate, use the wheel to zoom, or choose a camera preset.
    `Manual` stops audio and exposes individual sliders to inspect morphs.
    `Sync demo` supplies a short synthetic clip without loading an inference model.
@@ -47,11 +64,19 @@ Streaming sends 100 ms chunks, initially up to 500 ms ahead, then at real-time
 pace. It starts/restarts after 100 ms of contiguous audio and curves are ready.
 If inference falls behind, audio outputs silence and media time freezes until
 ready. This is observable as buffering and an underrun count. The separate `audio busy` count records callbacks that emitted
-silence because the shared player was locked. Normal short clips
+silence because the shared player was locked. Channel/timeline drawing runs
+outside the player lock; only snapshots and graph-data preparation hold it.
+`audio_gui_probe` exercises real audio under channel/timeline drawing load and
+reports source underruns separately from audio lock contention. Normal short clips
 flush after completion; failed/cancelled partial results can be inspected by
 seeking but do not play automatically. Streaming is not a real-time guarantee.
 Input sent, result completion, resource release and playback end are distinct.
 Pause/seek do not cancel inference; future, unreceived time is not seekable.
+Seek updates the playhead, head and channel values immediately. Audio stream
+teardown/setup runs on a worker and coalesces rapid seeks to the latest position;
+stale callbacks are silenced and cannot advance the new media clock. Seeking
+while paused does not open an audio device. Device failures arrive asynchronously
+through the audio error slot and pause playback.
 Results are limited to 256 MiB and 10 minutes; exceeding a limit marks the result
 failed. Logs retain 10,000 records with a 2,048-record nonblocking queue and a
 visible dropped count. Closing waits for cancellation/shutdown; native model

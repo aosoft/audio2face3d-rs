@@ -465,34 +465,52 @@ impl eframe::App for DesktopApp {
                 .show(ui, |ui| self.log_view.show(ui, &self.logs));
         });
         let shared = self.audio.player.clone();
-        let snapshot = shared.lock().unwrap().snapshot(std::time::Instant::now());
+        let names = shared.lock().unwrap().clip.names.clone();
+        let mut snapshot = shared.lock().unwrap().snapshot(std::time::Instant::now());
         self.selected.retain(|i| *i < snapshot.values.len());
         let mut command = None;
         if !self.manual {
             egui::TopBottomPanel::bottom("playback")
                 .resizable(true)
-                .default_height(300.)
+                .default_height(370.)
                 .min_height(270.)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("Play").clicked() {
-                            command = Some(crate::playback::Command::Play);
-                        }
-                        if ui.button("Pause").clicked() {
-                            command = Some(crate::playback::Command::Pause);
-                        }
-                        let mut looping = snapshot.looping;
-                        if ui.checkbox(&mut looping, "Loop").changed() {
-                            command = Some(crate::playback::Command::SetLoop(looping));
-                        }
-                        let mut time = snapshot.time;
-                        if ui
-                            .add(egui::Slider::new(&mut time, 0.0..=snapshot.duration).suffix(" s"))
-                            .changed()
-                        {
-                            command = Some(crate::playback::Command::Seek(time));
-                        }
-                        ui.label(format!(
+                    if let Some(time) = crate::ui::playback_seek_bar(ui, &snapshot) {
+                        command = Some(crate::playback::Command::Seek(time));
+                        // Let the viewport follow this target in the same frame.
+                        self.timeline.reveal_position(time, snapshot.duration);
+                        snapshot.time = time;
+                    }
+                    if let Some(time) = self.timeline.show_player_with_controls(
+                        ui,
+                        &shared,
+                        &snapshot,
+                        &self.selected,
+                        |ui| {
+                            let playing = matches!(
+                                snapshot.state,
+                                crate::playback::PlaybackState::Playing
+                                    | crate::playback::PlaybackState::Buffering
+                            );
+                            if ui
+                                .add_sized(
+                                    [60., ui.spacing().interact_size.y],
+                                    egui::Button::new(if playing { "Pause" } else { "Play" }),
+                                )
+                                .clicked()
+                            {
+                                command = Some(if playing {
+                                    crate::playback::Command::Pause
+                                } else {
+                                    crate::playback::Command::Play
+                                });
+                            }
+                            let mut looping = snapshot.looping;
+                            if ui.checkbox(&mut looping, "Loop").changed() {
+                                command = Some(crate::playback::Command::SetLoop(looping));
+                            }
+                            ui.label(format!("{:.3} / {:.3} s", snapshot.time, snapshot.duration));
+                            ui.label(format!(
                             "{:?} | received {:.2}s | buffer {:.2}s | underruns {} | audio busy {}",
                             snapshot.state,
                             snapshot.duration,
@@ -502,22 +520,11 @@ impl eframe::App for DesktopApp {
                                 .callback_contention
                                 .load(std::sync::atomic::Ordering::Relaxed)
                         ));
-                    });
-                    let player = shared.lock().unwrap();
-                    if let Some(time) =
-                        self.timeline
-                            .show(ui, &player.clip, &snapshot, &self.selected)
-                    {
+                        },
+                    ) {
                         command = Some(crate::playback::Command::Seek(time));
                     }
                 });
-            let player = shared.lock().unwrap();
-            self.weights.values_mut().for_each(|v| *v = 0.);
-            for (name, &value) in player.clip.names.iter().zip(&snapshot.values) {
-                if let Some(weight) = self.weights.get_mut(name) {
-                    *weight = value;
-                }
-            }
         }
         if let Some(command) = command {
             if matches!(
@@ -529,22 +536,17 @@ impl eframe::App for DesktopApp {
             if let Err(e) = self.audio.command(command) {
                 self.message = e.to_string();
             }
+            snapshot = shared.lock().unwrap().snapshot(std::time::Instant::now());
+            ctx.request_repaint();
         }
-        egui::SidePanel::right("channels")
-            .default_width(280.)
-            .show(ctx, |ui| {
-                if self.manual {
-                    crate::ui::manual_channels(ui, &mut self.weights, &mut self.filter);
-                } else {
-                    crate::ui::channel_values(
-                        ui,
-                        &shared.lock().unwrap().clip,
-                        &snapshot,
-                        &mut self.selected,
-                        &mut self.filter,
-                    );
+        if !self.manual {
+            self.weights.values_mut().for_each(|v| *v = 0.);
+            for (name, &value) in names.iter().zip(&snapshot.values) {
+                if let Some(weight) = self.weights.get_mut(name) {
+                    *weight = value;
                 }
-            });
+            }
+        }
         if matches!(
             snapshot.state,
             crate::playback::PlaybackState::Playing | crate::playback::PlaybackState::Buffering
@@ -554,55 +556,73 @@ impl eframe::App for DesktopApp {
         if let Some(error) = self.audio.errors.lock().unwrap().take() {
             self.message = error;
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let size = ui.available_size().max(egui::vec2(1., 1.));
-            let pixels = [
-                (size.x * ctx.pixels_per_point()) as u32,
-                (size.y * ctx.pixels_per_point()) as u32,
-            ]
-            .map(|v| v.clamp(1, 4096));
-            if self.target.as_ref().is_none_or(|(t, _)| t.size != pixels) {
-                if let Some((_, id)) = self.target.take() {
-                    self.gpu.renderer.write().free_texture(&id);
-                }
-                let target = RenderTarget::new(&self.gpu.device, pixels);
-                let id = self.gpu.renderer.write().register_native_texture(
-                    &self.gpu.device,
-                    &target.view,
-                    wgpu::FilterMode::Linear,
-                );
-                self.target = Some((target, id));
-            }
-            let (target, id) = self.target.as_ref().unwrap();
-            if let Some(renderer) = &self.renderer {
-                let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
-                match renderer.render(
-                    &self.gpu.queue,
-                    &mut encoder,
-                    target,
-                    self.camera,
-                    &self.weights,
-                ) {
-                    Ok(()) => {
-                        self.gpu.queue.submit([encoder.finish()]);
+        egui::SidePanel::left("head-preview")
+            .default_width(260.)
+            .width_range(180.0..=360.0)
+            .show(ctx, |ui| {
+                let available = ui.available_size().max(egui::vec2(1., 1.));
+                // Keep a portrait viewport even when no timeline is visible.
+                let size = egui::vec2(available.x, available.y.min(available.x * 1.35));
+                let pixels = [
+                    (size.x * ctx.pixels_per_point()) as u32,
+                    (size.y * ctx.pixels_per_point()) as u32,
+                ]
+                .map(|v| v.clamp(1, 4096));
+                if self.target.as_ref().is_none_or(|(t, _)| t.size != pixels) {
+                    if let Some((_, id)) = self.target.take() {
+                        self.gpu.renderer.write().free_texture(&id);
                     }
-                    Err(e) => self.message = e.to_string(),
+                    let target = RenderTarget::new(&self.gpu.device, pixels);
+                    let id = self.gpu.renderer.write().register_native_texture(
+                        &self.gpu.device,
+                        &target.view,
+                        wgpu::FilterMode::Linear,
+                    );
+                    self.target = Some((target, id));
                 }
-                let response = ui.add(egui::Image::new((*id, size)).sense(egui::Sense::drag()));
-                if response.dragged() {
-                    let d = ctx.input(|i| i.pointer.delta());
-                    self.camera.yaw -= d.x * 0.008;
-                    self.camera.pitch = (self.camera.pitch + d.y * 0.008).clamp(-1.3, 1.3);
+                let (target, id) = self.target.as_ref().unwrap();
+                if let Some(renderer) = &self.renderer {
+                    let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+                    match renderer.render(
+                        &self.gpu.queue,
+                        &mut encoder,
+                        target,
+                        self.camera,
+                        &self.weights,
+                    ) {
+                        Ok(()) => {
+                            self.gpu.queue.submit([encoder.finish()]);
+                        }
+                        Err(e) => self.message = e.to_string(),
+                    }
+                    let response = ui.add(egui::Image::new((*id, size)).sense(egui::Sense::drag()));
+                    if response.dragged() {
+                        let d = ctx.input(|i| i.pointer.delta());
+                        self.camera.yaw -= d.x * 0.008;
+                        self.camera.pitch = (self.camera.pitch + d.y * 0.008).clamp(-1.3, 1.3);
+                    }
+                    if response.hovered() {
+                        self.camera.distance = (self.camera.distance
+                            * ctx.input(|i| (-i.smooth_scroll_delta.y * 0.002).exp()))
+                        .clamp(0.18, 2.);
+                    }
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Open a generated GLB to inspect its morph channels");
+                    });
                 }
-                if response.hovered() {
-                    self.camera.distance = (self.camera.distance
-                        * ctx.input(|i| (-i.smooth_scroll_delta.y * 0.002).exp()))
-                    .clamp(0.18, 2.);
-                }
+            });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.manual {
+                crate::ui::manual_channels(ui, &mut self.weights, &mut self.filter);
             } else {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Open a generated GLB to inspect its morph channels");
-                });
+                crate::ui::channel_values_for_names(
+                    ui,
+                    &names,
+                    &snapshot,
+                    &mut self.selected,
+                    &mut self.filter,
+                );
             }
         });
     }
@@ -661,7 +681,7 @@ pub fn run_with_options(options: crate::startup::Options) -> eframe::Result {
         "Audio2Face-3D",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
-            viewport: egui::ViewportBuilder::default().with_inner_size([1200., 800.]),
+            viewport: egui::ViewportBuilder::default().with_inner_size([1440., 900.]),
             ..Default::default()
         },
         Box::new(move |cc| Ok(Box::new(DesktopApp::with_options(cc, options)))),

@@ -57,6 +57,10 @@ name = "audio_probe"
 required-features = ["desktop"]
 
 [[example]]
+name = "audio_gui_probe"
+required-features = ["desktop"]
+
+[[example]]
 name = "stream_probe"
 required-features = ["desktop"]
 
