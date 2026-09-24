@@ -398,7 +398,8 @@ impl eframe::App for DesktopApp {
         });
         let shared = self.audio.player.clone();
         let (mut names, mut snapshot) = playback_view(&shared);
-        self.selected.retain(|i| *i < snapshot.values.len());
+        self.selected
+            .retain(|i| *i < audio2face3d::inference::animation::CURVE_NAMES.len());
         let mut command = None;
         let action =
             self.transport
@@ -456,10 +457,12 @@ impl eframe::App for DesktopApp {
                         self.timeline.reveal_position(time, snapshot.duration);
                         snapshot.time = time;
                     }
-                    if let Some(time) =
-                        self.timeline
-                            .show_player(ui, &shared, &snapshot, &self.selected)
-                    {
+                    if let Some(time) = self.timeline.show_player(
+                        ui,
+                        &shared,
+                        &snapshot,
+                        &timeline_selection(&names, &self.selected),
+                    ) {
                         command = Some(crate::playback::Command::Seek(time));
                     }
                 });
@@ -671,13 +674,17 @@ impl eframe::App for DesktopApp {
             if self.manual {
                 crate::ui::manual_channels(ui, &mut self.weights, &mut self.filter);
             } else {
+                let (channel_names, channel_snapshot) = inference_channel_view(&names, &snapshot);
                 crate::ui::channel_values_for_names(
                     ui,
-                    &names,
-                    &snapshot,
+                    &channel_names,
+                    &channel_snapshot,
                     &mut self.selected,
                     &mut self.filter,
                 );
+                if names.is_empty() {
+                    ui.label("Awaiting inference data");
+                }
             }
         });
     }
@@ -758,6 +765,54 @@ pub fn run_with_options(options: crate::startup::Options) -> eframe::Result {
     )
 }
 
+/// UI rows always use canonical inference order. Missing samples display zero;
+/// this does not create frames or make an empty clip playable.
+fn inference_channel_view(
+    names: &[String],
+    snapshot: &crate::playback::Snapshot,
+) -> (Vec<String>, crate::playback::Snapshot) {
+    let canonical = audio2face3d::inference::animation::CURVE_NAMES;
+    let indices = canonical.map(|name| names.iter().position(|n| n == name));
+    let values = |source: &[f32]| {
+        indices
+            .iter()
+            .map(|i| i.and_then(|i| source.get(i)).copied().unwrap_or(0.))
+            .collect()
+    };
+    (
+        canonical.into_iter().map(str::to_owned).collect(),
+        crate::playback::Snapshot {
+            time: snapshot.time,
+            duration: snapshot.duration,
+            ready_until: snapshot.ready_until,
+            state: snapshot.state,
+            values: values(&snapshot.values),
+            raw_values: values(&snapshot.raw_values),
+            underruns: snapshot.underruns,
+            looping: snapshot.looping,
+        },
+    )
+}
+
+/// Timeline tracks retain received-layout indices; selections belong to UI names.
+fn timeline_selection(
+    names: &[String],
+    selected: &std::collections::BTreeSet<usize>,
+) -> std::collections::BTreeSet<usize> {
+    let canonical = audio2face3d::inference::animation::CURVE_NAMES;
+    names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, name)| {
+            canonical
+                .iter()
+                .position(|n| *n == name)
+                .filter(|index| selected.contains(index))
+                .map(|_| i)
+        })
+        .collect()
+}
+
 fn inference_channel_weights() -> BTreeMap<String, f32> {
     audio2face3d::inference::animation::CURVE_NAMES
         .into_iter()
@@ -780,6 +835,34 @@ fn head_summary(model: &audio2face3d_gui_core::HeadModel) -> String {
 #[cfg(test)]
 mod head_tests {
     use super::*;
+    #[test]
+    fn channels_exist_before_initialization_and_received_order_does_not_change_selection() {
+        let mut player = crate::playback::Player::default();
+        let mut snapshot = player.snapshot(std::time::Instant::now());
+        let (names, view) = inference_channel_view(&[], &snapshot);
+        assert_eq!(names.len(), 52);
+        assert_eq!(names[51], "TongueOut");
+        assert_eq!(view.values, vec![0.; 52]);
+        assert!(player.clip.names.is_empty());
+        assert!(player.clip.frames.is_empty());
+        snapshot.values = vec![0.7, 0.2, 0.9];
+        snapshot.raw_values = vec![0.8, 0.3, 1.];
+        let received = vec![
+            "TongueOut".into(),
+            "JawOpen".into(),
+            "NotAnInferenceChannel".into(),
+        ];
+        let (_, view) = inference_channel_view(&received, &snapshot);
+        assert_eq!(view.values[51], 0.7);
+        assert_eq!(view.raw_values[17], 0.3);
+        assert_eq!(view.values[0], 0.);
+        let selected = [17, 51].into_iter().collect();
+        assert_eq!(
+            timeline_selection(&received, &selected),
+            [0, 1].into_iter().collect()
+        );
+    }
+
     #[test]
     fn manual_channels_follow_inference_even_when_the_head_omits_tongue() {
         let mut model =
