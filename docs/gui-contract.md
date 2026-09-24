@@ -6,7 +6,7 @@ the earlier design and implementation guide in `temp` remain planning references
 ## Packages and dependencies
 
 Rust 2024, workspace MSRV 1.91. `audio2face3d-gui-core` owns model data, validation
-and GLB I/O; `audio2face3d-headgen` is a CPU-only lib/CLI generator;
+and GLB I/O; `audio2face3d-headgen` is a CPU-only OBJ conversion library/CLI;
 `audio2face3d-gui` contains the playback/session library, optional renderer/UI and
 a thin desktop executable. It uses `audio2face3d`, never the server package.
 No build script regenerates assets. No library installs a process-global logger.
@@ -18,7 +18,7 @@ transitive versions are recorded in Cargo.lock and checked against the MSRV.
 Use eframe only in the desktop host; the renderer receives a host device/queue.
 GPU morph deltas use storage buffers, supporting all 52 targets together.
 
-Features: core `gltf-read` / `gltf-write`; headgen `cli`; GUI `local`, `grpc`,
+Features: core `gltf-read` / `gltf-write`; headgen requires no feature flags; GUI `local`, `grpc`,
 `render-wgpu`, `ui-egui`, `desktop`. Default features are empty. `desktop` selects
 rendering/UI/audio/file dialogs, never native inference. `local` selects native;
 `grpc` selects client-grpc and a host-owned Tokio runtime. Mock is development-only.
@@ -43,25 +43,25 @@ no texture. Coordinate system: right handed, Y up, face toward +Z, meters.
 Character's left is +X (viewer right in the default front view).
 Each mesh has `extras.targetNames`, exactly matching morph target order, unique
 and nonempty within the mesh. Names shared across meshes drive all those parts.
-Initial weights must be zero. Unknown channel names remain inspectable; they
-cannot claim the standard 52-channel profile.
+Initial weights must be zero. Target names must be canonical ACE names.
 
-Top-level `extras.audio2face3d_preview` is retained independently of crate names:
-`schema_version: 1`, `rig_profile`, `generator_version` (nonempty string).
-Profiles are `debug_face_prototype_v1` and `debug_face_52_v1`. Unknown schema or
-profile is an error; unknown optional metadata keys may be ignored.
-The full profile requires the union of target names to match the 52 names below.
-No individual mesh needs every target. Full-profile channels must have a nonzero
-position delta somewhere. Assets are original MIT-licensed debug geometry.
+Top-level `extras.audio2face3d_preview` contains `schema_version: 1`,
+`rig_profile: "audio2face_rs_tester_v1"`, and a nonempty `generator_version`.
+Only this profile is supported. Legacy profile names are rejected.
+The union of target names must be a nonempty subset of the 52 names below.
+Every declared channel must have a position delta exceeding 1e-8 somewhere.
+No individual mesh needs every target. Unsupported channels are the difference
+between the canonical set and this union; GUI inference data is not filtered.
 
-## Generator JSON version 1
+## OBJ conversion configuration version 1
 
-Strict JSON object: `schema_version`=1, `segments` (even, 24..64), `rings` (12..40),
-`width` (0.10..0.30 m), `height` (0.15..0.40 m), `depth` (0.08..0.30 m),
-`expression_scale` (0.25..2.0). Reject unknown fields and nonfinite/out-of-range
-values. Defaults: 32, 20, 0.16, 0.24, 0.14, 1.0. Eye/mouth placement derives from
-these dimensions. Serialization includes all fields. Identical inputs/tool
-version produce identical bytes; no timestamps/randomness enter the asset.
+See [headgen.md](headgen.md) and the checked-in ICT reference preset. Strict TOML
+maps canonical channels to absolute-pose OBJ files with identical ordered topology.
+Neutral-space triangulation, coordinate transformation, material splitting and
+summed deltas are deterministic. Composite normals are recalculated before splitting.
+The former procedural generator and JSON configuration are no longer supported.
+Only the original fallback asset is bundled. Third-party models are never included
+by the converter, CI, or package script.
 
 ## Rig semantics
 

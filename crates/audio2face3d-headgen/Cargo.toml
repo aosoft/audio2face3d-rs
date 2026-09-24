@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Procedural debug head generator for Audio2Face-3D"
+description = "CPU-only OBJ blendshape converter for Audio2Face-3D preview heads"
 
 [dependencies]
 audio2face3d-gui-core = { path = "../audio2face3d-gui-core", features = ["gltf-write"] }

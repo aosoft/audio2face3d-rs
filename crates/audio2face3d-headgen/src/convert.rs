@@ -134,37 +134,6 @@ pub fn geometry(config: &Config, neutral: &Obj) -> Result<Geometry> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn material_split_keeps_shared_normals_and_exclusion_is_explicit() {
-        let obj = crate::obj::parse(
-            b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nusemtl a\nf 1 2 3\nusemtl b\nf 1 4 2\n"
-                .as_slice(),
-            "fixture",
-        )
-        .unwrap();
-        let mut c = Config::parse(include_str!("../presets/ict-facekit.toml")).unwrap();
-        let g = geometry(&c, &obj).unwrap();
-        assert_eq!(g.parts.len(), 2);
-        assert_eq!(g.parts[0].mesh.normals[0], g.parts[1].mesh.normals[0]);
-        assert_eq!(
-            g.parts
-                .iter()
-                .map(|p| p.mesh.positions.len())
-                .sum::<usize>(),
-            6
-        );
-        c.geometry.exclude_materials = vec!["b".into()];
-        let g = geometry(&c, &obj).unwrap();
-        assert_eq!(g.parts.len(), 1);
-        assert_eq!(g.excluded["b"], 1);
-        c.geometry.exclude_materials.push("a".into());
-        assert!(geometry(&c, &obj).is_err());
-    }
-}
-
 pub struct Conversion {
     pub model: audio2face3d_gui_core::HeadModel,
     pub report: crate::report::Report,
@@ -180,16 +149,16 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
     let resolved = obj::resolve_inputs(config, input_root)?;
     let neutral = obj::read(&resolved[0].1)?;
     let mut inputs = vec![Input::new(config.neutral.clone(), &neutral)];
-    if let Some(e) = &config.expected {
-        if neutral.positions.len() != e.source_vertices || neutral.faces.len() != e.source_faces {
-            return Err(Error::Input(format!(
-                "neutral counts: got {} vertices / {} faces, expected {} / {}",
-                neutral.positions.len(),
-                neutral.faces.len(),
-                e.source_vertices,
-                e.source_faces
-            )));
-        }
+    if let Some(e) = &config.expected
+        && (neutral.positions.len() != e.source_vertices || neutral.faces.len() != e.source_faces)
+    {
+        return Err(Error::Input(format!(
+            "neutral counts: got {} vertices / {} faces, expected {} / {}",
+            neutral.positions.len(),
+            neutral.faces.len(),
+            e.source_vertices,
+            e.source_faces
+        )));
     }
     let paths = resolved
         .iter()
@@ -378,4 +347,35 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
 }
 pub fn inspect(config: &Config, input_root: &std::path::Path) -> Result<crate::report::Report> {
     Ok(convert(config, input_root)?.report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn material_split_keeps_shared_normals_and_exclusion_is_explicit() {
+        let obj = crate::obj::parse(
+            b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nusemtl a\nf 1 2 3\nusemtl b\nf 1 4 2\n"
+                .as_slice(),
+            "fixture",
+        )
+        .unwrap();
+        let mut c = Config::parse(include_str!("../presets/ict-facekit.toml")).unwrap();
+        let g = geometry(&c, &obj).unwrap();
+        assert_eq!(g.parts.len(), 2);
+        assert_eq!(g.parts[0].mesh.normals[0], g.parts[1].mesh.normals[0]);
+        assert_eq!(
+            g.parts
+                .iter()
+                .map(|p| p.mesh.positions.len())
+                .sum::<usize>(),
+            6
+        );
+        c.geometry.exclude_materials = vec!["b".into()];
+        let g = geometry(&c, &obj).unwrap();
+        assert_eq!(g.parts.len(), 1);
+        assert_eq!(g.excluded["b"], 1);
+        c.geometry.exclude_materials.push("a".into());
+        assert!(geometry(&c, &obj).is_err());
+    }
 }

@@ -76,7 +76,7 @@ switch ($Tier) {
         Invoke-Checked @("cargo", "clippy", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock", "--all-targets", "--", "-D", "warnings")
         Invoke-Checked @("cargo", "test", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui-core", "--features", "gltf-read,gltf-write")
-        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-headgen", "--features", "cli")
+        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-headgen")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "ui-egui,grpc,mock")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "desktop,grpc,mock", "--test", "startup")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "desktop,grpc,mock", "--lib")

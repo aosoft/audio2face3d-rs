@@ -147,26 +147,24 @@ environment; selecting that compiler while retaining newer MSVC include paths
 is insufficient. Run the corresponding `vcvars64.bat -vcvars_ver=14.42` first.
 No developer SDK path is compiled into the application configuration.
 
-## Regenerate or replace the head
+## Convert or replace the head
+
+Use the CPU-only OBJ converter described in [headgen.md](headgen.md):
 
 ```powershell
-cargo run -p audio2face3d-headgen --features cli -- --config crates/audio2face3d-headgen/presets/default-head.json --output crates/audio2face3d-gui/assets/default-head.glb
+cargo run -p audio2face3d-headgen -- convert --config crates/audio2face3d-headgen/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output temp/ict-facekit.glb
 ```
 
-The versioned preset/tool produces deterministic bytes: 2,134 vertices in 18
-parts, 4,016 triangles, 52 active channels, 860,580 bytes. The head surface alone
-has 610 vertices. The generated mesh and deltas are original MIT-licensed work.
-External heads must follow `docs/gui-contract.md`: embedded GLB with indexed
-triangles, position/normal morph deltas, target names, metadata and plain materials.
-Arbitrary production glTF files with skins, transforms or textures are unsupported.
-The NVIDIA-style `MouthClose` pose independently lowers the chin with closed lips;
-it is not the inverse of `JawOpen`. Combined weights are additive without hidden
-clamping or corrective mixing. Inspect extreme combinations as diagnostics.
+Open the resulting GLB with **Open head** or `--head`. The head's unsupported
+channels are displayed separately; inference values and timeline tracks stay intact.
+The original bundled mannequin remains a diagnostic fallback. It is not ICT data.
+Third-party inputs and converted assets are obtained and managed by the user;
+no automatic downloads or package replacement occur.
 
 ## Library boundaries and engine embedding
 
 - `audio2face3d-gui-core`: CPU model types, validation and optional GLB read/write.
-- `audio2face3d-headgen`: CPU generator library with optional `cli`.
+- `audio2face3d-headgen`: CPU OBJ conversion library and standard CLI (no feature flag).
 - `audio2face3d-gui`: playback/session/logging library; `render-wgpu` and `ui-egui`
   are optional. `desktop` adds the standard CPAL/eframe host. `local` and `grpc`
   independently enable inference. `mock` and `capture` are development features.

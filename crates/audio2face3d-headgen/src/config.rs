@@ -175,10 +175,10 @@ impl Config {
                 return Err(fail("materials must be finite opaque RGBA in 0..1"));
             }
         }
-        if let Some(e) = &self.expected {
-            if e.mapped_channels != targets.len() || e.unique_expression_files != files.len() {
-                return Err(fail("expected mapping counts do not match configuration"));
-            }
+        if let Some(e) = &self.expected
+            && (e.mapped_channels != targets.len() || e.unique_expression_files != files.len())
+        {
+            return Err(fail("expected mapping counts do not match configuration"));
         }
         Ok(())
     }

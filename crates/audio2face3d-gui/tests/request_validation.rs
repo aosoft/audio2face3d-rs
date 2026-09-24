@@ -15,7 +15,7 @@ fn missing_model_is_rejected_before_opening_wav_or_starting_native_worker() {
         Err(error) => error.to_string(),
     };
     assert!(error.contains("Model JSON is required"));
-    assert!(error.contains("Browse model"));
+    assert!(error.contains("Browse next to Model JSON"));
 }
 
 #[test]
@@ -29,5 +29,5 @@ fn missing_wav_is_reported_before_a_session_is_created() {
         Ok(_) => panic!("missing WAV started a worker"),
         Err(error) => error.to_string(),
     };
-    assert!(error.contains("Browse WAV"));
+    assert!(error.contains("Browse next to WAV"));
 }

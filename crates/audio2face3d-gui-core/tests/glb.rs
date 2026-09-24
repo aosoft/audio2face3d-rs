@@ -151,3 +151,19 @@ fn tester_profile_rejects_legacy_unknown_and_zero_targets() {
     model.meshes[0].targets[0].name = "Unknown".into();
     assert!(model.validate().is_err());
 }
+
+#[test]
+fn original_full_asset_uses_the_same_tester_contract() {
+    let model = from_glb(include_bytes!(
+        "../../audio2face3d-gui/assets/default-head.glb"
+    ))
+    .unwrap();
+    assert_eq!(model.channel_names().len(), 52);
+    assert!(model.unsupported_channels().is_empty());
+    let bytes = to_glb(&model).unwrap();
+    assert_eq!(from_glb(&bytes).unwrap(), model);
+    assert_eq!(
+        audio2face3d_gui_core::gltf::encoded_size(&model).unwrap(),
+        bytes.len()
+    );
+}
