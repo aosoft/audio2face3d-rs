@@ -46,6 +46,15 @@ impl HeadModel {
         crate::validation::validate(self)
     }
 
+    pub fn unsupported_channels(&self) -> Vec<String> {
+        let supported = self.channel_names();
+        crate::rig::CHANNELS
+            .iter()
+            .filter(|name| !supported.iter().any(|s| s == **name))
+            .map(|s| (*s).to_owned())
+            .collect()
+    }
+
     pub fn channel_names(&self) -> Vec<String> {
         let mut names = std::collections::BTreeSet::new();
         for mesh in &self.meshes {

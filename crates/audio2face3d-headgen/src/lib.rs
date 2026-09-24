@@ -4,11 +4,13 @@
 pub const GENERATOR_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod config;
+pub mod error;
+mod legacy_config;
 mod mesh;
 mod morph;
 mod normals;
 use audio2face3d_gui_core::{HeadModel, Metadata, model::Result, rig};
-pub use config::Config;
+pub use legacy_config::Config;
 
 /// Deterministic standard debug head with all 52 server channels.
 pub fn generate(config: &Config) -> Result<HeadModel> {
@@ -21,7 +23,7 @@ pub fn generate(config: &Config) -> Result<HeadModel> {
     let model = HeadModel {
         metadata: Metadata {
             schema_version: 1,
-            rig_profile: rig::FULL.into(),
+            rig_profile: rig::TESTER.into(),
             generator_version: GENERATOR_VERSION.into(),
         },
         meshes,

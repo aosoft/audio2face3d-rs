@@ -15,7 +15,7 @@ fn all_52_targets_match_cpu_after_name_reordering_and_resize() {
     let mut model = HeadModel {
         metadata: Metadata {
             schema_version: 1,
-            rig_profile: "debug_face_52_v1".into(),
+            rig_profile: "audio2face_rs_tester_v1".into(),
             generator_version: "test".into(),
         },
         meshes: vec![Mesh {
@@ -85,3 +85,4 @@ fn all_52_targets_match_cpu_after_name_reordering_and_resize() {
     }
     assert!(pollster::block_on(device.pop_error_scope()).is_none());
 }
+

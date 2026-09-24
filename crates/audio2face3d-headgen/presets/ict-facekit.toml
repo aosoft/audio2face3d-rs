@@ -1,0 +1,100 @@
+# audio2face3d-headgen の新 OBJ 変換 CLI 用。現行 CLI ではまだ使用できない。
+# ユーザーが取得した ICT-FaceKit/FaceXModel を --input-root に指定する。
+# OBJ 名・53表情の構成・材質名は公式定義と照合済み。
+# 軸向きと変換後の形状品質は実 OBJ での検証前。実装手順 P08 で確定する。
+schema_version = 1
+neutral = "generic_neutral_mesh.obj"
+output_profile = "audio2face_rs_tester_v1"
+unsupported_channels = ["TongueOut"]
+
+[reference]
+name = "ICT-FaceKit Light"
+repository = "https://github.com/USC-ICT/ICT-FaceKit"
+definition = "https://github.com/USC-ICT/ICT-FaceKit/blob/master/FaceXModel/vertex_indices.json"
+reviewed_on = "2026-09-24"
+status = "candidate-not-geometry-validated"
+
+[transform]
+source_up = "+Y"
+source_forward = "+Z"
+fit_height_m = 0.24
+center_m = [0.0, -0.015, 0.0]
+
+[geometry]
+split_by = "material"
+exclude_materials = ["M_EyeBlend", "M_EyeOcclusion", "M_LacrimalFluid", "M_EyeLashes"]
+
+[materials]
+# 診断表示用に独自に選んだ不透明色。MTL/PBR を再現する設定ではない。
+default_color = [0.62, 0.47, 0.39, 1.0]
+
+[materials.colors]
+M_Face = [0.62, 0.47, 0.39, 1.0]
+M_BackHead = [0.62, 0.47, 0.39, 1.0]
+M_GumsTongue = [0.40, 0.10, 0.12, 1.0]
+M_Teeth = [0.88, 0.86, 0.79, 1.0]
+M_ScleraLeft = [0.86, 0.86, 0.82, 1.0]
+M_ScleraRight = [0.86, 0.86, 0.82, 1.0]
+M_IrisLeft = [0.12, 0.19, 0.17, 1.0]
+M_IrisRight = [0.12, 0.19, 0.17, 1.0]
+
+[expected]
+# 公式 README の Neutral 全体（材質除外・分割・三角形化前）。
+source_vertices = 26719
+source_faces = 26384
+mapped_channels = 51
+unique_expression_files = 53
+
+[targets]
+# 各 OBJ は絶対座標。複数指定では各形状の Neutral との差分を加算する。
+EyeBlinkLeft = ["eyeBlink_L.obj"]
+EyeLookDownLeft = ["eyeLookDown_L.obj"]
+EyeLookInLeft = ["eyeLookIn_L.obj"]
+EyeLookOutLeft = ["eyeLookOut_L.obj"]
+EyeLookUpLeft = ["eyeLookUp_L.obj"]
+EyeSquintLeft = ["eyeSquint_L.obj"]
+EyeWideLeft = ["eyeWide_L.obj"]
+EyeBlinkRight = ["eyeBlink_R.obj"]
+EyeLookDownRight = ["eyeLookDown_R.obj"]
+EyeLookInRight = ["eyeLookIn_R.obj"]
+EyeLookOutRight = ["eyeLookOut_R.obj"]
+EyeLookUpRight = ["eyeLookUp_R.obj"]
+EyeSquintRight = ["eyeSquint_R.obj"]
+EyeWideRight = ["eyeWide_R.obj"]
+JawForward = ["jawForward.obj"]
+JawLeft = ["jawLeft.obj"]
+JawRight = ["jawRight.obj"]
+JawOpen = ["jawOpen.obj"]
+MouthClose = ["mouthClose.obj"]
+MouthFunnel = ["mouthFunnel.obj"]
+MouthPucker = ["mouthPucker.obj"]
+MouthLeft = ["mouthLeft.obj"]
+MouthRight = ["mouthRight.obj"]
+MouthSmileLeft = ["mouthSmile_L.obj"]
+MouthSmileRight = ["mouthSmile_R.obj"]
+MouthFrownLeft = ["mouthFrown_L.obj"]
+MouthFrownRight = ["mouthFrown_R.obj"]
+MouthDimpleLeft = ["mouthDimple_L.obj"]
+MouthDimpleRight = ["mouthDimple_R.obj"]
+MouthStretchLeft = ["mouthStretch_L.obj"]
+MouthStretchRight = ["mouthStretch_R.obj"]
+MouthRollLower = ["mouthRollLower.obj"]
+MouthRollUpper = ["mouthRollUpper.obj"]
+MouthShrugLower = ["mouthShrugLower.obj"]
+MouthShrugUpper = ["mouthShrugUpper.obj"]
+MouthPressLeft = ["mouthPress_L.obj"]
+MouthPressRight = ["mouthPress_R.obj"]
+MouthLowerDownLeft = ["mouthLowerDown_L.obj"]
+MouthLowerDownRight = ["mouthLowerDown_R.obj"]
+MouthUpperUpLeft = ["mouthUpperUp_L.obj"]
+MouthUpperUpRight = ["mouthUpperUp_R.obj"]
+BrowDownLeft = ["browDown_L.obj"]
+BrowDownRight = ["browDown_R.obj"]
+BrowInnerUp = ["browInnerUp_L.obj", "browInnerUp_R.obj"]
+BrowOuterUpLeft = ["browOuterUp_L.obj"]
+BrowOuterUpRight = ["browOuterUp_R.obj"]
+CheekPuff = ["cheekPuff_L.obj", "cheekPuff_R.obj"]
+CheekSquintLeft = ["cheekSquint_L.obj"]
+CheekSquintRight = ["cheekSquint_R.obj"]
+NoseSneerLeft = ["noseSneer_L.obj"]
+NoseSneerRight = ["noseSneer_R.obj"]

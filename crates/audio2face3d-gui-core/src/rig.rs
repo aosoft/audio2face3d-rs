@@ -1,5 +1,4 @@
-pub const PROTOTYPE: &str = "debug_face_prototype_v1";
-pub const FULL: &str = "debug_face_52_v1";
+pub const TESTER: &str = "audio2face_rs_tester_v1";
 
 /// Exact ACE/server spellings. Match by name, never by ordinal across meshes.
 pub const CHANNELS: [&str; 52] = [

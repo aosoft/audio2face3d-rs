@@ -19,7 +19,7 @@ pub fn validate(model: &HeadModel) -> Result<()> {
         "unsupported schema version",
     )?;
     require(
-        [rig::PROTOTYPE, rig::FULL].contains(&model.metadata.rig_profile.as_str()),
+        model.metadata.rig_profile == rig::TESTER,
         "unsupported rig profile",
     )?;
     require(
@@ -54,13 +54,11 @@ pub fn validate(model: &HeadModel) -> Result<()> {
             }
         }
     }
-    if model.metadata.rig_profile == rig::FULL {
-        let expected = rig::CHANNELS.into_iter().collect::<BTreeSet<_>>();
-        require(
-            names == expected && active == expected,
-            "full rig requires 52 named, nonzero targets",
-        )?;
-    }
+    let expected = rig::CHANNELS.into_iter().collect::<BTreeSet<_>>();
+    require(
+        !names.is_empty() && names.is_subset(&expected) && active == names,
+        "tester rig requires 1..52 canonical, nonzero targets",
+    )?;
     Ok(())
 }
 

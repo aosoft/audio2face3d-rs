@@ -42,9 +42,9 @@ fn fixture() -> (Value, Vec<u8>) {
             {"bufferView":2,"byteOffset":36,"componentType":5126,"count":3,"type":"VEC3","min":[0,1,0],"max":[0,1,0]},
             {"bufferView":2,"byteOffset":72,"componentType":5126,"count":3,"type":"VEC3"}],
         "materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0.7,0.5,0.4,1.],"metallicFactor":0.,"roughnessFactor":1.},"doubleSided":true}],
-        "meshes":[{"name":"triangle","weights":[0,0],"extras":{"targetNames":["Forward","Up"]},"primitives":[{
+        "meshes":[{"name":"triangle","weights":[0,0],"extras":{"targetNames":["JawForward","JawOpen"]},"primitives":[{
             "attributes":{"POSITION":0,"NORMAL":1},"indices":2,"material":0,"targets":[{"POSITION":3,"NORMAL":5},{"POSITION":4,"NORMAL":5}]}]}],
-        "extras":{"audio2face3d_preview":{"schema_version":1,"rig_profile":"debug_face_prototype_v1","generator_version":"fixture"}}});
+        "extras":{"audio2face3d_preview":{"schema_version":1,"rig_profile":"audio2face_rs_tester_v1","generator_version":"fixture"}}});
     (doc, bin)
 }
 
@@ -133,5 +133,21 @@ fn shared_names_across_meshes_are_valid_but_false_full_profile_is_not() {
     model.meshes.push(model.meshes[0].clone());
     assert!(from_glb(&to_glb(&model).unwrap()).is_ok());
     model.metadata.rig_profile = "debug_face_52_v1".into();
+    assert!(model.validate().is_err());
+}
+
+#[test]
+fn tester_profile_rejects_legacy_unknown_and_zero_targets() {
+    let (doc, bin) = fixture();
+    for profile in ["debug_face_prototype_v1", "debug_face_52_v1"] {
+        let mut bad = doc.clone();
+        bad["extras"]["audio2face3d_preview"]["rig_profile"] = json!(profile);
+        assert!(from_glb(&pack(&bad, &bin)).is_err());
+    }
+    let mut model = from_glb(&pack(&doc, &bin)).unwrap();
+    assert_eq!(model.unsupported_channels().len(), 50);
+    model.meshes[0].targets[0].positions.fill([0.; 3]);
+    assert!(model.validate().is_err());
+    model.meshes[0].targets[0].name = "Unknown".into();
     assert!(model.validate().is_err());
 }

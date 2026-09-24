@@ -14,6 +14,8 @@ cli = ["dep:clap"]
 
 [dependencies]
 audio2face3d-gui-core = { path = "../audio2face3d-gui-core", features = ["gltf-write"] }
+toml = "1.1"
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
