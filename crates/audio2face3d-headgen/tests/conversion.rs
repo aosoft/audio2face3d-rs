@@ -65,3 +65,58 @@ fn rejects_degenerate_composite_and_transform_overflow() {
     c.transform.fit_height_m = f32::MAX;
     assert!(convert(&c, dir.path()).is_err());
 }
+
+#[test]
+fn pose_tolerance_is_explicit_and_keeps_geometry() {
+    use audio2face3d_headgen::config::DegeneratePoseTriangles;
+    let (dir, mut c) = common::fixture();
+    c.targets.retain(|name, _| name == "JawOpen");
+    c.unsupported_channels = audio2face3d_gui_core::rig::CHANNELS
+        .iter()
+        .filter(|&&n| n != "JawOpen")
+        .map(|s| s.to_string())
+        .collect();
+    let neutral = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv -1 1 0\nf 1 2 3\nf 1 3 4\nf 1 2 4\n";
+    std::fs::write(dir.path().join(&c.neutral), neutral).unwrap();
+    std::fs::write(
+        dir.path().join("jaw.obj"),
+        neutral.replace("v -1 1 0", "v 0 1 0"),
+    )
+    .unwrap();
+    c.geometry.degenerate_pose_triangles = DegeneratePoseTriangles::Error;
+    let serialized = toml::to_string(&c)
+        .unwrap()
+        .replace("degenerate_pose_triangles = \"error\"\n", "");
+    let default = audio2face3d_headgen::Config::parse(&serialized).unwrap();
+    assert_eq!(
+        default.geometry.degenerate_pose_triangles,
+        DegeneratePoseTriangles::Error
+    );
+    assert!(
+        convert(&default, dir.path())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("source face 2")
+    );
+    c.geometry.degenerate_pose_triangles = DegeneratePoseTriangles::SkipNormalContribution;
+    let converted = convert(&c, dir.path()).unwrap();
+    assert_eq!(
+        converted.model.meshes[0].indices,
+        [0, 1, 2, 0, 2, 3, 0, 1, 3]
+    );
+    let r = &converted.report.channels["JawOpen"];
+    assert_eq!(r.skipped_normal_triangles, [2]);
+    assert_eq!(r.skipped_normal_source_faces, [2]);
+    let evaluated = evaluate(&converted.model.meshes[0], &[1.]).unwrap();
+    assert_eq!(evaluated.positions[2], evaluated.positions[3]);
+    std::fs::write(
+        dir.path().join(&c.neutral),
+        neutral.replace("v -1 1 0", "v 0 1 0"),
+    )
+    .unwrap();
+    assert!(
+        convert(&c, dir.path()).is_err(),
+        "neutral must remain strict"
+    );
+}

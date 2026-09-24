@@ -27,6 +27,8 @@ impl Input {
 }
 #[derive(Debug, Serialize)]
 pub struct Channel {
+    pub skipped_normal_triangles: Vec<usize>,
+    pub skipped_normal_source_faces: Vec<usize>,
     pub sources: Vec<String>,
     pub max_displacement: f64,
     pub rms_displacement: f64,

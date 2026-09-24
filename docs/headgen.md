@@ -91,3 +91,27 @@ Conversion success is not a visual quality certification. Keep ICT source data,
 derived models, reports and screenshots outside versioned assets (for example in
 ignored `temp`). Normal CI uses only independent tiny fixtures; packaging explicitly
 copies the original fallback head, not conversion output.
+
+## P08 validation and explicit pose tolerance
+
+The ICT preset was exercised on revision `da5f95a607f5e6b37755b38d3385d7f2853732e5`.
+All 53 expression inputs pass ordered topology matching and map to 51 channels.
+MouthStretchRight and MouthUpperUpRight contain two oral source faces (15776 and
+15781) whose adjacent vertices collapse in the posed geometry.
+
+`geometry.degenerate_pose_triangles` defaults to `"error"`. The ICT preset explicitly
+uses `"skip_normal_contribution"`, approved for this input: only zero-area **posed**
+triangles are omitted when accumulating normals. Vertex positions, morph deltas
+and triangle indices remain unchanged. Surrounding nondegenerate faces must still
+provide a usable normal at every retained vertex. Neutral degeneracy, overflow and
+undefined surrounding normals always remain errors. Reports record skipped triangle
+indices and original source face numbers per output channel.
+
+The reference conversion produces 24,953 split vertices, 48,836 triangles and eight
+parts, within the existing GLB/CPU/GPU limits. CPU/GPU pose checks and actual Local
+WAV playback were exercised. These are functional checks, not a quality guarantee.
+The preset remains a candidate: opaque outer sclera geometry obscures the iris,
+limiting gaze inspection; strong additive mouth/eyelid combinations need further
+artistic review. A separate custom-model repository could adapt eye geometry/material
+boundaries for opaque rendering and author combination corrections. This converter
+does not insert hidden corrective weights or silently modify source geometry.

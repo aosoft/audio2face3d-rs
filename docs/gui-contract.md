@@ -70,11 +70,15 @@ The raw received values are retained. UI may show a clipped bar but also the
 original number. Interpolation is linear in media time. No implicit corrective
 mixing, clamping or ARKit conversion is applied.
 
-This debug profile uses NVIDIA-style MouthClose: its standalone pose lowers the
+The original bundled fallback asset uses NVIDIA-style MouthClose: its standalone pose lowers the
 jaw/chin while keeping the lips together. It is NOT an inverse JawOpen delta.
 JawOpen opens lips and lowers chin. Both at 1 add chin displacement; this is an
 extreme diagnostic pose, not automatic cancellation. Teeth follow jaw movement.
-The profile is a visual probe, not a claim of anatomical or model-training parity.
+The profile validates names and data, not anatomical or model-training parity.
+Converted models retain their source poses, including different MouthClose semantics.
+The converter does not force a source pose to match the fallback's convention.
+The following table describes the fallback's intended motions; it is not a guarantee
+that a third-party input implements every motion identically.
 
 | Channel(s), exact server spelling | Target motion at weight 1 |
 | --- | --- |

@@ -215,11 +215,24 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         if posed.iter().flatten().any(|x| !x.is_finite()) {
             return Err(Error::Input(format!("{name}: position overflow")));
         }
-        let posed_normals = crate::normals::checked(&posed, &g.indices, name).map_err(|e| {
-            Error::Input(format!(
-                "{e}; triangle-to-source-face mapping available from neutral topology"
-            ))
-        })?;
+        let normal_result = crate::normals::posed(
+            &posed,
+            &g.indices,
+            name,
+            &g.face_numbers,
+            config.geometry.degenerate_pose_triangles,
+        )?;
+        let posed_normals = normal_result.normals;
+        let skipped_normal_triangles = normal_result.skipped_triangles;
+        let skipped_normal_source_faces = skipped_normal_triangles
+            .iter()
+            .map(|i| g.face_numbers[i - 1])
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !skipped_normal_triangles.is_empty() {
+            g.warnings.push(format!("{name}: skipped {} zero-area triangle normal contributions at source faces {:?}; geometry unchanged", skipped_normal_triangles.len(), skipped_normal_source_faces));
+        }
         let mut reversed = Vec::new();
         for (i, t) in g.indices.chunks_exact(3).enumerate() {
             let normal = |p: &[[f32; 3]]| {
@@ -285,6 +298,8 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         channels.insert(
             name.clone(),
             Channel {
+                skipped_normal_triangles,
+                skipped_normal_source_faces,
                 sources: sources.clone(),
                 max_displacement: max,
                 rms_displacement: (sum / retained.len() as f64).sqrt(),

@@ -127,7 +127,16 @@ fn print_report(report: &Report) {
         report.largest_gpu_storage_buffer_bytes,
         report.glb_upper_bound_bytes
     );
-    for warning in &report.warnings {
+    println!(
+        "{} warnings (details in JSON report)",
+        report.warnings.len()
+    );
+    for warning in report
+        .warnings
+        .iter()
+        .filter(|w| !w.starts_with("nonplanar neutral face"))
+        .take(12)
+    {
         println!("warning: {warning}");
     }
 }

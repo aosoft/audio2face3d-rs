@@ -1,7 +1,7 @@
-# audio2face3d-headgen の新 OBJ 変換 CLI 用。現行 CLI ではまだ使用できない。
+# audio2face3d-headgen OBJ 変換 CLI 用。
 # ユーザーが取得した ICT-FaceKit/FaceXModel を --input-root に指定する。
 # OBJ 名・53表情の構成・材質名は公式定義と照合済み。
-# 軸向きと変換後の形状品質は実 OBJ での検証前。実装手順 P08 で確定する。
+# P08: +Y up / +Z forward and all 51 channels checked; visual limitations remain.
 schema_version = 1
 neutral = "generic_neutral_mesh.obj"
 output_profile = "audio2face_rs_tester_v1"
@@ -11,8 +11,8 @@ unsupported_channels = ["TongueOut"]
 name = "ICT-FaceKit Light"
 repository = "https://github.com/USC-ICT/ICT-FaceKit"
 definition = "https://github.com/USC-ICT/ICT-FaceKit/blob/master/FaceXModel/vertex_indices.json"
-reviewed_on = "2026-09-24"
-status = "candidate-not-geometry-validated"
+reviewed_on = "2026-09-25"
+status = "candidate-geometry-validated-visual-limitations"
 
 [transform]
 source_up = "+Y"
@@ -21,6 +21,9 @@ fit_height_m = 0.24
 center_m = [0.0, -0.015, 0.0]
 
 [geometry]
+# Two oral faces collapse in MouthStretchRight / MouthUpperUpRight. Preserve
+# geometry but omit their zero-area contribution when computing posed normals.
+degenerate_pose_triangles = "skip_normal_contribution"
 split_by = "material"
 exclude_materials = ["M_EyeBlend", "M_EyeOcclusion", "M_LacrimalFluid", "M_EyeLashes"]
 

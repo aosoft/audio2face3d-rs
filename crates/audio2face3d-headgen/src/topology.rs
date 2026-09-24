@@ -74,11 +74,23 @@ pub fn triangulate(obj: &Obj) -> Result<(Vec<Vec<u32>>, Vec<String>)> {
             return Err(fail());
         }
         let normal = normal.map(|x| x / length);
+        // Project orthogonally onto the polygon's own plane. Dropping the
+        // dominant coordinate can fold a valid nonplanar thin quad in projection.
         let axis = (0..3)
-            .max_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()))
+            .min_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()))
             .unwrap();
-        let project =
-            |p: [f32; 3]| -> [f64; 2] { [p[(axis + 1) % 3] as f64, p[(axis + 2) % 3] as f64] };
+        let mut reference = [0.; 3];
+        reference[axis] = 1.;
+        let tangent = cross(reference, normal);
+        let tangent = tangent.map(|x| x / dot(tangent, tangent).sqrt());
+        let bitangent = cross(normal, tangent);
+        let project = |point: [f32; 3]| -> [f64; 2] {
+            let relative = sub(point, p[0]);
+            [
+                dot(relative, tangent) as f64,
+                dot(relative, bitangent) as f64,
+            ]
+        };
         let q = p.iter().copied().map(project).collect::<Vec<_>>();
         let area = |a: usize, b: usize, c: usize| {
             (q[b][0] - q[a][0]) * (q[c][1] - q[a][1]) - (q[b][1] - q[a][1]) * (q[c][0] - q[a][0])
@@ -88,8 +100,7 @@ pub fn triangulate(obj: &Obj) -> Result<(Vec<Vec<u32>>, Vec<String>)> {
         if intersects(0, 1, 2, 3) || intersects(1, 2, 3, 0) {
             return Err(fail());
         }
-        let orientation = normal[axis].signum() as f64;
-        let valid = |a, b, c| area(a, b, c) * orientation > 1e-20;
+        let valid = |a, b, c| area(a, b, c) > 1e-20;
         let ac = valid(0, 1, 2) && valid(0, 2, 3);
         let bd = valid(0, 1, 3) && valid(1, 2, 3);
         if !ac && !bd {
@@ -127,5 +138,21 @@ mod triangulation_tests {
         assert_eq!(triangulate(&concave).unwrap().0[0], [0, 1, 2, 0, 2, 3]);
         let crossed = obj("v 0 0 0\nv 1 1 0\nv 0 1 0\nv 1 0 0");
         assert!(triangulate(&crossed).is_err());
+    }
+}
+
+#[cfg(test)]
+mod nonplanar_projection_tests {
+    #[test]
+    fn face_plane_projection_does_not_fold_a_nonplanar_quad() {
+        // Independent integer fixture; no source dataset geometry is embedded.
+        let obj = crate::obj::parse(
+            b"v 0 0 0\nv -3 -3 -1\nv -2 1 -1\nv -3 -3 1\nf 1 2 3 4".as_slice(),
+            "synthetic",
+        )
+        .unwrap();
+        let (triangles, warnings) = super::triangulate(&obj).unwrap();
+        assert_eq!(triangles[0].len(), 6);
+        assert!(!warnings.is_empty());
     }
 }

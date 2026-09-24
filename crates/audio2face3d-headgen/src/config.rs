@@ -57,6 +57,8 @@ impl Axis {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Geometry {
+    #[serde(default)]
+    pub degenerate_pose_triangles: DegeneratePoseTriangles,
     pub split_by: SplitBy,
     pub exclude_materials: Vec<String>,
 }
@@ -197,6 +199,15 @@ pub(crate) fn relative_path(path: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Neutral geometry remains strict regardless of this explicit pose-only policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DegeneratePoseTriangles {
+    #[default]
+    Error,
+    SkipNormalContribution,
 }
 
 #[cfg(test)]
