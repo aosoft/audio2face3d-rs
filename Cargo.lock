@@ -427,6 +427,7 @@ dependencies = [
  "audio2face3d",
  "audio2face3d-gui-core",
  "bytemuck",
+ "chrono",
  "clap",
  "cpal",
  "eframe",

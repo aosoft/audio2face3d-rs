@@ -1,6 +1,59 @@
 use super::*;
 use egui::{Event, PointerButton, Pos2, Rect, Shape};
 
+#[test]
+fn channels_survive_reinitialization_after_a_completed_result() {
+    let ctx = egui::Context::default();
+    let mut player = crate::playback::Player::default();
+    player.replace(crate::core::demo_clip());
+    let previous_names = player.clip.names.clone();
+    player.replace(crate::core::Clip::running());
+    let snapshot = player.snapshot(std::time::Instant::now());
+    assert!(!previous_names.is_empty());
+    assert!(snapshot.values.is_empty());
+    // Reinitialization can occur after this frame's channel names were captured.
+    let mut selected = [0, 7, 17].into_iter().collect();
+    let _ = ctx.run(Default::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            channel_values_for_names(
+                ui,
+                &previous_names,
+                &snapshot,
+                &mut selected,
+                &mut String::new(),
+            );
+        });
+    });
+}
+
+#[test]
+fn disabled_timeline_ignores_ruler_and_track_presses_while_following_playback() {
+    let ctx = egui::Context::default();
+    let mut timeline = Timeline {
+        seek_disabled: true,
+        zoom: 4.,
+        ..Default::default()
+    };
+    frame(&ctx, &mut timeline, vec![]);
+    let (_, shapes) = frame(&ctx, &mut timeline, vec![]);
+    let plot = plots(&shapes)[0];
+    for pos in [plot.center(), egui::pos2(plot.center().x, plot.top() - 30.)] {
+        assert_eq!(
+            frame(
+                &ctx,
+                &mut timeline,
+                vec![Event::PointerMoved(pos), button(pos, true)]
+            )
+            .0,
+            None
+        );
+        frame(&ctx, &mut timeline, vec![button(pos, false)]);
+    }
+    let (_, shapes) = frame_at(&ctx, &mut timeline, vec![], 3., true);
+    assert!((timeline.offset - 2.25).abs() < 1e-6);
+    assert_eq!(cursors(&shapes).len(), 1);
+}
+
 fn frame(
     ctx: &egui::Context,
     timeline: &mut Timeline,

@@ -1,6 +1,8 @@
 use crate::render::{Camera, HeadRenderer, RenderTarget};
 use audio2face3d::logging::{LogLevel, LogRecord, Logger};
 use std::{collections::BTreeMap, path::Path};
+mod transport;
+use transport::{Action, Transport};
 
 pub struct DesktopApp {
     gpu: egui_wgpu::RenderState,
@@ -24,6 +26,7 @@ pub struct DesktopApp {
     input_finished: bool,
     user_cancelled: bool,
     stream_started: bool,
+    transport: Transport,
     #[cfg(feature = "capture")]
     frames: u32,
 }
@@ -48,7 +51,7 @@ impl DesktopApp {
             audio: crate::audio::AudioOutput::new(std::sync::Arc::new(std::sync::Mutex::new(
                 crate::playback::Player::default(),
             ))),
-            manual: true,
+            manual: false,
             selected: [0, 7, 17].into_iter().collect(),
             timeline: Default::default(),
             logger,
@@ -61,6 +64,7 @@ impl DesktopApp {
             input_finished: false,
             user_cancelled: false,
             stream_started: false,
+            transport: Transport::default(),
             #[cfg(feature = "capture")]
             frames: 0,
         };
@@ -81,16 +85,13 @@ impl DesktopApp {
                 .unwrap()
                 .replace(crate::core::demo_clip());
             app.manual = false;
+            app.transport.finished(true, false);
             let _ = app.audio.command(crate::playback::Command::Seek(0.5));
         }
         #[cfg(feature = "capture")]
         if let Some(wav) = std::env::var_os("A2F_GUI_WAV") {
             app.request.wav = wav.into();
             app.request.model = std::env::var_os("A2F_GUI_MODEL").unwrap_or_default().into();
-            app.request.cuda_root = std::env::var_os("CUDA_PATH").unwrap_or_default().into();
-            app.request.tensorrt_root = std::env::var_os("TENSORRT_ROOT_DIR")
-                .unwrap_or_default()
-                .into();
             app.request.mode = match std::env::var("A2F_GUI_MODE").as_deref() {
                 Ok("local") => crate::inference::Mode::Local,
                 Ok("mock") => crate::inference::Mode::Mock,
@@ -141,6 +142,7 @@ impl DesktopApp {
         match crate::inference::Job::start(self.next_job, self.request.clone(), self.logger.clone())
         {
             Ok(job) => {
+                self.transport.invalidate();
                 self.audio.stop();
                 self.audio
                     .player
@@ -230,7 +232,7 @@ impl DesktopApp {
                 player.clip.session = crate::core::SessionState::Failed(e.to_string());
                 self.message = e.to_string();
             } else if player.clip.session == crate::core::SessionState::Completed {
-                self.message = "Results complete; resources released; ready to play".into();
+                self.message = "Results complete; resources released".into();
             } else if !matches!(player.clip.session, crate::core::SessionState::Failed(_)) {
                 player.clip.session =
                     crate::core::SessionState::Failed("missing completion".into());
@@ -251,7 +253,23 @@ impl DesktopApp {
             if failed {
                 self.audio.stop();
             }
+            if self.transport.finished(!failed, self.request.pace_input) {
+                self.stream_started = true;
+                if let Err(e) = self.audio.command(crate::playback::Command::Play) {
+                    self.message = e.to_string();
+                }
+            }
         }
+    }
+
+    fn stop_inference(&mut self) {
+        if let Some(job) = &self.job {
+            job.cancel();
+        }
+        self.user_cancelled = true;
+        self.stream_started = true;
+        self.transport.invalidate();
+        self.audio.stop();
     }
 }
 impl eframe::App for DesktopApp {
@@ -303,11 +321,22 @@ impl eframe::App for DesktopApp {
             }
             ctx.request_repaint();
         }
+        let playback_state = self
+            .audio
+            .player
+            .lock()
+            .unwrap()
+            .snapshot(std::time::Instant::now())
+            .state;
+        let settings_editable = self
+            .transport
+            .action(self.request.pace_input, self.job.is_some(), playback_state)
+            .editable();
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Audio2Face-3D");
                 if ui
-                    .add_enabled(self.job.is_none(), egui::Button::new("Sync demo"))
+                    .add_enabled(settings_editable, egui::Button::new("Sync demo"))
                     .clicked()
                 {
                     self.audio.stop();
@@ -317,12 +346,21 @@ impl eframe::App for DesktopApp {
                         .unwrap()
                         .replace(crate::core::demo_clip());
                     self.manual = false;
+                    self.request.pace_input = false;
+                    self.transport.finished(true, false);
                     self.timeline = Default::default();
                     if let Err(e) = self.audio.command(crate::playback::Command::Play) {
                         self.message = e.to_string();
                     }
                 }
-                if ui.checkbox(&mut self.manual, "Manual").changed() && self.manual {
+                if ui
+                    .add_enabled(
+                        settings_editable,
+                        egui::Checkbox::new(&mut self.manual, "Manual"),
+                    )
+                    .changed()
+                    && self.manual
+                {
                     self.stream_started = true;
                     self.audio.stop();
                 }
@@ -346,22 +384,159 @@ impl eframe::App for DesktopApp {
                 }
             });
             ui.label(&self.message);
+        });
+        egui::TopBottomPanel::bottom("logs").show(ctx, |ui| {
+            egui::CollapsingHeader::new(format!("Logs ({})", self.logs.entries.len()))
+                .show(ui, |ui| self.log_view.show(ui, &self.logs));
+        });
+        let shared = self.audio.player.clone();
+        let (mut names, mut snapshot) = playback_view(&shared);
+        self.selected.retain(|i| *i < snapshot.values.len());
+        let mut command = None;
+        let action =
+            self.transport
+                .action(self.request.pace_input, self.job.is_some(), snapshot.state);
+        let can_seek = self
+            .transport
+            .can_seek(self.request.pace_input, self.job.is_some());
+        let mut activate = false;
+        self.timeline.seek_disabled = !can_seek;
+        if !self.manual {
+            egui::TopBottomPanel::bottom("playback")
+                .resizable(true)
+                .default_height(370.)
+                .min_height(270.)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_sized(
+                                [130., ui.spacing().interact_size.y],
+                                egui::Button::new(action.label()),
+                            )
+                            .on_hover_text(match action {
+                                Action::Loading => "Inference in progress. Click to cancel.",
+                                _ => action.label(),
+                            })
+                            .clicked()
+                        {
+                            activate = true;
+                        }
+                        let mut looping = snapshot.looping;
+                        if ui
+                            .add_enabled(can_seek, egui::Checkbox::new(&mut looping, "Loop"))
+                            .changed()
+                        {
+                            command = Some(crate::playback::Command::SetLoop(looping));
+                        }
+                        ui.label(format!("{:.3} / {:.3} s", snapshot.time, snapshot.duration));
+                        ui.label(format!(
+                            "{:?} | received {:.2}s | buffer {:.2}s | underruns {} | audio busy {}",
+                            snapshot.state,
+                            snapshot.duration,
+                            (snapshot.ready_until - snapshot.time).max(0.),
+                            snapshot.underruns,
+                            self.audio
+                                .callback_contention
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                        ));
+                    });
+                    if let Some(time) = ui
+                        .add_enabled_ui(can_seek, |ui| crate::ui::playback_seek_bar(ui, &snapshot))
+                        .inner
+                    {
+                        command = Some(crate::playback::Command::Seek(time));
+                        // Let the viewport follow this target in the same frame.
+                        self.timeline.reveal_position(time, snapshot.duration);
+                        snapshot.time = time;
+                    }
+                    if let Some(time) =
+                        self.timeline
+                            .show_player(ui, &shared, &snapshot, &self.selected)
+                    {
+                        command = Some(crate::playback::Command::Seek(time));
+                    }
+                });
+        }
+        if activate {
+            match action {
+                Action::Initialize => {
+                    self.start_inference();
+                    command = None;
+                }
+                Action::Loading | Action::Stop => {
+                    self.stop_inference();
+                    command = None;
+                }
+                Action::Play => command = Some(crate::playback::Command::Play),
+                Action::Pause => command = Some(crate::playback::Command::Pause),
+            }
+            (names, snapshot) = playback_view(&shared);
+            ctx.request_repaint();
+        }
+        if let Some(command) = command {
+            if matches!(
+                command,
+                crate::playback::Command::Pause | crate::playback::Command::Play
+            ) {
+                self.stream_started = true;
+            }
+            if let Err(e) = self.audio.command(command) {
+                self.message = e.to_string();
+            }
+            (names, snapshot) = playback_view(&shared);
+            ctx.request_repaint();
+        }
+        if !self.manual {
+            self.weights.values_mut().for_each(|v| *v = 0.);
+            for (name, &value) in names.iter().zip(&snapshot.values) {
+                if let Some(weight) = self.weights.get_mut(name) {
+                    *weight = value;
+                }
+            }
+        }
+        if matches!(
+            snapshot.state,
+            crate::playback::PlaybackState::Playing | crate::playback::PlaybackState::Buffering
+        ) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        if let Some(error) = self.audio.errors.lock().unwrap().take() {
+            self.message = error;
+        }
+        let settings_editable = self
+            .transport
+            .action(self.request.pace_input, self.job.is_some(), snapshot.state)
+            .editable();
+        egui::TopBottomPanel::bottom("inference").show(ctx, |ui| {
+            let previous = self.request.clone();
             egui::CollapsingHeader::new("Inference")
                 .default_open(true)
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("WAV");
-                        path_edit(ui, &mut self.request.wav);
-                        if ui.button("Browse WAV").clicked()
-                            && let Some(path) = rfd::FileDialog::new()
-                                .add_filter("WAV", &["wav"])
-                                .pick_file()
-                        {
-                            self.request.wav = path;
-                        }
-                        ui.add_enabled_ui(self.job.is_none(), |ui| {
+                    ui.add_enabled_ui(settings_editable, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("WAV");
+                            path_edit(ui, &mut self.request.wav);
+                            if ui.button("Browse").clicked()
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("WAV", &["wav"])
+                                    .pick_file()
+                            {
+                                self.request.wav = path;
+                            }
+                        });
+                        ui.checkbox(
+                            &mut self.request.pace_input,
+                            "Play while inferring (paced input, 100 ms buffer)",
+                        );
+                        ui.add_space(ui.spacing().interact_size.y);
+                        ui.horizontal(|ui| {
+                            ui.label("Mode");
                             egui::ComboBox::from_id_salt("inference-mode")
-                                .selected_text(format!("{:?}", self.request.mode))
+                                .selected_text(match self.request.mode {
+                                    crate::inference::Mode::Local => "Local",
+                                    crate::inference::Mode::Grpc => "gRPC",
+                                    crate::inference::Mode::Mock => "Mock",
+                                })
                                 .show_ui(ui, |ui| {
                                     #[cfg(feature = "local")]
                                     ui.selectable_value(
@@ -383,67 +558,39 @@ impl eframe::App for DesktopApp {
                                     );
                                     let _ = ui;
                                 });
-                            if ui.button("Infer WAV").clicked() {
-                                self.start_inference();
+                        });
+                        ui.group(|ui| match self.request.mode {
+                            crate::inference::Mode::Local => {
+                                ui.horizontal(|ui| {
+                                    ui.label("Local");
+                                    ui.label("Model JSON");
+                                    path_edit(ui, &mut self.request.model);
+                                    if ui.button("Browse").clicked()
+                                        && let Some(path) = rfd::FileDialog::new()
+                                            .add_filter("Model", &["json"])
+                                            .pick_file()
+                                    {
+                                        self.request.model = path;
+                                    }
+                                });
+                            }
+                            crate::inference::Mode::Grpc => {
+                                ui.horizontal(|ui| {
+                                    ui.label("gRPC");
+                                    ui.label("End Point");
+                                    ui.text_edit_singleline(&mut self.request.endpoint);
+                                    ui.label("API Key");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.request.api_key)
+                                            .password(true),
+                                    );
+                                });
+                            }
+                            crate::inference::Mode::Mock => {
+                                ui.label("Mock (development)");
                             }
                         });
-                        if ui
-                            .add_enabled(self.job.is_some(), egui::Button::new("Cancel"))
-                            .clicked()
-                            && let Some(job) = &self.job
-                        {
-                            job.cancel();
-                            self.user_cancelled = true;
-                            self.audio.stop();
-                        }
                     });
-                    match self.request.mode {
-                        crate::inference::Mode::Grpc => {
-                            ui.horizontal(|ui| {
-                                ui.label("Endpoint");
-                                ui.text_edit_singleline(&mut self.request.endpoint);
-                                ui.label("API key");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.request.api_key)
-                                        .password(true),
-                                );
-                            });
-                        }
-                        crate::inference::Mode::Local => {
-                            ui.horizontal(|ui| {
-                                ui.label("Model JSON (required)");
-                                path_edit(ui, &mut self.request.model);
-                                if ui.button("Browse model").clicked()
-                                    && let Some(path) = rfd::FileDialog::new()
-                                        .add_filter("Model", &["json"])
-                                        .pick_file()
-                                {
-                                    self.request.model = path;
-                                }
-                                ui.label("GPU");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.request.device).range(0..=15),
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("CUDA root override");
-                                path_edit(ui, &mut self.request.cuda_root);
-                                ui.label("TensorRT root override");
-                                path_edit(ui, &mut self.request.tensorrt_root);
-                            });
-                            let runtime = &self.request.runtime;
-                            let describe = |root: Option<&Path>, dirs: &[std::path::PathBuf]| {
-                                root.map(|p| p.display().to_string()).unwrap_or_else(|| {
-                                    if dirs.is_empty() { "automatic discovery".into() }
-                                    else { dirs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ") }
-                                })
-                            };
-                            ui.label(format!("Startup runtime: CUDA {} | TensorRT {} | {:?}. Blank overrides keep these settings.",
-                                describe(runtime.cuda_root(), runtime.cuda_library_dirs()),
-                                describe(runtime.tensorrt_root(), runtime.tensorrt_library_dirs()), runtime.search_policy()));
-                        }
-                        _ => {}
-                    }
                     let player = self.audio.player.lock().unwrap();
                     ui.label(format!(
                         "Input sent: {} | Result: {:?} | Resources released: {}",
@@ -451,111 +598,12 @@ impl eframe::App for DesktopApp {
                         player.clip.session,
                         self.job.is_none()
                     ));
-                    drop(player);
-                    ui.add_enabled_ui(self.job.is_none(), |ui| {
-                        ui.checkbox(
-                            &mut self.request.pace_input,
-                            "Play while inferring (paced input, 100 ms buffer)",
-                        );
-                    });
                 });
+            if transport::inputs_changed(&previous, &self.request) {
+                self.transport.invalidate();
+                ctx.request_repaint();
+            }
         });
-        egui::TopBottomPanel::bottom("logs").show(ctx, |ui| {
-            egui::CollapsingHeader::new(format!("Logs ({})", self.logs.entries.len()))
-                .show(ui, |ui| self.log_view.show(ui, &self.logs));
-        });
-        let shared = self.audio.player.clone();
-        let names = shared.lock().unwrap().clip.names.clone();
-        let mut snapshot = shared.lock().unwrap().snapshot(std::time::Instant::now());
-        self.selected.retain(|i| *i < snapshot.values.len());
-        let mut command = None;
-        if !self.manual {
-            egui::TopBottomPanel::bottom("playback")
-                .resizable(true)
-                .default_height(370.)
-                .min_height(270.)
-                .show(ctx, |ui| {
-                    if let Some(time) = crate::ui::playback_seek_bar(ui, &snapshot) {
-                        command = Some(crate::playback::Command::Seek(time));
-                        // Let the viewport follow this target in the same frame.
-                        self.timeline.reveal_position(time, snapshot.duration);
-                        snapshot.time = time;
-                    }
-                    if let Some(time) = self.timeline.show_player_with_controls(
-                        ui,
-                        &shared,
-                        &snapshot,
-                        &self.selected,
-                        |ui| {
-                            let playing = matches!(
-                                snapshot.state,
-                                crate::playback::PlaybackState::Playing
-                                    | crate::playback::PlaybackState::Buffering
-                            );
-                            if ui
-                                .add_sized(
-                                    [60., ui.spacing().interact_size.y],
-                                    egui::Button::new(if playing { "Pause" } else { "Play" }),
-                                )
-                                .clicked()
-                            {
-                                command = Some(if playing {
-                                    crate::playback::Command::Pause
-                                } else {
-                                    crate::playback::Command::Play
-                                });
-                            }
-                            let mut looping = snapshot.looping;
-                            if ui.checkbox(&mut looping, "Loop").changed() {
-                                command = Some(crate::playback::Command::SetLoop(looping));
-                            }
-                            ui.label(format!("{:.3} / {:.3} s", snapshot.time, snapshot.duration));
-                            ui.label(format!(
-                            "{:?} | received {:.2}s | buffer {:.2}s | underruns {} | audio busy {}",
-                            snapshot.state,
-                            snapshot.duration,
-                            (snapshot.ready_until - snapshot.time).max(0.),
-                            snapshot.underruns,
-                            self.audio
-                                .callback_contention
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                        ));
-                        },
-                    ) {
-                        command = Some(crate::playback::Command::Seek(time));
-                    }
-                });
-        }
-        if let Some(command) = command {
-            if matches!(
-                command,
-                crate::playback::Command::Pause | crate::playback::Command::Play
-            ) {
-                self.stream_started = true;
-            }
-            if let Err(e) = self.audio.command(command) {
-                self.message = e.to_string();
-            }
-            snapshot = shared.lock().unwrap().snapshot(std::time::Instant::now());
-            ctx.request_repaint();
-        }
-        if !self.manual {
-            self.weights.values_mut().for_each(|v| *v = 0.);
-            for (name, &value) in names.iter().zip(&snapshot.values) {
-                if let Some(weight) = self.weights.get_mut(name) {
-                    *weight = value;
-                }
-            }
-        }
-        if matches!(
-            snapshot.state,
-            crate::playback::PlaybackState::Playing | crate::playback::PlaybackState::Buffering
-        ) {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
-        }
-        if let Some(error) = self.audio.errors.lock().unwrap().take() {
-            self.message = error;
-        }
         egui::SidePanel::left("head-preview")
             .default_width(260.)
             .width_range(180.0..=360.0)
@@ -628,9 +676,24 @@ impl eframe::App for DesktopApp {
     }
 }
 
+/// Capture names and values from the same clip, including after a restart in this frame.
+fn playback_view(
+    player: &std::sync::Mutex<crate::playback::Player>,
+) -> (Vec<String>, crate::playback::Snapshot) {
+    let mut player = player.lock().unwrap();
+    (
+        player.clip.names.clone(),
+        player.snapshot(std::time::Instant::now()),
+    )
+}
+
 fn path_edit(ui: &mut egui::Ui, path: &mut std::path::PathBuf) {
     let mut text = path.display().to_string();
-    if ui.text_edit_singleline(&mut text).changed() {
+    let width = (ui.available_width() - 90.).clamp(80., 560.);
+    if ui
+        .add(egui::TextEdit::singleline(&mut text).desired_width(width))
+        .changed()
+    {
         *path = text.into();
     }
 }

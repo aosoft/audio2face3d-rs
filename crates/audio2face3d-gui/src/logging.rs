@@ -179,18 +179,10 @@ impl LogView {
                 if !fields.to_lowercase().contains(&source) {
                     return None;
                 }
+                let time: chrono::DateTime<chrono::Local> = entry.time.into();
                 let message = format!(
-                    "{}.{:03} {:?} {} {}",
-                    entry
-                        .time
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                    entry
-                        .time
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .subsec_millis(),
+                    "{} {:?} {} {}",
+                    time.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
                     entry.level,
                     entry.record.message,
                     fields

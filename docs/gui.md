@@ -18,19 +18,30 @@ as a fallback for Japanese filenames/errors on Windows when available.
 The gRPC package needs a graphics/audio device but no CUDA/TensorRT installation.
 The local+gRPC package additionally needs the separately obtained model JSON,
 cached TensorRT engine, NVIDIA driver, CUDA and TensorRT runtime. Configure
-`platform.toml` using the startup options below. The window's `CUDA root override`
-and `TensorRT root override` fields can replace the configured SDK group.
+`platform.toml` using the startup options below. Runtime paths are resolved at
+startup and cannot be edited in the Inference panel.
 No models or NVIDIA SDK binaries are redistributed with this application.
 Windows x64 is the tested desktop target; other desktop platforms are unvalidated.
 
-1. Select a WAV with `Browse WAV`.
-2. Choose `Grpc` and set the endpoint (default `http://127.0.0.1:52000`) and API
-   key if required, or `Local` and select the model JSON and GPU index.
-3. Click `Infer WAV`. By default, wait for `Completed` then press `Play`.
-   `Cancel` stops the current request; the next request is enabled after cleanup.
-4. Enable `Play while inferring` before starting to play as results arrive.
+1. Select a WAV with `Browse` and choose `Play while inferring` as needed.
+2. Choose `gRPC` and set the endpoint (default `http://127.0.0.1:52000`) and API
+   key in its group, or `Local` and select the model JSON. GPU selection uses
+   the startup `--device` option.
+3. Press `Initialize & Start` above the seek slider. With `Play while inferring` off,
+   inference completes into memory and playback starts automatically. `Pause`
+   pauses playback; `Play` resumes without running inference again. Editing any
+   inference setting while paused invalidates the result and restores
+   `Initialize & Start`. While inference prepares the results, the button displays
+   `Abort Initializing`; clicking it cancels the operation.
+4. With `Play while inferring` on, every `Initialize & Start` starts a fresh
+   inference session from the beginning. Before playback begins, the button shows
+   `Abort Initializing`. Once playback starts it becomes `Stop`, which cancels
+   inference and stops audio. Seeking and looping are disabled in this mode.
+   The timeline follows playback as results arrive. Inference settings are editable
+   only while the button shows `Initialize & Start` or `Play`; cancellation must
+   finish releasing resources before settings can be edited again.
 5. Select channels in `Channels` to show their graphs. Drag the timeline
-   cursor to seek within received data; use zoom/scroll controls and loop/pause.
+   cursor to seek within completed offline results; use zoom/scroll controls and loop/pause.
    Pressing the time ruler or a track seeks immediately on mouse-down; dragging
    continues seeking. The ruler shows seconds with zoom-dependent major/minor
    ticks, and one yellow playhead spans the ruler and all visible channel rows.
@@ -107,9 +118,8 @@ paced streaming playback. Existing shared flags `--cuda-root`, `--tensorrt-root`
 selected file with the same rules as the server CLI.
 
 Runtime roots, directory lists and search policy are retained in the request and
-passed into the inference context. The Local panel displays the startup runtime
-settings. Blank GUI override fields preserve them; a nonempty root replaces that
-SDK's configured root/directory list while retaining the other SDK and policy.
+passed into the inference context. To change them, update the configuration and
+restart the application.
 Embedded hosts provide `startup::Options` or `Request::runtime` explicitly;
 constructing a library request never reads process arguments or config files.
 

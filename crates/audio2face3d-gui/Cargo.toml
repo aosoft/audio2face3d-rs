@@ -15,10 +15,11 @@ grpc = ["audio2face3d/client-grpc", "dep:tokio"]
 mock = ["audio2face3d/mock"]
 capture = ["desktop", "dep:image"]
 render-wgpu = ["dep:wgpu", "dep:bytemuck", "dep:glam"]
-ui-egui = ["dep:egui"]
+ui-egui = ["dep:egui", "dep:chrono"]
 desktop = ["render-wgpu", "ui-egui", "dep:eframe", "dep:egui-wgpu", "dep:cpal", "dep:rfd", "dep:clap", "dep:windows-sys", "audio2face3d/runtime-cli"]
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"], optional = true }
 audio2face3d.workspace = true
 clap = { workspace = true, optional = true }
 audio2face3d-gui-core = { path = "../audio2face3d-gui-core", features = ["gltf-read"] }

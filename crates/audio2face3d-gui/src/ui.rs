@@ -156,6 +156,9 @@ pub fn channel_values_for_names(
         + ui.spacing().icon_spacing;
     let channels: Vec<_> = names
         .iter()
+        // Hosts may replace the result between taking names and taking a snapshot.
+        // Only render rows whose interpolated and raw values are both available.
+        .take(snapshot.values.len().min(snapshot.raw_values.len()))
         .enumerate()
         .filter(|(_, name)| name.to_lowercase().contains(&query))
         .collect();
@@ -212,6 +215,8 @@ pub struct Timeline {
     width: usize,
     cache: BTreeMap<usize, Vec<Option<[f32; 2]>>>,
     pub overlay: bool,
+    /// Disable ruler and track seeking while retaining viewport navigation.
+    pub seek_disabled: bool,
     zoom: f64,
     offset: f64,
     range: [f64; 2],
@@ -364,15 +369,11 @@ impl Timeline {
         controls: impl FnOnce(&mut egui::Ui),
         prepare: impl FnOnce(&mut Self, usize, [f64; 2]) -> Vec<String>,
     ) -> Option<f64> {
-        ui.horizontal(|ui| {
-            ui.heading("Timeline");
-            ui.checkbox(&mut self.overlay, "Overlay selected");
-            ui.label("Click/drag to seek • min/max peaks");
-        });
         let duration = snapshot.duration.max(1e-6);
         self.zoom = self.zoom.clamp(1., 10.);
         let previous_zoom = self.zoom;
         ui.horizontal(|ui| {
+            ui.heading("Timeline");
             ui.add(
                 egui::Slider::new(&mut self.zoom, 1.0..=10.0)
                     .logarithmic(true)
@@ -387,6 +388,12 @@ impl Timeline {
             self.offset = self.offset.clamp(0., duration - span);
             ui.add_space(16.);
             controls(ui);
+            ui.checkbox(&mut self.overlay, "Overlay selected");
+            ui.label(if self.seek_disabled {
+                "Seeking disabled • min/max peaks"
+            } else {
+                "Click/drag to seek • min/max peaks"
+            });
         });
         let playing = matches!(
             snapshot.state,
@@ -404,10 +411,19 @@ impl Timeline {
         self.view_bar(ui, width as f32, duration, playing.then_some(snapshot.time));
         let range = [self.offset, self.offset + duration / self.zoom];
         let names = prepare(self, width, range);
+        let seek_sense = if self.seek_disabled {
+            egui::Sense::hover()
+        } else {
+            egui::Sense::click_and_drag()
+        };
         let (ruler_rect, ruler_response) =
-            ui.allocate_exact_size(egui::vec2(width as f32, 28.), egui::Sense::click_and_drag());
+            ui.allocate_exact_size(egui::vec2(width as f32, 28.), seek_sense);
         draw_time_ruler(ui, ruler_rect, range);
-        let mut seek = timeline_seek(ui, &ruler_response, ruler_rect, range, snapshot.duration);
+        let mut seek = if self.seek_disabled {
+            None
+        } else {
+            timeline_seek(ui, &ruler_response, ruler_rect, range, snapshot.duration)
+        };
         let tracks = egui::ScrollArea::vertical()
             .id_salt("timeline-tracks")
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
@@ -420,11 +436,12 @@ impl Timeline {
                 };
                 let row_height = if self.overlay { 130. } else { 72. };
                 let height = (groups.len() as f32 * row_height).max(1.);
-                let (canvas, response) = ui.allocate_exact_size(
-                    egui::vec2(width as f32, height),
-                    egui::Sense::click_and_drag(),
-                );
-                if let Some(time) = timeline_seek(ui, &response, canvas, range, snapshot.duration) {
+                let (canvas, response) =
+                    ui.allocate_exact_size(egui::vec2(width as f32, height), seek_sense);
+                if !self.seek_disabled
+                    && let Some(time) =
+                        timeline_seek(ui, &response, canvas, range, snapshot.duration)
+                {
                     seek = Some(time);
                 }
                 for (row, channels) in groups.into_iter().enumerate() {

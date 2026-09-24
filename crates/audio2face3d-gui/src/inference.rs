@@ -30,7 +30,7 @@ pub struct Request {
     pub api_key: String,
     pub cuda_root: PathBuf,
     pub tensorrt_root: PathBuf,
-    /// Host-resolved base configuration. GUI root fields override the corresponding SDK group.
+    /// Host-resolved base configuration. Programmatic root fields override the corresponding SDK group.
     pub runtime: audio2face3d::runtime::NativeRuntimeConfig,
     pub device: usize,
     pub pace_input: bool,
@@ -59,18 +59,18 @@ impl Request {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.wav.as_os_str().is_empty() {
             return Err(Error(
-                "WAV is required. Select an audio file with Browse WAV.".into(),
+                "WAV is required. Select an audio file with Browse next to WAV.".into(),
             ));
         }
         if self.mode == Mode::Local && self.model.as_os_str().is_empty() {
             return Err(Error(
-                "Model JSON is required for local inference. Select model.json with Browse model."
+                "Model JSON is required for local inference. Select model.json with Browse next to Model JSON."
                     .into(),
             ));
         }
         Ok(())
     }
-    /// Preserve configured directory lists/search policy when applying GUI root overrides.
+    /// Preserve configured directory lists/search policy when applying programmatic root overrides.
     pub fn native_runtime(&self) -> Result<audio2face3d::runtime::NativeRuntimeConfig> {
         let mut builder = audio2face3d::runtime::NativeRuntimeConfig::builder()
             .search_policy(self.runtime.search_policy());
