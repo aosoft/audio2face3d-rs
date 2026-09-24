@@ -178,13 +178,13 @@ or `FanoutLogger` to inference. GUI log callbacks enqueue; engine loggers needin
 thread affinity must enqueue on the receiving side too.
 
 Unreal editor panels, C ABI, native texture sharing and RHI synchronization are
-future E1/E2 work. A wgpu texture is not assumed to be directly shareable with an
+future integration work. A wgpu texture is not assumed to be directly shareable with an
 engine device. ACE wire-compatible gRPC tests are separate from Unreal plugin
 playback verification.
 
 ## Validation
 
-`ci/run-tier.ps1 portable` includes CPU model/GLB/generator/playback/log/WAV/Mock
+`ci/run-tier.ps1 portable` includes CPU model/GLB/converter/playback/log/WAV/Mock
 tests and desktop gRPC compilation. Hardware tests are intentionally separate:
 
 ```powershell
@@ -196,5 +196,7 @@ cargo run --release -p audio2face3d-gui --features desktop,local,grpc --example 
 The stream probe requires a long enough input to start audible playback before
 input completion. `infer_probe` compares ordinary results and accepts `local`,
 `grpc` or explicit development `mock`. Capture helpers live under `examples`.
-Recorded hardware results and the distinction between fresh context, cached
-engine and untested prewarmed clients are in `docs/gui-progress.md`.
+When recording performance, distinguish a fresh inference context with cached
+engine files from engine generation and retained, prewarmed contexts. Portable
+tests do not establish GPU performance, acoustic latency or Unreal ACE plugin
+playback compatibility; validate those separately on the target system.

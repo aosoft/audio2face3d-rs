@@ -1,7 +1,7 @@
 # audio2face3d-headgen OBJ 変換 CLI 用。
 # ユーザーが取得した ICT-FaceKit/FaceXModel を --input-root に指定する。
 # OBJ 名・53表情の構成・材質名は公式定義と照合済み。
-# P08: +Y up / +Z forward and all 51 channels checked; visual limitations remain.
+# +Y up / +Z forward and all 51 channels checked; visual limitations remain.
 schema_version = 1
 neutral = "generic_neutral_mesh.obj"
 output_profile = "audio2face_rs_tester_v1"

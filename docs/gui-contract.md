@@ -1,7 +1,7 @@
 # GUI implementation contract
 
-P0 decision record, 2026-09-23. This document specifies the implemented profile;
-the earlier design and implementation guide in `temp` remain planning references.
+This document specifies the GUI model format, rig semantics, playback behavior
+and integration boundaries.
 
 ## Packages and dependencies
 
@@ -130,17 +130,17 @@ results labelled failed, never auto-play them as successful clips. Bound worker
 queues independently. Logs: 2,048 queued, 10,000 displayed; nonblocking enqueue,
 drop newest on saturation and expose a dropped count. Host owns logger lifetime.
 
-P9 is included: initial/rebuffer threshold 100 ms of contiguous audio AND curves
+Streaming playback requires an initial/rebuffer threshold of 100 ms of contiguous audio AND curves
 (including interpolation lookahead). Freeze media clock on underrun, output
 silence until ready, then resume; never shift original result timestamps.
 Normally completed short clips may play below threshold. Failed streams require
 explicit user action to inspect partial data. Session and playback completion
 are separate. Future seeking is rejected; received past remains seekable.
 
-E1/E2 engine-specific GPU sharing/FFI remain future work. No promise that a wgpu
+Engine-specific GPU sharing and FFI remain future work. No promise that a wgpu
 texture can directly cross graphics devices or Unreal's RHI boundary.
 
-## References checked at P0
+## References
 
 - [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)
 - [gltf 1.4.1](https://docs.rs/gltf/1.4.1/gltf/)
