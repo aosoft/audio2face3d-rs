@@ -33,5 +33,7 @@ pub fn generate(config: &Config) -> Result<HeadModel> {
 }
 pub mod convert;
 pub mod obj;
+pub mod report;
 pub mod topology;
 pub mod transform;
+pub use convert::{Conversion, convert, inspect};

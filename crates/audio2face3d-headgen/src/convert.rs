@@ -164,3 +164,219 @@ mod tests {
         assert!(geometry(&c, &obj).is_err());
     }
 }
+
+pub struct Conversion {
+    pub model: audio2face3d_gui_core::HeadModel,
+    pub report: crate::report::Report,
+}
+/// Complete all validation before returning a model. No files are written here.
+pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversion> {
+    use crate::{
+        obj,
+        report::{self, Channel, Input, Report},
+        transform::{cross, dot, sub},
+    };
+    use audio2face3d_gui_core::{HeadModel, Metadata, MorphTarget};
+    let resolved = obj::resolve_inputs(config, input_root)?;
+    let neutral = obj::read(&resolved[0].1)?;
+    let mut inputs = vec![Input::new(config.neutral.clone(), &neutral)];
+    if let Some(e) = &config.expected {
+        if neutral.positions.len() != e.source_vertices || neutral.faces.len() != e.source_faces {
+            return Err(Error::Input(format!(
+                "neutral counts: got {} vertices / {} faces, expected {} / {}",
+                neutral.positions.len(),
+                neutral.faces.len(),
+                e.source_vertices,
+                e.source_faces
+            )));
+        }
+    }
+    let paths = resolved
+        .iter()
+        .map(|(name, path)| (name.as_str(), path))
+        .collect::<BTreeMap<_, _>>();
+    let mut total = neutral.bytes;
+    // Validate the entire original topology, including excluded faces, first.
+    for (name, path) in resolved.iter().skip(1) {
+        let expression = obj::read(path)?;
+        topology::validate(&neutral, &expression, name)?;
+        total = total
+            .checked_add(expression.bytes)
+            .ok_or_else(|| Error::Output("input size overflow".into()))?;
+        if total > obj::MAX_TOTAL_BYTES {
+            return Err(Error::Output("total input bytes exceeded".into()));
+        }
+        inputs.push(Input::new(name.clone(), &expression));
+    }
+    let hashes = inputs
+        .iter()
+        .map(|i| (i.path.as_str(), i.sha256.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mut g = geometry(config, &neutral)?;
+    let neutral_normals = crate::normals::checked(&g.positions, &g.indices, "neutral")?;
+    let retained = g.indices.iter().copied().collect::<BTreeSet<_>>();
+    let mut channels = BTreeMap::new();
+    let mut decoded_bytes = g
+        .parts
+        .iter()
+        .map(|p| p.mesh.positions.len() * 24 + p.mesh.indices.len() * 4)
+        .sum::<usize>();
+    for (name, sources) in &config.targets {
+        let mut delta = vec![[0.; 3]; neutral.positions.len()];
+        for source in sources {
+            let expression = obj::read(paths[source.as_str()])?;
+            if expression.sha256 != hashes[source.as_str()] {
+                return Err(Error::Input(format!(
+                    "{source}: input changed during conversion"
+                )));
+            }
+            for (i, p) in expression.positions.iter().enumerate() {
+                let d = g.transform.delta(sub(*p, neutral.positions[i]));
+                for c in 0..3 {
+                    delta[i][c] += d[c];
+                }
+            }
+        }
+        let posed = g
+            .positions
+            .iter()
+            .zip(&delta)
+            .map(|(p, d)| std::array::from_fn(|i| p[i] + d[i]))
+            .collect::<Vec<[f32; 3]>>();
+        if posed.iter().flatten().any(|x| !x.is_finite()) {
+            return Err(Error::Input(format!("{name}: position overflow")));
+        }
+        let posed_normals = crate::normals::checked(&posed, &g.indices, name).map_err(|e| {
+            Error::Input(format!(
+                "{e}; triangle-to-source-face mapping available from neutral topology"
+            ))
+        })?;
+        let mut reversed = Vec::new();
+        for (i, t) in g.indices.chunks_exact(3).enumerate() {
+            let normal = |p: &[[f32; 3]]| {
+                cross(
+                    sub(p[t[1] as usize], p[t[0] as usize]),
+                    sub(p[t[2] as usize], p[t[0] as usize]),
+                )
+            };
+            if dot(normal(&g.positions), normal(&posed)) < 0. {
+                reversed.push(g.face_numbers[i]);
+            }
+        }
+        reversed.sort_unstable();
+        reversed.dedup();
+        if !reversed.is_empty() {
+            g.warnings.push(format!("{name}: {} source faces have normal reversal candidates; inspect large rotations visually",reversed.len()));
+        }
+        let mut max = 0f64;
+        let mut sum = 0f64;
+        let mut nonzero = 0usize;
+        for &i in &retained {
+            let d = delta[i as usize];
+            let squared = d.iter().map(|&x| (x as f64).powi(2)).sum::<f64>();
+            max = max.max(squared.sqrt());
+            sum += squared;
+            if d.iter().any(|x| x.abs() > 1e-8) {
+                nonzero += 1;
+            }
+        }
+        if nonzero == 0 {
+            return Err(Error::Input(format!(
+                "{name}: all retained position deltas are zero"
+            )));
+        }
+        for part in &mut g.parts {
+            if !part
+                .original_vertices
+                .iter()
+                .any(|&i| delta[i as usize].iter().any(|x| x.abs() > 1e-8))
+            {
+                continue;
+            }
+            decoded_bytes = decoded_bytes
+                .checked_add(part.original_vertices.len() * 24)
+                .ok_or_else(|| Error::Output("decoded size overflow".into()))?;
+            if decoded_bytes > audio2face3d_gui_core::validation::MAX_GLB_BYTES {
+                return Err(Error::Output("decoded morph data exceeds 64 MiB".into()));
+            }
+            part.mesh.targets.push(MorphTarget {
+                name: name.clone(),
+                positions: part
+                    .original_vertices
+                    .iter()
+                    .map(|&i| delta[i as usize])
+                    .collect(),
+                normals: part
+                    .original_vertices
+                    .iter()
+                    .map(|&i| sub(posed_normals[i as usize], neutral_normals[i as usize]))
+                    .collect(),
+            });
+        }
+        channels.insert(
+            name.clone(),
+            Channel {
+                sources: sources.clone(),
+                max_displacement: max,
+                rms_displacement: (sum / retained.len() as f64).sqrt(),
+                nonzero_vertices: nonzero,
+                reversed_triangle_candidates: reversed,
+            },
+        );
+    }
+    let model = HeadModel {
+        metadata: Metadata {
+            schema_version: 1,
+            rig_profile: config.output_profile.clone(),
+            generator_version: crate::GENERATOR_VERSION.into(),
+        },
+        meshes: g.parts.into_iter().map(|p| p.mesh).collect(),
+    };
+    model.validate().map_err(|e| Error::Input(e.to_string()))?;
+    let output_vertices = model.meshes.iter().map(|m| m.positions.len()).sum();
+    let output_triangles = model.meshes.iter().map(|m| m.indices.len() / 3).sum();
+    let output_morph_targets = model.meshes.iter().map(|m| m.targets.len()).sum::<usize>();
+    // vec4 positions/normals; base, morph storage, evaluated vertices, and indices.
+    let gpu_geometry_bytes = model
+        .meshes
+        .iter()
+        .map(|m| m.positions.len() * 32 * (2 + m.targets.len()) + m.indices.len() * 4)
+        .sum();
+    let largest_gpu_storage_buffer_bytes = model
+        .meshes
+        .iter()
+        .map(|m| m.positions.len() * 32 * m.targets.len().max(1))
+        .max()
+        .unwrap_or(0);
+    let glb_upper_bound_bytes = decoded_bytes
+        .checked_add((model.meshes.len() + output_morph_targets) * 4096 + 65536)
+        .ok_or_else(|| Error::Output("GLB estimate overflow".into()))?;
+    let effective = serde_json::to_vec(config).map_err(|e| Error::Config(e.to_string()))?;
+    let report = Report {
+        schema_version: 1,
+        generator_version: crate::GENERATOR_VERSION.into(),
+        config_sha256: config.source_sha256.clone(),
+        effective_config_sha256: report::hash(&effective),
+        inputs,
+        transform: g.transform,
+        excluded_material_faces: g.excluded,
+        output_vertices,
+        output_triangles,
+        output_meshes: model.meshes.len(),
+        output_morph_targets,
+        channels,
+        unsupported_channels: model.unsupported_channels(),
+        decoded_bytes,
+        gpu_geometry_bytes,
+        largest_gpu_storage_buffer_bytes,
+        glb_upper_bound_bytes,
+        output_glb_sha256: None,
+        output_glb_bytes: None,
+        warnings: g.warnings,
+        reference: config.reference.clone(),
+    };
+    Ok(Conversion { model, report })
+}
+pub fn inspect(config: &Config, input_root: &std::path::Path) -> Result<crate::report::Report> {
+    Ok(convert(config, input_root)?.report)
+}
