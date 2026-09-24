@@ -31,3 +31,5 @@ pub fn generate(config: &Config) -> Result<HeadModel> {
     model.validate()?;
     Ok(model)
 }
+pub mod obj;
+pub mod topology;

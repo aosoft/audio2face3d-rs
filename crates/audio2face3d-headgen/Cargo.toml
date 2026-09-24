@@ -27,3 +27,6 @@ required-features = ["cli"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"
