@@ -45,7 +45,7 @@ impl DesktopApp {
             gpu: cc.wgpu_render_state.clone().expect("wgpu host required"),
             renderer: None,
             target: None,
-            weights: BTreeMap::new(),
+            weights: inference_channel_weights(),
             filter: String::new(),
             camera: Camera::default(),
             message: "Choose a head GLB".into(),
@@ -122,12 +122,13 @@ impl DesktopApp {
             Ok((renderer, model)) => {
                 self.head_info = head_summary(&model);
                 self.renderer = Some(renderer);
-                self.weights = model.channel_names().into_iter().map(|n| (n, 0.)).collect();
+                // Channel controls belong to inference, not to the loaded head.
+                // The renderer maps supported targets by name and ignores the rest.
                 self.message = format!(
                     "{} | {} | {} channels",
                     path.display(),
                     model.metadata.rig_profile,
-                    self.weights.len()
+                    model.channel_names().len()
                 );
             }
             Err(error) => {
@@ -757,6 +758,13 @@ pub fn run_with_options(options: crate::startup::Options) -> eframe::Result {
     )
 }
 
+fn inference_channel_weights() -> BTreeMap<String, f32> {
+    audio2face3d::inference::animation::CURVE_NAMES
+        .into_iter()
+        .map(|name| (name.to_owned(), 0.))
+        .collect()
+}
+
 fn head_summary(model: &audio2face3d_gui_core::HeadModel) -> String {
     let unsupported = model.unsupported_channels();
     if unsupported.is_empty() {
@@ -772,6 +780,37 @@ fn head_summary(model: &audio2face3d_gui_core::HeadModel) -> String {
 #[cfg(test)]
 mod head_tests {
     use super::*;
+    #[test]
+    fn manual_channels_follow_inference_even_when_the_head_omits_tongue() {
+        let mut model =
+            audio2face3d_gui_core::gltf::from_glb(include_bytes!("../assets/default-head.glb"))
+                .unwrap();
+        for mesh in &mut model.meshes {
+            mesh.targets.retain(|t| t.name != "TongueOut");
+        }
+        model.validate().unwrap();
+        let mut weights = inference_channel_weights();
+        assert_eq!(
+            weights.len(),
+            audio2face3d::inference::animation::CURVE_NAMES.len()
+        );
+        assert!(weights.contains_key("TongueOut"));
+        assert!(model.unsupported_channels().contains(&"TongueOut".into()));
+        weights.insert("TongueOut".into(), 0.75);
+        let before = weights.clone();
+        let _ = head_summary(&model);
+        assert_eq!(weights, before);
+        assert_eq!(
+            weights
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            audio2face3d::inference::animation::CURVE_NAMES
+                .into_iter()
+                .collect()
+        );
+    }
+
     #[test]
     fn subset_summary_does_not_mutate_the_head_or_input_values() {
         let mut model =
