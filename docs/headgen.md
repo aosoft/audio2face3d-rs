@@ -4,6 +4,40 @@
 Blender, Python, or Cargo feature selection is required. The tool does not fetch
 models. Users provide input data and decide how their converted models are used.
 
+## Reference input: ICT-FaceKit
+
+[ICT-FaceKit](https://github.com/USC-ICT/ICT-FaceKit) is a facial model dataset
+published by the USC Institute for Creative Technologies. Its `FaceXModel`
+directory contains a neutral head and expression OBJ files sharing the same
+vertex topology. This makes it a reference input for testing the converter.
+The converter itself is generic: another dataset can be used by supplying matching
+neutral/expression OBJ files and a corresponding TOML configuration.
+
+This repository includes an [ICT-FaceKit conversion preset](../crates/audio2face3d-headgen/presets/ict-facekit.toml),
+not the ICT model data or a converted head. Users obtain ICT-FaceKit separately
+and review its upstream license for their intended use and distribution.
+The tool does not download the dataset or install it as the GUI's default head.
+
+### Obtain and convert the reference model
+
+Clone the upstream repository into a separate data directory, for example:
+
+```powershell
+git clone https://github.com/USC-ICT/ICT-FaceKit.git C:/Data/ICT-FaceKit
+```
+
+`--input-root` must point to the checkout's **FaceXModel** directory, which contains
+`generic_neutral_mesh.obj` and the expression OBJ files. It must not point to the
+checkout root, `Blender`, or an individual OBJ file. Replace the example path below
+with your local checkout path.
+
+Run the following commands from the audio2face3d-rs repository root. Create the
+output directory first if necessary:
+
+```powershell
+New-Item -ItemType Directory -Force temp | Out-Null
+```
+
 ```powershell
 cargo run -p audio2face3d-headgen -- inspect --config crates/audio2face3d-headgen/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --report temp/ict-inspect.json
 cargo run -p audio2face3d-headgen -- convert --config crates/audio2face3d-headgen/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output temp/ict-facekit.glb
@@ -15,6 +49,13 @@ files. Inputs, config and output paths cannot collide. Both outputs are staged a
 synced before either is replaced. Two-file atomicity is not guaranteed: a report
 commit failure identifies the already-committed GLB and its hash. Inspect performs
 all shape validation and exact GLB size measurement but writes no GLB.
+
+In the GUI, choose **Open head** and select `temp/ict-facekit.glb`, or pass
+`--head temp/ict-facekit.glb` when starting it. This GLB is the display head;
+it is separate from the **Model JSON** used for Audio2Face inference.
+See [ICT reference preset and visual review](#ict-reference-preset-and-visual-review)
+for channel mapping and [validation results](#ict-facekit-validation-and-explicit-pose-tolerance)
+for known limitations.
 
 ## Input contract
 
@@ -92,7 +133,7 @@ derived models, reports and screenshots outside versioned assets (for example in
 ignored `temp`). Normal CI uses only independent tiny fixtures; packaging explicitly
 copies the original fallback head, not conversion output.
 
-## P08 validation and explicit pose tolerance
+## ICT FaceKit validation and explicit pose tolerance
 
 The ICT preset was exercised on revision `da5f95a607f5e6b37755b38d3385d7f2853732e5`.
 All 53 expression inputs pass ordered topology matching and map to 51 channels.
