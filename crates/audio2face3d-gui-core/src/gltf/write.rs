@@ -64,7 +64,7 @@ impl Buffer {
 }
 
 /// Encode the restricted, self-contained GLB profile deterministically.
-pub fn to_glb(model: &HeadModel) -> Result<Vec<u8>> {
+fn encode(model: &HeadModel) -> Result<(Vec<u8>, Vec<u8>)> {
     model.validate()?;
     let estimated: usize = model
         .meshes
@@ -130,6 +130,18 @@ pub fn to_glb(model: &HeadModel) -> Result<Vec<u8>> {
     }
     let size = 12 + 8 + json.len() + 8 + buffer.bytes.len();
     require(size <= MAX_GLB_BYTES, "asset exceeds GLB size limit")?;
+    Ok((json, buffer.bytes))
+}
+
+/// Validate and measure the exact restricted GLB without assembling a GLB file.
+pub fn encoded_size(model: &HeadModel) -> Result<usize> {
+    let (json, bin) = encode(model)?;
+    Ok(28 + json.len() + bin.len())
+}
+
+pub fn to_glb(model: &HeadModel) -> Result<Vec<u8>> {
+    let (json, bin) = encode(model)?;
+    let size = 28 + json.len() + bin.len();
     let mut bytes = Vec::with_capacity(size);
     for v in [
         0x46546c67_u32,
@@ -141,8 +153,8 @@ pub fn to_glb(model: &HeadModel) -> Result<Vec<u8>> {
         bytes.extend(v.to_le_bytes());
     }
     bytes.extend(json);
-    bytes.extend((buffer.bytes.len() as u32).to_le_bytes());
+    bytes.extend((bin.len() as u32).to_le_bytes());
     bytes.extend(0x004e4942_u32.to_le_bytes());
-    bytes.extend(buffer.bytes);
+    bytes.extend(bin);
     Ok(bytes)
 }

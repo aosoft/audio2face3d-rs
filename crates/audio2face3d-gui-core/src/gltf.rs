@@ -6,4 +6,4 @@ mod write;
 #[cfg(feature = "gltf-read")]
 pub use read::from_glb;
 #[cfg(feature = "gltf-write")]
-pub use write::to_glb;
+pub use write::{encoded_size, to_glb};

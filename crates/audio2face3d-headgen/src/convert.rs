@@ -348,9 +348,8 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         .map(|m| m.positions.len() * 32 * m.targets.len().max(1))
         .max()
         .unwrap_or(0);
-    let glb_upper_bound_bytes = decoded_bytes
-        .checked_add((model.meshes.len() + output_morph_targets) * 4096 + 65536)
-        .ok_or_else(|| Error::Output("GLB estimate overflow".into()))?;
+    let glb_upper_bound_bytes = audio2face3d_gui_core::gltf::encoded_size(&model)
+        .map_err(|e| Error::Output(e.to_string()))?;
     let effective = serde_json::to_vec(config).map_err(|e| Error::Config(e.to_string()))?;
     let report = Report {
         schema_version: 1,

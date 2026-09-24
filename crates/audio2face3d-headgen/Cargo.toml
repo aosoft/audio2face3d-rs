@@ -8,10 +8,6 @@ repository.workspace = true
 publish = false
 description = "Procedural debug head generator for Audio2Face-3D"
 
-[features]
-default = []
-cli = ["dep:clap"]
-
 [dependencies]
 audio2face3d-gui-core = { path = "../audio2face3d-gui-core", features = ["gltf-write"] }
 toml = "1.1"
@@ -19,14 +15,14 @@ sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-clap = { workspace = true, optional = true }
+clap.workspace = true
+tempfile = "3"
 
 [[bin]]
 name = "audio2face3d-headgen"
-required-features = ["cli"]
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+audio2face3d-gui-core = { path = "../audio2face3d-gui-core", features = ["gltf-read", "gltf-write"] }
