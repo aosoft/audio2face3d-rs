@@ -93,10 +93,40 @@ failed. Logs retain 10,000 records with a 2,048-record nonblocking queue and a
 visible dropped count. Closing waits for cancellation/shutdown; native model
 initialization already in progress may take time before it can finish cleanup.
 
+## GUI configuration
+
+Copy [`gui.example.toml`](../gui.example.toml) to `gui.toml` next to the executable,
+or select it explicitly with `--config PATH`. No working-directory GUI file is
+searched. A missing default file uses built-in defaults; a missing explicit file,
+an invalid file, or an unknown key is an error. GUI edits do not write back to TOML.
+Local `gui.toml` and `platform.toml` files are ignored by Git; examples are tracked.
+
+```powershell
+./audio2face3d-gui.exe --config C:/config/gui.toml
+./audio2face3d-gui.exe --config C:/config/gui.toml --infer=false --play-while-inferring=false
+```
+
+The file configures `head`, `platform-config`, `[inference]` (`mode`, `wav`,
+`play-while-inferring`, `auto-start`), `[local]` (`model`, `device`), and `[grpc]`
+(`endpoint`, `api-key`). Unspecified values use application defaults. Explicit CLI
+values override file values, including `--device 0`, `--infer=false` and
+`--play-while-inferring=false`. Validation for automatic inference happens after
+merging, so the WAV/model can come from either source. Without auto-start, files
+are selected for later use and inference does not begin.
+
+All paths written in a GUI TOML are relative to that TOML's directory. A referenced
+`platform.toml` resolves its own paths relative to its own directory, independently
+of the GUI file. Absolute paths are preserved. CLI paths are relative to the working
+directory. Omitting `head` retains the executable-relative standard head fallback.
+
+CUDA/TensorRT settings are not duplicated in GUI TOML. Set `platform-config` to
+reference the same file used by the other CLIs. See
+[`platform.example.toml`](../platform.example.toml) for a shared configuration template.
+
 ## Startup options and platform.toml
 
 The standard executable uses the same `PlatformArgs` resolver as the inference
-and server CLIs. File selection is: `--platform-config FILE`, then
+and server CLIs. File selection is: `--platform-config FILE`, then GUI TOML `platform-config`, then
 `AUDIO2FACE3D_PLATFORM_CONFIG`, then `platform.toml` in the working directory,
 then the user configuration directory, then default runtime discovery.
 Only one file is selected; missing explicit files or invalid files are errors.
@@ -110,9 +140,9 @@ its installation directory. The head asset remains relative to the executable.
 ```
 
 `--head FILE` (or the legacy positional GLB), `--mode local|grpc|mock`,
-`--model JSON`, `--wav WAV`, `--endpoint URL`, and `--device INDEX` populate
+`--model JSON`, `--wav WAV`, `--endpoint URL`, `--api-key KEY`, and `--device INDEX` populate
 controls. `mock` requires the development feature. `--infer` also starts inference;
-without it no inference begins automatically. `--play-while-inferring` enables
+otherwise the GUI TOML auto-start setting applies (false by default). `--play-while-inferring` enables
 paced streaming playback. Existing shared flags `--cuda-root`, `--tensorrt-root`,
 `--cuda-library-dir`, `--tensorrt-library-dir` and `--runtime-search` override the
 selected file with the same rules as the server CLI.

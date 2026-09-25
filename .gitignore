@@ -31,4 +31,5 @@ target
 .audio2x-engine*.json
 
 # Local SDK configuration
-/platform.toml
+platform.toml
+gui.toml

@@ -399,7 +399,7 @@ impl eframe::App for DesktopApp {
         let shared = self.audio.player.clone();
         let (mut names, mut snapshot) = playback_view(&shared);
         self.selected
-            .retain(|i| *i < audio2face3d::inference::animation::CURVE_NAMES.len());
+            .retain(|i| *i < audio2face3d::types::CURVE_NAMES.len());
         let mut command = None;
         let action =
             self.transport
@@ -771,7 +771,7 @@ fn inference_channel_view(
     names: &[String],
     snapshot: &crate::playback::Snapshot,
 ) -> (Vec<String>, crate::playback::Snapshot) {
-    let canonical = audio2face3d::inference::animation::CURVE_NAMES;
+    let canonical = audio2face3d::types::CURVE_NAMES;
     let indices = canonical.map(|name| names.iter().position(|n| n == name));
     let values = |source: &[f32]| {
         indices
@@ -799,7 +799,7 @@ fn timeline_selection(
     names: &[String],
     selected: &std::collections::BTreeSet<usize>,
 ) -> std::collections::BTreeSet<usize> {
-    let canonical = audio2face3d::inference::animation::CURVE_NAMES;
+    let canonical = audio2face3d::types::CURVE_NAMES;
     names
         .iter()
         .enumerate()
@@ -814,7 +814,7 @@ fn timeline_selection(
 }
 
 fn inference_channel_weights() -> BTreeMap<String, f32> {
-    audio2face3d::inference::animation::CURVE_NAMES
+    audio2face3d::types::CURVE_NAMES
         .into_iter()
         .map(|name| (name.to_owned(), 0.))
         .collect()
@@ -873,10 +873,7 @@ mod head_tests {
         }
         model.validate().unwrap();
         let mut weights = inference_channel_weights();
-        assert_eq!(
-            weights.len(),
-            audio2face3d::inference::animation::CURVE_NAMES.len()
-        );
+        assert_eq!(weights.len(), audio2face3d::types::CURVE_NAMES.len());
         assert!(weights.contains_key("TongueOut"));
         assert!(model.unsupported_channels().contains(&"TongueOut".into()));
         weights.insert("TongueOut".into(), 0.75);
@@ -888,9 +885,7 @@ mod head_tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<std::collections::BTreeSet<_>>(),
-            audio2face3d::inference::animation::CURVE_NAMES
-                .into_iter()
-                .collect()
+            audio2face3d::types::CURVE_NAMES.into_iter().collect()
         );
     }
 

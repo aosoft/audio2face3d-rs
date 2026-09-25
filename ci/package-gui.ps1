@@ -40,6 +40,7 @@ try {
     Copy-Item -LiteralPath 'crates/audio2face3d-gui/assets/default-head.glb','crates/audio2face3d-gui/assets/README.md' -Destination (Join-Path $destination 'assets')
     Copy-Item -LiteralPath 'LICENSE','LICENSE-MPL-2.0','THIRD-PARTY-NOTICES.md' -Destination $destination
     Copy-Item -LiteralPath 'crates/audio2face3d/LICENSE-APACHE' -Destination $destination
+    Copy-Item -LiteralPath 'gui.example.toml','platform.example.toml' -Destination $destination
     Copy-Item -LiteralPath 'docs/gui.md' -Destination (Join-Path $destination 'README.md')
     # Include exact MPL-covered source alongside native binaries, not only a mutable URL.
     Copy-Item -LiteralPath 'crates/audio2face3d/src/animation/blendshape/bvls/svd.rs' -Destination (Join-Path $destination 'source/svd.rs')

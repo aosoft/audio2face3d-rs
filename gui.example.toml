@@ -1,0 +1,21 @@
+# Copy to gui.toml next to the executable, or pass --config PATH.
+# All paths below are relative to THIS file, not the working directory.
+# Uncomment for local inference; SDK settings stay in the shared file.
+# platform-config = "platform.toml"
+
+# Omit head to use assets/default-head.glb next to the executable.
+# head = "models/ict-facekit.glb"
+
+[inference]
+mode = "grpc" # Use "local" with a local-enabled build.
+# wav = "audio/sample.wav"
+play-while-inferring = false
+auto-start = false
+
+[local]
+# model = "models/mark/model.json"
+device = 0
+
+[grpc]
+endpoint = "http://127.0.0.1:52000"
+api-key = ""

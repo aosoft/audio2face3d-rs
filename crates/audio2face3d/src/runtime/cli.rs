@@ -90,11 +90,20 @@ fn select_file(cwd: &Path, explicit: Option<PathBuf>, user: Option<PathBuf>) -> 
 
 impl PlatformArgs {
     pub fn resolve(&self) -> Result<NativeRuntimeConfig, NativeRuntimeError> {
+        self.resolve_with_config(None)
+    }
+    /// Use a host-selected file after --platform-config and before environment/default discovery.
+    /// Relative host paths, like command-line paths, are relative to the working directory.
+    pub fn resolve_with_config(
+        &self,
+        host_config: Option<&Path>,
+    ) -> Result<NativeRuntimeConfig, NativeRuntimeError> {
         let cwd = std::env::current_dir().map_err(|e| error(e.to_string()))?;
         let selected = select_file(
             &cwd,
             self.platform_config
                 .clone()
+                .or_else(|| host_config.map(Path::to_owned))
                 .or_else(|| std::env::var_os("AUDIO2FACE3D_PLATFORM_CONFIG").map(PathBuf::from)),
             crate::platform_config_file::user_config(),
         );

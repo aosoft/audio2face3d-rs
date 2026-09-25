@@ -105,7 +105,12 @@ fn bad_explicit_config_and_unknown_arguments_are_errors() {
         .is_err()
     );
     assert!(Args::try_parse_from(["gui", "--unknown"]).is_err());
-    assert!(Args::try_parse_from(["gui", "--infer"]).is_err());
+    assert!(
+        Args::try_parse_from(["gui", "--infer"])
+            .unwrap()
+            .resolve()
+            .is_err()
+    );
     assert!(Args::try_parse_from(["gui", "--head", "a.glb", "b.glb"]).is_err());
 }
 
@@ -181,9 +186,193 @@ fn resolve_in_child() {
     if let Some(path) = std::env::var_os("A2F_STARTUP_EXPLICIT") {
         args.extend(["--platform-config".into(), path]);
     }
+    if let Some(path) = std::env::var_os("A2F_STARTUP_GUI_CONFIG") {
+        args.extend(["--config".into(), path]);
+    }
     let options = Args::try_parse_from(args).unwrap().resolve().unwrap();
     assert_eq!(
         options.request.native_runtime().unwrap().cuda_root(),
         Some(Path::new(&expected))
+    );
+}
+
+#[test]
+fn gui_config_paths_and_cli_overrides() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.0.join("settings")).unwrap();
+    let platform = fixture.write("platform.toml", "cuda-root='sdk/cuda'");
+    let config = fixture.write(
+        "settings/gui.toml",
+        r#"
+platform-config = "../platform.toml"
+head = "head.glb"
+[inference]
+wav = "voice.wav"
+auto-start = true
+play-while-inferring = true
+[local]
+model = "model.json"
+device = 3
+[grpc]
+endpoint = "http://example.test:52000"
+api-key = "test-key"
+"#,
+    );
+    let resolve = |extra: &[&str]| {
+        let mut args = vec!["gui", "--config", config.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        Args::try_parse_from(args).unwrap().resolve().unwrap()
+    };
+    let options = resolve(&[]);
+    assert_eq!(options.head, Some(fixture.0.join("settings/head.glb")));
+    assert_eq!(options.request.wav, fixture.0.join("settings/voice.wav"));
+    assert_eq!(options.request.model, fixture.0.join("settings/model.json"));
+    assert_eq!(options.request.device, 3);
+    assert_eq!(options.request.api_key, "test-key");
+    assert_eq!(options.request.endpoint, "http://example.test:52000");
+    assert!(options.infer && options.request.pace_input);
+    assert_eq!(
+        options.request.runtime.cuda_root(),
+        Some(fixture.0.join("settings/../sdk/cuda").as_path())
+    );
+    let options = resolve(&[
+        "--head",
+        "cli.glb",
+        "--wav",
+        "cli.wav",
+        "--model",
+        "cli.json",
+        "--device",
+        "0",
+        "--endpoint",
+        "http://localhost:1",
+        "--api-key",
+        "",
+        "--infer=false",
+        "--play-while-inferring=false",
+        "--platform-config",
+        platform.to_str().unwrap(),
+        "--cuda-root",
+        "cli-cuda",
+    ]);
+    assert_eq!(options.head.as_deref(), Some(Path::new("cli.glb")));
+    assert_eq!(options.request.wav, Path::new("cli.wav"));
+    assert_eq!(options.request.model, Path::new("cli.json"));
+    assert_eq!(options.request.device, 0);
+    assert_eq!(options.request.endpoint, "http://localhost:1");
+    assert!(options.request.api_key.is_empty());
+    assert!(!options.infer && !options.request.pace_input);
+    assert_eq!(
+        options.request.runtime.cuda_root(),
+        Some(std::env::current_dir().unwrap().join("cli-cuda").as_path())
+    );
+
+    // An explicit CLI platform file replaces even an invalid GUI reference.
+    std::fs::write(&config, "platform-config='missing.toml'").unwrap();
+    resolve(&["--platform-config", platform.to_str().unwrap()]);
+    assert!(
+        Args::try_parse_from(["gui", "--config", config.to_str().unwrap()])
+            .unwrap()
+            .resolve()
+            .is_err()
+    );
+}
+
+#[test]
+fn invalid_gui_settings_fail_without_fallback() {
+    let fixture = Fixture::new();
+    for text in [
+        "unknown=1",
+        "[inference]\nauto-start='yes'",
+        "[local]\ndevice=-1",
+        "[grpc]\nunknown=1",
+        "head=''",
+        "platform-config=''",
+        "[inference]\nmode='typo'",
+        "[inference]\nauto-start=true",
+        "invalid toml",
+    ] {
+        let file = fixture.write("gui.toml", text);
+        assert!(
+            Args::try_parse_from(["gui", "--config", file.to_str().unwrap()])
+                .unwrap()
+                .resolve()
+                .is_err(),
+            "{text}"
+        );
+    }
+    assert!(
+        Args::try_parse_from([
+            "gui",
+            "--config",
+            fixture.0.join("missing.toml").to_str().unwrap()
+        ])
+        .unwrap()
+        .resolve()
+        .is_err()
+    );
+}
+
+#[test]
+fn gui_example_is_valid() {
+    let fixture = Fixture::new();
+    let file = fixture.write("gui.toml", include_str!("../../../gui.example.toml"));
+    // Avoid requiring a backend feature merely to validate the example's schema.
+    let text = std::fs::read_to_string(&file)
+        .unwrap()
+        .replace("mode = \"grpc\"", "# mode = \"grpc\"");
+    std::fs::write(&file, text).unwrap();
+    Args::try_parse_from(["gui", "--config", file.to_str().unwrap()])
+        .unwrap()
+        .resolve()
+        .unwrap();
+}
+
+#[test]
+fn gui_platform_reference_precedes_environment_and_relative_config_uses_cwd() {
+    let fixture = Fixture::new();
+    fixture.write("gui.toml", "platform-config='shared.toml'");
+    fixture.write("shared.toml", "cuda-root='gui-cuda'");
+    fixture.write("environment.toml", "cuda-root='env-cuda'");
+    let explicit = fixture.write("explicit.toml", "cuda-root='cli-cuda'");
+    for cli in [false, true] {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "resolve_in_child", "--nocapture"])
+            .current_dir(&fixture.0)
+            .env("A2F_STARTUP_GUI_CONFIG", "gui.toml")
+            .env("AUDIO2FACE3D_PLATFORM_CONFIG", "environment.toml")
+            .env(
+                "A2F_STARTUP_EXPECTED",
+                fixture.0.join(if cli { "cli-cuda" } else { "gui-cuda" }),
+            )
+            .env_remove("A2F_STARTUP_EXPLICIT");
+        if cli {
+            command.env("A2F_STARTUP_EXPLICIT", &explicit);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn platform_example_is_valid() {
+    let fixture = Fixture::new();
+    let path = fixture.write(
+        "platform.toml",
+        include_str!("../../../platform.example.toml"),
+    );
+    let options = Args::try_parse_from(["gui", "--platform-config", path.to_str().unwrap()])
+        .unwrap()
+        .resolve()
+        .unwrap();
+    assert_eq!(
+        options.request.runtime.cuda_root(),
+        Some(fixture.0.join("SDK/CUDA/v12.9").as_path())
     );
 }

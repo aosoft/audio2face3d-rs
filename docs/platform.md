@@ -46,6 +46,12 @@ A runtime library-directory list replaces that SDK's common root. A root and lib
 
 ## File selection
 
+The GUI can also reference this file through `platform-config` in its GUI TOML.
+That reference takes precedence over the environment variable but not over
+`--platform-config`; its path is relative to the GUI TOML. SDK paths inside the
+referenced file remain relative to the platform file itself. See [GUI configuration](gui.md#gui-configuration).
+Copy [`platform.example.toml`](../platform.example.toml) as a starting point.
+
 Only one file is read; files are not merged. Missing explicitly selected files and invalid selected files fail without falling back.
 
 | Priority | Native build | Executable runtime |
