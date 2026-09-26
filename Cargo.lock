@@ -391,7 +391,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio2face3d"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cc",
  "chrono",
@@ -422,7 +422,7 @@ dependencies = [
 
 [[package]]
 name = "audio2face3d-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "audio2face3d",
  "audio2face3d-gui-core",
@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "audio2face3d-gui-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gltf",
  "gltf-json",
@@ -460,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "audio2face3d-headgen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "audio2face3d-gui-core",
  "clap",
@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "audio2face3d-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "audio2face3d",
  "clap",

@@ -20,7 +20,7 @@ cli = ["audio2face3d/cli-logging", "dep:tracing", "audio2face3d/runtime-cli", "d
 
 [dependencies]
 subtle = { version = "2.6.1", optional = true }
-audio2face3d = { version = "0.1.0", path = "../audio2face3d", default-features = false, features = ["grpc-server"] }
+audio2face3d = { version = "0.2.0", path = "../audio2face3d", default-features = false, features = ["grpc-server"] }
 clap = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }

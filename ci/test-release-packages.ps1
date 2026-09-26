@@ -34,8 +34,8 @@ if ($packages.Count -ne 2) {
     throw "expected exactly the audio2face3d library and CLI packages"
 }
 foreach ($package in $packages) {
-    if ($package.version -ne "0.1.0") {
-        throw "package $($package.name) has version $($package.version), expected 0.1.0"
+    if ($package.version -ne "0.2.0") {
+        throw "package $($package.name) has version $($package.version), expected 0.2.0"
     }
 }
 $cli = $packages | Where-Object name -eq "audio2face3d-server"
@@ -49,8 +49,8 @@ if (-not $packagedLicense.Contains($mplText)) {
     throw 'Packaged LICENSE must retain the full root MPL-2.0 text'
 }
 $libraryDependency = $cli.dependencies | Where-Object { $_.name -eq "audio2face3d" -and $null -eq $_.kind }
-if ($null -eq $libraryDependency -or $libraryDependency.req -notin @("^0.1.0", "0.1.0")) {
-    throw "audio2face3d-server must depend on audio2face3d 0.1.0"
+if ($null -eq $libraryDependency -or $libraryDependency.req -notin @("^0.2.0", "0.2.0")) {
+    throw "audio2face3d-server must depend on audio2face3d 0.2.0"
 }
 
 $forbiddenPath = '(?i)(^|/)(reference/compatible_test|models)(/|$)|\.audio2x-|\.(onnx(?:[._]data)?|trt|engine|plan|wav|pdb|dll|so|dylib|lib|exe|bin|npz|npy)$'

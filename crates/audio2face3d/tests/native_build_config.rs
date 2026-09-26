@@ -48,7 +48,7 @@ fn explicit_file_is_exclusive_and_registry_location_does_not_search_cwd() {
         ),
         vec![selected]
     );
-    let registry = std::env::temp_dir().join("cargo-registry/src/audio2face3d-0.1.0");
+    let registry = std::env::temp_dir().join("cargo-registry/src/audio2face3d-0.2.0");
     assert_eq!(
         config_candidates(&registry, Some(file()), None),
         vec![file()]
