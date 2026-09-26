@@ -41,6 +41,8 @@ fn file_and_flags_reach_request_without_loading_native_libraries() {
     );
     let options = Args::try_parse_from([
         "gui",
+        "--config",
+        fixture.write("empty-gui.toml", "").to_str().unwrap(),
         "--platform-config",
         file.to_str().unwrap(),
         "--model",
@@ -106,10 +108,15 @@ fn bad_explicit_config_and_unknown_arguments_are_errors() {
     );
     assert!(Args::try_parse_from(["gui", "--unknown"]).is_err());
     assert!(
-        Args::try_parse_from(["gui", "--infer"])
-            .unwrap()
-            .resolve()
-            .is_err()
+        Args::try_parse_from([
+            "gui",
+            "--config",
+            fixture.write("empty-gui.toml", "").to_str().unwrap(),
+            "--infer"
+        ])
+        .unwrap()
+        .resolve()
+        .is_err()
     );
     assert!(Args::try_parse_from(["gui", "--head", "a.glb", "b.glb"]).is_err());
 }
@@ -367,10 +374,16 @@ fn platform_example_is_valid() {
         "platform.toml",
         include_str!("../../../platform.example.toml"),
     );
-    let options = Args::try_parse_from(["gui", "--platform-config", path.to_str().unwrap()])
-        .unwrap()
-        .resolve()
-        .unwrap();
+    let options = Args::try_parse_from([
+        "gui",
+        "--config",
+        fixture.write("empty-gui.toml", "").to_str().unwrap(),
+        "--platform-config",
+        path.to_str().unwrap(),
+    ])
+    .unwrap()
+    .resolve()
+    .unwrap();
     assert_eq!(
         options.request.runtime.cuda_root(),
         Some(fixture.0.join("SDK/CUDA/v12.9").as_path())

@@ -22,7 +22,7 @@ enum Backend {
 pub struct Args {
     #[command(flatten)]
     platform: PlatformArgs,
-    /// GUI settings; defaults to gui.toml next to the executable.
+    /// GUI settings; searches the working directory, then the executable directory.
     #[arg(long, value_name = "TOML")]
     config: Option<PathBuf>,
     /// Optional legacy positional head GLB.
@@ -129,25 +129,31 @@ impl Args {
     /// CLI values override GUI settings; embedded hosts pass Options directly.
     pub fn resolve(self) -> Result<Options> {
         let exe = std::env::current_exe().map_err(|e| Error(e.to_string()))?;
-        self.resolve_next_to(&exe)
+        let cwd = std::env::current_dir().map_err(|e| Error(e.to_string()))?;
+        self.resolve_at(&cwd, &exe)
     }
 
-    fn resolve_next_to(self, executable: &Path) -> Result<Options> {
+    fn resolve_at(self, cwd: &Path, executable: &Path) -> Result<Options> {
         let config = if let Some(path) = &self.config {
-            let path = std::path::absolute(path).map_err(|e| Error(e.to_string()))?;
-            Config::read(&path)?
+            Config::read(&cwd.join(path))?
         } else {
-            let path = executable.with_file_name("gui.toml");
-            match std::fs::metadata(&path) {
-                Ok(_) => Config::read(&path)?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-                Err(e) => {
-                    return Err(Error(format!(
-                        "Cannot access GUI config {}: {e}",
-                        path.display()
-                    )));
+            let mut selected = Config::default();
+            for path in [cwd.join("gui.toml"), executable.with_file_name("gui.toml")] {
+                match std::fs::metadata(&path) {
+                    Ok(_) => {
+                        selected = Config::read(&path)?;
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        return Err(Error(format!(
+                            "Cannot access GUI config {}: {e}",
+                            path.display()
+                        )));
+                    }
                 }
             }
+            selected
         };
         let mut request = Request {
             runtime: self
@@ -196,36 +202,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_is_next_to_executable_and_explicit_config_replaces_it() {
+    fn config_search_prefers_explicit_then_working_directory_then_executable() {
         let dir =
             std::env::temp_dir().join(format!("a2f-gui-default-config-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("audio2face3d-gui.exe");
+        let cwd = dir.join("working");
+        std::fs::create_dir_all(&cwd).unwrap();
         std::fs::write(dir.join("gui.toml"), "head='default.glb'").unwrap();
         let options = Args::try_parse_from(["gui"])
             .unwrap()
-            .resolve_next_to(&exe)
+            .resolve_at(&cwd, &exe)
             .unwrap();
         assert_eq!(options.head, Some(dir.join("default.glb")));
-        let explicit = dir.join("other.toml");
-        std::fs::write(&explicit, "head='other.glb'").unwrap();
-        let options = Args::try_parse_from(["gui", "--config", explicit.to_str().unwrap()])
+        std::fs::write(cwd.join("gui.toml"), "head='working.glb'").unwrap();
+        let options = Args::try_parse_from(["gui"])
             .unwrap()
-            .resolve_next_to(&exe)
+            .resolve_at(&cwd, &exe)
             .unwrap();
-        assert_eq!(options.head, Some(dir.join("other.glb")));
+        assert_eq!(options.head, Some(cwd.join("working.glb")));
+        let explicit = cwd.join("other.toml");
+        std::fs::write(&explicit, "head='other.glb'").unwrap();
+        let options = Args::try_parse_from(["gui", "--config", "other.toml"])
+            .unwrap()
+            .resolve_at(&cwd, &exe)
+            .unwrap();
+        assert_eq!(options.head, Some(cwd.join("other.glb")));
+        assert!(
+            Args::try_parse_from(["gui", "--config", "missing.toml"])
+                .unwrap()
+                .resolve_at(&cwd, &exe)
+                .is_err()
+        );
+        std::fs::write(cwd.join("gui.toml"), "invalid").unwrap();
+        assert!(
+            Args::try_parse_from(["gui"])
+                .unwrap()
+                .resolve_at(&cwd, &exe)
+                .is_err()
+        );
+        std::fs::remove_file(cwd.join("gui.toml")).unwrap();
         std::fs::write(dir.join("gui.toml"), "invalid").unwrap();
         assert!(
             Args::try_parse_from(["gui"])
                 .unwrap()
-                .resolve_next_to(&exe)
+                .resolve_at(&cwd, &exe)
                 .is_err()
         );
         std::fs::remove_file(dir.join("gui.toml")).unwrap();
         assert!(
             Args::try_parse_from(["gui"])
                 .unwrap()
-                .resolve_next_to(&exe)
+                .resolve_at(&cwd, &exe)
                 .unwrap()
                 .head
                 .is_none()

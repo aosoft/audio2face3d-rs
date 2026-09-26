@@ -108,10 +108,21 @@ initialization already in progress may take time before it can finish cleanup.
 
 ## GUI configuration
 
-Copy [`gui.example.toml`](../gui.example.toml) to `gui.toml` next to the executable,
-or select it explicitly with `--config PATH`. No working-directory GUI file is
-searched. A missing default file uses built-in defaults; a missing explicit file,
-an invalid file, or an unknown key is an error. GUI edits do not write back to TOML.
+Copy [`gui.example.toml`](../gui.example.toml) to `gui.toml` in the working
+directory or next to the executable. Configuration selection is:
+
+1. The file explicitly selected with `--config PATH` (relative to the working directory).
+2. `gui.toml` in the working directory.
+3. `gui.toml` next to the executable.
+4. Built-in defaults if neither automatic location contains a file.
+
+Only one file is read; files are not merged. Missing explicit files, invalid files,
+unknown keys and access errors are errors, without falling back to another file.
+Paths inside the selected file remain relative to that file's directory.
+GUI edits do not write back to TOML. Thus `cargo run` from the repository root
+uses the root `gui.toml` without `--config`, even though the executable is under
+`target/debug` or `target/release`.
+
 Local `gui.toml` and `platform.toml` files are ignored by Git; examples are tracked.
 
 ```powershell
