@@ -17,9 +17,22 @@ as a fallback for Japanese filenames/errors on Windows when available.
 
 The gRPC package needs a graphics/audio device but no CUDA/TensorRT installation.
 The local+gRPC package additionally needs the separately obtained model JSON,
-cached TensorRT engine, NVIDIA driver, CUDA and TensorRT runtime. Configure
-`platform.toml` using the startup options below. Runtime paths are resolved at
-startup and cannot be edited in the Inference panel.
+compatible TensorRT engine, NVIDIA driver, CUDA Runtime with cuBLAS/cuBLASLt/cuRAND,
+and TensorRT runtime libraries, including their dependencies. `cudart` alone is
+insufficient. Running the prebuilt application requires neither `nvcc`, SDK headers,
+nor Visual Studio/Build Tools; the compiled CUDA PTX is embedded in the binary.
+Ordinary OS/runtime prerequisites still apply. A full CUDA Toolkit installation
+is not required for normal inference.
+
+Configure `platform.toml` using the startup options below. A deployment file may
+contain only `[runtime]` with `cuda-library-dirs` and `tensorrt-library-dirs`;
+`[build-cuda]` is unnecessary. Relative directories are resolved against that TOML.
+Runtime paths are resolved at startup and cannot be edited in the Inference panel.
+See [Deploying a prebuilt application](platform.md#deploying-a-prebuilt-application)
+for the dependency table and configuration example. When moving to another GPU or
+TensorRT version, check engine compatibility; regenerating an engine requires
+`trtexec`, separately from running inference. Launch the executable directly on the
+destination machine: `cargo run` is a build-and-run command, not a deployment command.
 No models or NVIDIA SDK binaries are redistributed with this application.
 Windows x64 is the tested desktop target. CI checks macOS gRPC-only compilation; macOS GUI/audio behavior still requires device testing.
 

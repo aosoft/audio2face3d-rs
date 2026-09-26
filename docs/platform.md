@@ -118,6 +118,58 @@ The four kernels compile at `compute_50`, the lowest target supported by the val
 
 This target covers the project's post-processing kernels. Supported GPUs for complete inference also depend on CUDA libraries, TensorRT and the model engine.
 
+## Deploying a prebuilt application
+
+Normal local inference does **not** invoke `nvcc`. The build compiles this project's
+CUDA kernels to PTX and embeds that PTX in the executable/library. At runtime,
+the NVIDIA driver loads and JIT-compiles it for the GPU; this is not a call to
+the CUDA Toolkit compiler. The build machine's generated PTX files and SDK paths
+are not needed at the deployment location.
+
+| Dependency | Build with local inference | Run prebuilt local inference | gRPC-only client |
+| --- | --- | --- | --- |
+| CUDA Toolkit compiler (`nvcc`) and SDK headers | Required | Not required | Not required |
+| TensorRT headers | Required | Not required | Not required |
+| C++ compiler / Visual Studio / Build Tools | Required | Not required | No CUDA-specific toolchain required |
+| NVIDIA GPU and compatible driver | Not needed just to compile | Required | Not required on the client |
+| CUDA Runtime, cuBLAS, cuBLASLt, cuRAND | Runtime dependencies of the result | Required, including transitive dependencies | Not required on the client |
+| TensorRT runtime libraries | Runtime dependencies of the result | Required, including transitive dependencies | Not required on the client |
+| Model data and compatible TensorRT engine | Not needed just to compile | Required | Required on the server, not the client |
+
+`cudart` alone is insufficient. Deploy the required CUDA and TensorRT shared
+libraries and their dependencies; a full CUDA Toolkit installation is not required
+for inference. The NVIDIA driver is installed on the destination system separately.
+The application still needs the ordinary runtime prerequisites for its OS/build
+(for example, the MSVC runtime when dynamically linked, and GUI graphics/audio support).
+
+A deployment `platform.toml` can contain only runtime settings:
+
+```toml
+[runtime]
+cuda-library-dirs = ["runtime/cuda"]
+tensorrt-library-dirs = ["runtime/tensorrt"]
+search-policy = "explicit"
+```
+
+These directories are relative to this TOML file, so the application, configuration
+and runtime directories can be moved together. `[build-cuda]` and SDK root settings
+are unnecessary in this deployment configuration. Runtime loading does not validate
+build compiler/header paths. Configure the model, WAV and head paths separately
+(for the GUI, in `gui.toml`) and move their referenced files as needed. Run the
+prebuilt executable directly; `cargo run` also performs a build and therefore still
+requires the build dependencies when compilation is needed.
+
+Use runtime versions compatible with the binary; see [Version policy](#version-policy).
+A serialized TensorRT engine must also be compatible with the destination GPU and
+TensorRT environment; copying an engine between machines does not guarantee that
+it can be loaded. If engine regeneration is needed, the engine-generation workflow
+requires `trtexec` and its dependencies. This is separate from normal inference.
+Some engine-generation metadata probes query `nvcc --version`; an unavailable probe
+is recorded as unavailable and does not make `nvcc` an inference dependency.
+
+The gRPC-only GUI (`standalone-app,grpc`) needs no local CUDA/TensorRT installation
+or `build-cuda` settings. GPU inference dependencies belong to the server in that case.
+
 ## CLI options
 
 Both executables accept these global options. Individual SDK flags override runtime values from the selected file.
