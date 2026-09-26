@@ -123,8 +123,8 @@ Use `head_atlas` for supported channels at 0 / 0.5 / 1 and a three-quarter view.
 Use `capture_head` for Neutral and combinations, for example:
 
 ```powershell
-cargo run -p audio2face3d-gui --features render-wgpu --example head_atlas -- temp/ict-facekit.glb temp/ict-atlas
-cargo run -p audio2face3d-gui --features render-wgpu --example capture_head -- temp/ict-facekit.glb temp/ict-jaw.png JawOpen=0.7 MouthClose=0.3 yaw=0.6
+cargo run -p audio2face3d-gui --features render-wgpu,gltf-read --example head_atlas -- temp/ict-facekit.glb temp/ict-atlas
+cargo run -p audio2face3d-gui --features render-wgpu,gltf-read --example capture_head -- temp/ict-facekit.glb temp/ict-jaw.png JawOpen=0.7 MouthClose=0.3 yaw=0.6
 ```
 
 Check eyelids, eyes, lips, oral cavity, teeth/tongue motion and left/right meanings.

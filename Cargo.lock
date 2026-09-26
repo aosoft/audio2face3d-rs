@@ -425,7 +425,6 @@ name = "audio2face3d-gui"
 version = "0.2.0"
 dependencies = [
  "audio2face3d",
- "audio2face3d-gui-core",
  "bytemuck",
  "chrono",
  "clap",
@@ -434,6 +433,8 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "glam",
+ "gltf",
+ "gltf-json",
  "hound",
  "image",
  "pollster",
@@ -448,21 +449,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "audio2face3d-gui-core"
-version = "0.2.0"
-dependencies = [
- "gltf",
- "gltf-json",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "audio2face3d-headgen"
 version = "0.2.0"
 dependencies = [
- "audio2face3d-gui-core",
+ "audio2face3d-gui",
  "clap",
  "serde",
  "serde_json",

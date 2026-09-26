@@ -26,7 +26,7 @@ jobs:
           restore-keys: |
             cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-rust-1.91.0-
       - name: Check minimum supported Rust version
-        run: cargo check --workspace --locked --no-default-features --features audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/mock --all-targets
+        run: cargo check --workspace --locked --no-default-features --features audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock --all-targets
 
       - name: Check desktop gRPC on minimum supported Rust
         run: cargo check --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc

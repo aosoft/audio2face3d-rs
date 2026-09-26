@@ -5,9 +5,8 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
-    let model = audio2face3d_gui_core::gltf::from_glb(&std::fs::read(
-        args.get(1).ok_or("GLB path required")?,
-    )?)?;
+    let model =
+        audio2face3d_gui::gltf::from_glb(&std::fs::read(args.get(1).ok_or("GLB path required")?)?)?;
     let directory = PathBuf::from(args.get(2).ok_or("output directory required")?);
     std::fs::create_dir_all(&directory)?;
     let instance = wgpu::Instance::default();
@@ -23,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mapped_at_creation: false,
     });
     let supported = model.channel_names();
-    let names = audio2face3d_gui_core::rig::CHANNELS
+    let names = audio2face3d_gui::rig::CHANNELS
         .into_iter()
         .filter(|n| supported.iter().any(|s| s == n))
         .collect::<Vec<_>>();

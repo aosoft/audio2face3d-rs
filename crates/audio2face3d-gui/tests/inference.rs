@@ -1,3 +1,4 @@
+#![cfg(feature = "session")]
 #![cfg(feature = "mock")]
 use audio2face3d_gui::{
     core::{Clip, SessionState},

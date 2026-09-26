@@ -91,13 +91,13 @@ On Linux, `cuda-host-compiler` is a C++ compiler file path (not a PATH command n
 
 Old `[build]` settings are rejected with migration guidance: move SDK overrides to `[build-cuda]`, Linux compiler selection to `[build-cuda.linux]`, and replace Windows compiler paths with the two `[build-cuda.windows]` fields.
 
-The entire `build-cuda` section and SDK roots may be omitted for gRPC-only builds, including `standalone-app,grpc` on macOS. With CUDA features disabled, the build never discovers SDKs or initializes MSVC. Runtime parsing validates TOML syntax but does not check unused SDK/compiler paths. Both OS sections may coexist; only the native build host's section is applied. CUDA cross-OS builds are not configured by selecting the other OS section.
+The entire `build-cuda` section and SDK roots may be omitted for gRPC-only builds, including `grpc` on macOS. With CUDA features disabled, the build never discovers SDKs or initializes MSVC. Runtime parsing validates TOML syntax but does not check unused SDK/compiler paths. Both OS sections may coexist; only the native build host's section is applied. CUDA cross-OS builds are not configured by selecting the other OS section.
 
 From this checkout, the root `platform.toml` is used automatically:
 
 ```powershell
 cargo build --release --locked -p audio2face3d --features cli,native
-cargo build --release --locked -p audio2face3d-server --features cli
+cargo build --release --locked -p audio2face3d-server
 ```
 
 To explicitly select the same file for build, installation and execution:
@@ -105,7 +105,7 @@ To explicitly select the same file for build, installation and execution:
 ```powershell
 $env:AUDIO2FACE3D_PLATFORM_CONFIG = (Resolve-Path ./platform.toml).Path
 cargo install --path crates/audio2face3d --locked --features cli,native
-cargo install --path crates/audio2face3d-server --locked --features cli
+cargo install --path crates/audio2face3d-server --locked
 ```
 
 Portable builds need no SDK configuration. File changes trigger the native build script again. Header versions are embedded for runtime comparison. The C++ shim is a static archive inside the Rust artifact; there is no project-specific DLL to deploy and no ordinary NVIDIA DLL imports. NVIDIA SDK binaries remain separate runtime dependencies.
@@ -167,7 +167,7 @@ requires `trtexec` and its dependencies. This is separate from normal inference.
 Some engine-generation metadata probes query `nvcc --version`; an unavailable probe
 is recorded as unavailable and does not make `nvcc` an inference dependency.
 
-The gRPC-only GUI (`standalone-app,grpc`) needs no local CUDA/TensorRT installation
+The gRPC-only GUI (`grpc`) needs no local CUDA/TensorRT installation
 or `build-cuda` settings. GPU inference dependencies belong to the server in that case.
 
 ## CLI options
@@ -190,7 +190,7 @@ audio2face3d --platform-config platform.toml run regression models/mark/model.js
 audio2face3d-server --platform-config platform.toml --model models/mark/model.json
 
 # From this checkout: Cargo and the executable both find the root platform.toml.
-cargo run -p audio2face3d-server --features cli -- --model models/mark/model.json
+cargo run -p audio2face3d-server -- --model models/mark/model.json
 ```
 
 Options after Cargo's `--` affect the running executable only. They cannot change a build that already happened. Select a custom build file through `AUDIO2FACE3D_PLATFORM_CONFIG`; `--platform-config` can independently choose another runtime file with the same format.

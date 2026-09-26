@@ -1,3 +1,4 @@
+#![cfg(feature = "session")]
 use audio2face3d_gui::inference::{Job, Mode, Request};
 use std::sync::Arc;
 

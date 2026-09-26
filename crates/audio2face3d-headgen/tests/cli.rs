@@ -23,7 +23,7 @@ fn cli_round_trip_and_output_protection() {
     let converted = run("convert", &["--output".as_ref(), output.as_os_str()]);
     assert!(converted.status.success(), "{:?}", converted);
     let bytes = std::fs::read(&output).unwrap();
-    let model = audio2face3d_gui_core::gltf::from_glb(&bytes).unwrap();
+    let model = audio2face3d_gui::gltf::from_glb(&bytes).unwrap();
     assert_eq!(model.channel_names().len(), 2);
     assert_eq!(
         run("convert", &["--output".as_ref(), output.as_os_str()])

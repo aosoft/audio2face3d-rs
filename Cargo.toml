@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/audio2face3d",
     "crates/audio2face3d-server",
-    "crates/audio2face3d-gui-core",
     "crates/audio2face3d-headgen",
     "crates/audio2face3d-gui",
 ]

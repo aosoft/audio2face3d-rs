@@ -199,7 +199,7 @@ For local builds, use the runtime/build setup documented in the repository's
 `docs/platform.md`. CUDA 12.9 was validated with MSVC **14.42.34433**. Configure
 `[build-cuda.windows]` with the Visual Studio root and exact toolset version;
 the native build initializes matching compiler, header and library paths automatically.
-The `standalone-app,grpc` build needs no CUDA/TensorRT or `build-cuda` settings.
+The default `standalone-app,grpc` build needs no CUDA/TensorRT or `build-cuda` settings.
 No developer SDK path is compiled into the application configuration.
 
 ## Convert or replace the head
@@ -218,13 +218,25 @@ no automatic downloads or package replacement occur.
 
 ## Library boundaries and engine embedding
 
-- `audio2face3d-gui-core`: CPU model types, validation and optional GLB read/write.
-- `audio2face3d-headgen`: CPU OBJ conversion library and standard CLI (no feature flag).
-- `audio2face3d-gui`: playback/session/logging library; `render-wgpu` and `ui-egui`
-  are optional. `standalone-app` adds the standard CPAL/eframe host. `local` and `grpc`
-  independently enable inference. `mock` and `capture` are development features.
+- `audio2face3d-gui`: model types, validation, GLB I/O, inference sessions,
+  playback, logs, rendering and UI, plus the standard executable.
+- `audio2face3d-headgen`: CPU OBJ conversion library and CLI. It depends on
+  `audio2face3d-gui` with `default-features = false` and only `gltf-write`.
 
-All default feature sets are empty. A host can feed `Clip`, call `Player` with
+GUI defaults are `standalone-app,grpc`. `standalone-app` enables the executable,
+CLI/config loading, eframe window, file dialogs and CPAL audio device support.
+Disable defaults for library use: without features, only model types and validation
+remain. `gltf-read` / `gltf-write` add GLB I/O; `session` adds media/session APIs;
+`render-wgpu` and `ui-egui` select reusable rendering/UI. `local`, `grpc`, `mock`
+select inference backends. `capture` is a development feature.
+
+For a model-only dependency from a sibling workspace crate:
+
+```toml
+audio2face3d-gui = { path = "../audio2face3d-gui", default-features = false, features = ["gltf-write"] }
+```
+
+A host can feed `Clip`, call `Player` with
 its audio callback and scheduled audible timestamp, and obtain one `Snapshot`
 for the head/values/timeline. `HeadRenderer` accepts a host-owned wgpu device,
 queue and render target; the host submits commands and owns texture lifetime.

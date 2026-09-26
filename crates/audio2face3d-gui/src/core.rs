@@ -204,13 +204,8 @@ impl Clip {
 
 pub fn demo_clip() -> Clip {
     let mut clip = Clip::default();
-    clip.set_names(
-        audio2face3d_gui_core::rig::CHANNELS
-            .iter()
-            .map(|n| n.to_string())
-            .collect(),
-    )
-    .unwrap();
+    clip.set_names(crate::rig::CHANNELS.iter().map(|n| n.to_string()).collect())
+        .unwrap();
     let seconds = 6;
     let audio: Vec<_> = (0..SAMPLE_RATE * seconds)
         .map(|i| {

@@ -1,5 +1,5 @@
 //! Host-owned wgpu device/queue, reusable offscreen head rendering.
-use audio2face3d_gui_core::{HeadModel, ModelError};
+use crate::{HeadModel, ModelError};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use std::collections::BTreeMap;

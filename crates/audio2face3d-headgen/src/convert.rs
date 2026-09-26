@@ -6,7 +6,7 @@ use crate::{
     topology,
     transform::Transform,
 };
-use audio2face3d_gui_core::{Material, Mesh};
+use audio2face3d_gui::{Material, Mesh};
 use std::collections::{BTreeMap, BTreeSet};
 pub struct Part {
     pub mesh: Mesh,
@@ -135,7 +135,7 @@ pub fn geometry(config: &Config, neutral: &Obj) -> Result<Geometry> {
 }
 
 pub struct Conversion {
-    pub model: audio2face3d_gui_core::HeadModel,
+    pub model: audio2face3d_gui::HeadModel,
     pub report: crate::report::Report,
 }
 /// Complete all validation before returning a model. No files are written here.
@@ -145,7 +145,7 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         report::{self, Channel, Input, Report},
         transform::{cross, dot, sub},
     };
-    use audio2face3d_gui_core::{HeadModel, Metadata, MorphTarget};
+    use audio2face3d_gui::{HeadModel, Metadata, MorphTarget};
     let resolved = obj::resolve_inputs(config, input_root)?;
     let neutral = obj::read(&resolved[0].1)?;
     let mut inputs = vec![Input::new(config.neutral.clone(), &neutral)];
@@ -278,7 +278,7 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
             decoded_bytes = decoded_bytes
                 .checked_add(part.original_vertices.len() * 24)
                 .ok_or_else(|| Error::Output("decoded size overflow".into()))?;
-            if decoded_bytes > audio2face3d_gui_core::validation::MAX_GLB_BYTES {
+            if decoded_bytes > audio2face3d_gui::validation::MAX_GLB_BYTES {
                 return Err(Error::Output("decoded morph data exceeds 64 MiB".into()));
             }
             part.mesh.targets.push(MorphTarget {
@@ -332,8 +332,8 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         .map(|m| m.positions.len() * 32 * m.targets.len().max(1))
         .max()
         .unwrap_or(0);
-    let glb_upper_bound_bytes = audio2face3d_gui_core::gltf::encoded_size(&model)
-        .map_err(|e| Error::Output(e.to_string()))?;
+    let glb_upper_bound_bytes =
+        audio2face3d_gui::gltf::encoded_size(&model).map_err(|e| Error::Output(e.to_string()))?;
     let effective = serde_json::to_vec(config).map_err(|e| Error::Config(e.to_string()))?;
     let report = Report {
         schema_version: 1,

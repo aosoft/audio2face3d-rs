@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           metadata="$(cargo metadata --locked --no-deps --format-version 1)"
-          package_names="$(jq -r '.packages[].name' <<<"$metadata" | sort)"
+          package_names="$(jq -r '.packages[] | select(.publish != []) | .name' <<<"$metadata" | sort)"
           expected_names=$'audio2face3d\naudio2face3d-server'
           if [[ "$package_names" != "$expected_names" ]]; then
             printf 'Unexpected publishable packages:\n%s\n' "$package_names" >&2
@@ -63,7 +63,7 @@ jobs:
           fi
 
       - name: Run portable tests
-        run: cargo test --workspace --locked --no-default-features --features audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/mock
+        run: cargo test --workspace --locked --no-default-features --features audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock
 
       - name: Show package contents
         run: cargo package --workspace --locked --no-default-features --list

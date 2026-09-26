@@ -1,6 +1,6 @@
 #![cfg(all(feature = "gltf-read", feature = "gltf-write"))]
 
-use audio2face3d_gui_core::{
+use audio2face3d_gui::{
     gltf::{from_glb, to_glb},
     model::evaluate,
 };
@@ -163,7 +163,7 @@ fn original_full_asset_uses_the_same_tester_contract() {
     let bytes = to_glb(&model).unwrap();
     assert_eq!(from_glb(&bytes).unwrap(), model);
     assert_eq!(
-        audio2face3d_gui_core::gltf::encoded_size(&model).unwrap(),
+        audio2face3d_gui::gltf::encoded_size(&model).unwrap(),
         bytes.len()
     );
 }

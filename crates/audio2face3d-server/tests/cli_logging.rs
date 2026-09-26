@@ -1,4 +1,5 @@
-#![cfg(all(feature = "cli", feature = "mock"))]
+#![cfg(feature = "cli")]
+#![cfg(feature = "mock")]
 use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},

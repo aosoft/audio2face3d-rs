@@ -56,7 +56,7 @@ impl Default for Request {
     }
 }
 impl Request {
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.wav.as_os_str().is_empty() {
             return Err(Error(
                 "WAV is required. Select an audio file with Browse next to WAV.".into(),

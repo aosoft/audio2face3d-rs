@@ -1,3 +1,4 @@
+#![cfg(feature = "session")]
 use audio2face3d::logging::{LogLevel, LogRecord, Logger};
 use audio2face3d_gui::logging::{FanoutLogger, channel};
 #[test]

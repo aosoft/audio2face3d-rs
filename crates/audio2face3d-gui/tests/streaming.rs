@@ -1,3 +1,4 @@
+#![cfg(feature = "session")]
 use audio2face3d_gui::{
     core::{Clip, SessionState},
     playback::{Command, PlaybackState, Player},

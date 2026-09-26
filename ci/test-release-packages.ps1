@@ -31,7 +31,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 $packages = @($metadata.packages | Where-Object { $_.name -in @("audio2face3d", "audio2face3d-server") })
 if ($packages.Count -ne 2) {
-    throw "expected exactly the audio2face3d library and CLI packages"
+    throw "expected the inference library and server packages"
 }
 foreach ($package in $packages) {
     if ($package.version -ne "0.2.0") {

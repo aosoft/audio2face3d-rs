@@ -57,12 +57,7 @@ pub struct Args {
     play_while_inferring: Option<bool>,
 }
 
-#[derive(Default)]
-pub struct Options {
-    pub head: Option<PathBuf>,
-    pub request: Request,
-    pub infer: bool,
-}
+pub use crate::desktop::Options;
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]

@@ -9,7 +9,7 @@ publish = false
 description = "CPU-only OBJ blendshape converter for Audio2Face-3D preview heads"
 
 [dependencies]
-audio2face3d-gui-core = { path = "../audio2face3d-gui-core", features = ["gltf-write"] }
+audio2face3d-gui = { path = "../audio2face3d-gui", default-features = false, features = ["gltf-write"] }
 toml = "1.1"
 sha2.workspace = true
 serde.workspace = true
@@ -25,4 +25,4 @@ name = "audio2face3d-headgen"
 workspace = true
 
 [dev-dependencies]
-audio2face3d-gui-core = { path = "../audio2face3d-gui-core", features = ["gltf-read", "gltf-write"] }
+audio2face3d-gui = { path = "../audio2face3d-gui", default-features = false, features = ["gltf-read", "gltf-write"] }

@@ -1,6 +1,6 @@
 #![cfg(feature = "render-wgpu")]
 use audio2face3d_gui::render::{Camera, HeadRenderer, RenderTarget, Vertex};
-use audio2face3d_gui_core::{HeadModel, Material, Mesh, Metadata, MorphTarget};
+use audio2face3d_gui::{HeadModel, Material, Mesh, Metadata, MorphTarget};
 
 #[test]
 #[ignore = "requires a GPU adapter; run explicitly in the GPU validation tier"]
@@ -34,7 +34,7 @@ fn check_model(target_count: usize) {
             material: Material {
                 color: [0.5, 0.5, 0.5, 1.],
             },
-            targets: audio2face3d_gui_core::rig::CHANNELS
+            targets: audio2face3d_gui::rig::CHANNELS
                 .iter()
                 .take(target_count)
                 .enumerate()
@@ -46,7 +46,7 @@ fn check_model(target_count: usize) {
                 .collect(),
         }],
     };
-    let weights = audio2face3d_gui_core::rig::CHANNELS
+    let weights = audio2face3d_gui::rig::CHANNELS
         .iter()
         .enumerate()
         .map(|(i, &n)| (n.to_string(), i as f32 / 51.))
@@ -75,7 +75,7 @@ fn check_model(target_count: usize) {
         rx.recv().unwrap().unwrap();
         let bytes = output.slice(..).get_mapped_range();
         let mesh = &model.meshes[0];
-        let cpu = audio2face3d_gui_core::model::evaluate(
+        let cpu = audio2face3d_gui::model::evaluate(
             mesh,
             &mesh
                 .targets

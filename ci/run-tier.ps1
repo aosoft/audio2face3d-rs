@@ -75,7 +75,13 @@ switch ($Tier) {
         Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features", "--features", "emotion")
         Invoke-Checked @("cargo", "clippy", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock", "--all-targets", "--", "-D", "warnings")
         Invoke-Checked @("cargo", "test", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock")
-        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui-core", "--features", "gltf-read,gltf-write")
+        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "gltf-read,gltf-write")
+        # Model conversion must remain independent of inference, UI and device runtimes.
+        $headgenTree = @(& cargo tree --locked -p audio2face3d-headgen --edges normal,build --prefix none)
+        if ($LASTEXITCODE -ne 0) { throw "Could not inspect headgen dependencies" }
+        if ($headgenTree | Select-String '^(audio2face3d |wgpu |eframe |egui |cpal |tokio |tonic |cudarc )') {
+            throw "headgen unexpectedly depends on inference/UI/device libraries"
+        }
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-headgen")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "ui-egui,grpc,mock")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "standalone-app,grpc,mock", "--test", "startup")

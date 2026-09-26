@@ -1,3 +1,11 @@
+/// Resolved application inputs; no process arguments or configuration files are read.
+#[derive(Default)]
+pub struct Options {
+    pub head: Option<std::path::PathBuf>,
+    pub request: crate::inference::Request,
+    pub infer: bool,
+}
+
 use crate::render::{Camera, HeadRenderer, RenderTarget};
 use audio2face3d::logging::{LogLevel, LogRecord, Logger};
 use std::{collections::BTreeMap, path::Path};
@@ -35,10 +43,7 @@ impl DesktopApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self::with_options(cc, Default::default())
     }
-    pub fn with_options(
-        cc: &eframe::CreationContext<'_>,
-        options: crate::startup::Options,
-    ) -> Self {
+    pub fn with_options(cc: &eframe::CreationContext<'_>, options: Options) -> Self {
         install_host_fonts(&cc.egui_ctx);
         let (logger, logs) = crate::logging::channel(2048, 10_000, LogLevel::Debug);
         let mut app = Self {
@@ -109,12 +114,10 @@ impl DesktopApp {
     }
     fn load(&mut self, path: &Path) {
         let load = (|| -> Result<_, Box<dyn std::error::Error>> {
-            if std::fs::metadata(path)?.len()
-                > audio2face3d_gui_core::validation::MAX_GLB_BYTES as u64
-            {
+            if std::fs::metadata(path)?.len() > crate::validation::MAX_GLB_BYTES as u64 {
                 return Err("GLB exceeds 64 MiB".into());
             }
-            let model = audio2face3d_gui_core::gltf::from_glb(&std::fs::read(path)?)?;
+            let model = crate::gltf::from_glb(&std::fs::read(path)?)?;
             let renderer = HeadRenderer::new(&self.gpu.device, &model)?;
             Ok((renderer, model))
         })();
@@ -753,7 +756,7 @@ impl Drop for DesktopApp {
 pub fn run() -> eframe::Result {
     run_with_options(Default::default())
 }
-pub fn run_with_options(options: crate::startup::Options) -> eframe::Result {
+pub fn run_with_options(options: Options) -> eframe::Result {
     eframe::run_native(
         "Audio2Face-3D",
         eframe::NativeOptions {
@@ -820,7 +823,7 @@ fn inference_channel_weights() -> BTreeMap<String, f32> {
         .collect()
 }
 
-fn head_summary(model: &audio2face3d_gui_core::HeadModel) -> String {
+fn head_summary(model: &crate::HeadModel) -> String {
     let unsupported = model.unsupported_channels();
     if unsupported.is_empty() {
         "Head model: all 52 channels supported".into()
@@ -866,8 +869,7 @@ mod head_tests {
     #[test]
     fn manual_channels_follow_inference_even_when_the_head_omits_tongue() {
         let mut model =
-            audio2face3d_gui_core::gltf::from_glb(include_bytes!("../assets/default-head.glb"))
-                .unwrap();
+            crate::gltf::from_glb(include_bytes!("../assets/default-head.glb")).unwrap();
         for mesh in &mut model.meshes {
             mesh.targets.retain(|t| t.name != "TongueOut");
         }
@@ -892,8 +894,7 @@ mod head_tests {
     #[test]
     fn subset_summary_does_not_mutate_the_head_or_input_values() {
         let mut model =
-            audio2face3d_gui_core::gltf::from_glb(include_bytes!("../assets/default-head.glb"))
-                .unwrap();
+            crate::gltf::from_glb(include_bytes!("../assets/default-head.glb")).unwrap();
         assert!(head_summary(&model).contains("all 52"));
         for mesh in &mut model.meshes {
             mesh.targets.retain(|t| t.name != "TongueOut");

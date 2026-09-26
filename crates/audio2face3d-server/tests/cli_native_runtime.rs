@@ -1,4 +1,5 @@
-#![cfg(all(feature = "cli", feature = "native"))]
+#![cfg(feature = "cli")]
+#![cfg(feature = "native")]
 use audio2face3d::client::{
     Client, ServerConfig,
     types::{AudioFormat, InputChunk, OutputEvent, PcmBuffer, RequestOptions},

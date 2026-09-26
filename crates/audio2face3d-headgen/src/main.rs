@@ -160,7 +160,7 @@ fn run(command: Command) -> Result<()> {
     validate_outputs(&outputs, &paths, &input.config, input.force)?;
     let mut converted = audio2face3d_headgen::convert(&config, &input.input_root)?;
     let glb = if output.is_some() {
-        let bytes = audio2face3d_gui_core::gltf::to_glb(&converted.model)
+        let bytes = audio2face3d_gui::gltf::to_glb(&converted.model)
             .map_err(|e| Error::Output(e.to_string()))?;
         converted.report.output_glb_sha256 = Some(report::hash(&bytes));
         converted.report.output_glb_bytes = Some(bytes.len());

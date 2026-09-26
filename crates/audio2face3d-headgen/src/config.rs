@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use audio2face3d_gui_core::rig;
+use audio2face3d_gui::rig;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 

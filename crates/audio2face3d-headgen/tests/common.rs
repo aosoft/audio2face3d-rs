@@ -11,7 +11,7 @@ pub fn fixture() -> (tempfile::TempDir, Config) {
         ),
         ("JawOpen".into(), vec!["jaw.obj".into()]),
     ]);
-    config.unsupported_channels = audio2face3d_gui_core::rig::CHANNELS
+    config.unsupported_channels = audio2face3d_gui::rig::CHANNELS
         .iter()
         .filter(|s| !config.targets.contains_key(**s))
         .map(|s| s.to_string())

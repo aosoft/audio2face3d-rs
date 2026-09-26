@@ -15,9 +15,8 @@ fn read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Vec<u8> {
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
-    let model = audio2face3d_gui_core::gltf::from_glb(&std::fs::read(
-        args.get(1).ok_or("GLB path required")?,
-    )?)?;
+    let model =
+        audio2face3d_gui::gltf::from_glb(&std::fs::read(args.get(1).ok_or("GLB path required")?)?)?;
     let output = args.get(2).ok_or("PNG path required")?;
     let mut weights = BTreeMap::new();
     let mut camera = Camera::default();
@@ -89,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut max_error = 0f32;
     for (mesh, buffer) in model.meshes.iter().zip(vertex_buffers) {
         let gpu = read(&device, &buffer);
-        let cpu = audio2face3d_gui_core::model::evaluate(
+        let cpu = audio2face3d_gui::model::evaluate(
             mesh,
             &mesh
                 .targets

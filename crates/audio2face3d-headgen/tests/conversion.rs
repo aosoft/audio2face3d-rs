@@ -1,5 +1,5 @@
 mod common;
-use audio2face3d_gui_core::{gltf::to_glb, model::evaluate};
+use audio2face3d_gui::{gltf::to_glb, model::evaluate};
 use audio2face3d_headgen::convert;
 #[test]
 fn additive_shapes_evaluate_and_round_trip_deterministically() {
@@ -71,7 +71,7 @@ fn pose_tolerance_is_explicit_and_keeps_geometry() {
     use audio2face3d_headgen::config::DegeneratePoseTriangles;
     let (dir, mut c) = common::fixture();
     c.targets.retain(|name, _| name == "JawOpen");
-    c.unsupported_channels = audio2face3d_gui_core::rig::CHANNELS
+    c.unsupported_channels = audio2face3d_gui::rig::CHANNELS
         .iter()
         .filter(|&&n| n != "JawOpen")
         .map(|s| s.to_string())

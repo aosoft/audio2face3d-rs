@@ -6,20 +6,29 @@ Choose Cargo features for the capabilities your application needs.
 
 ## Package boundaries
 
-The workspace contains two packages: `audio2face3d` and `audio2face3d-server`. Both expose a library and an executable enabled by `cli`. The base package has no default features; `mock` enables local diagnostic inference, `native` enables CUDA/TensorRT inference, and `client-grpc` enables the remote client. Local inference does not require Tokio. The server depends on the base package and defaults to `native`; its executable defaults to Regression, which requires an explicit model. Use `--no-default-features --features cli,mock` for a diagnostic server.
+`audio2face3d` provides inference/client APIs and an optional CLI.
+`audio2face3d-server` and `audio2face3d-gui` each combine reusable libraries with
+an executable; there are no separate core packages. `audio2face3d-headgen` uses
+only the GUI crate's model/GLB features with default features disabled.
 
 ## Application features
 
 | Package | Feature | Purpose |
 |---|---|---|
-| `audio2face3d` | default (`[]`) | Shared data and client control without external dependencies |
-| `audio2face3d` | `mock` | Local diagnostic inference |
-| `audio2face3d` | `native` | CUDA/TensorRT inference, including animation and emotion |
-| `audio2face3d` | `client-grpc` | Remote client using the caller’s Tokio runtime |
-| `audio2face3d` | `grpc-server` | Protocol integration used by the server package |
-| Both | `cli` | Enable the package executable |
-| `audio2face3d-server` | default (`native`) | Native Regression backend |
-| `audio2face3d-server` | `mock` | Diagnostic backend; disable defaults for a portable build |
+| `audio2face3d` | default (`[]`) | Shared types and client control |
+| `audio2face3d` | `mock` / `native` / `client-grpc` | Diagnostic / native / remote inference |
+| `audio2face3d` | `cli` | Base package executable |
+| `audio2face3d-server` | default (`native,cli`) | Full native server executable |
+| `audio2face3d-server` | `mock` | Diagnostic backend; disable defaults and add `cli` to run it |
+| `audio2face3d-gui` | default (`standalone-app,grpc`) | Standard GUI with remote inference |
+| `audio2face3d-gui` | `local` | Native inference |
+| `audio2face3d-gui` | `gltf-read` / `gltf-write` | GLB I/O; disable defaults for model-only use |
+| `audio2face3d-gui` | `session`, `render-wgpu`, `ui-egui` | Reusable media, rendering and UI components |
+
+Library consumers disable defaults and select only required features. Server CLI
+dependencies are gated by `cli`; GUI startup/window/audio device dependencies by
+`standalone-app`. Features are additive: model-only builds must not also enable the
+default GUI feature set through another dependency in the same build graph.
 
 ## Lower-level features
 
@@ -54,4 +63,4 @@ The former types/client/inference/protocol packages are modules under `audio2fac
 
 ## Logging dependencies
 
-Library logging uses a standard-library-only Logger. `mock` and `native` do not enable tracing or tracing-subscriber for logging, and direct inference does not require Tokio. Both packages enable their direct tracing dependencies only with `cli`. gRPC dependencies may themselves use tracing. Cargo features are additive: `--lib --features cli` still enables CLI dependencies even when no executable is built. See [Logging](logging.md) for output configuration and migration from the removed `tracing` feature.
+Library logging uses a standard-library-only Logger. `mock` and `native` do not enable tracing or tracing-subscriber for logging, and direct inference does not require Tokio. The base and server packages gate direct CLI logging dependencies behind `cli`. gRPC dependencies may themselves use tracing. Cargo features are additive: `--lib --features cli` still enables CLI dependencies even when no executable is built. See [Logging](logging.md) for output configuration and migration from the removed `tracing` feature.
