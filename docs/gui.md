@@ -21,7 +21,7 @@ cached TensorRT engine, NVIDIA driver, CUDA and TensorRT runtime. Configure
 `platform.toml` using the startup options below. Runtime paths are resolved at
 startup and cannot be edited in the Inference panel.
 No models or NVIDIA SDK binaries are redistributed with this application.
-Windows x64 is the tested desktop target; other desktop platforms are unvalidated.
+Windows x64 is the tested desktop target. CI checks macOS gRPC-only compilation; macOS GUI/audio behavior still requires device testing.
 
 1. Select a WAV with `Browse` and choose `Play while inferring` as needed.
 2. Choose `gRPC` and set the endpoint (default `http://127.0.0.1:52000`) and API
@@ -158,7 +158,7 @@ constructing a library request never reads process arguments or config files.
 Rust 2024 / Rust 1.91+, Windows x64 MSVC. From the checkout:
 
 ```powershell
-cargo run -p audio2face3d-gui --no-default-features --features desktop,grpc -- crates/audio2face3d-gui/assets/default-head.glb
+cargo run -p audio2face3d-gui --no-default-features --features standalone-app,grpc -- crates/audio2face3d-gui/assets/default-head.glb
 ./ci/package-gui.ps1 -Mode grpc
 ./ci/package-gui.ps1 -Mode local-grpc -PlatformConfig platform.toml
 ```
@@ -172,9 +172,10 @@ Keep the whole directory when redistributing. No asset generation runs at build
 or application startup. A graphics driver and system audio output are required.
 
 For local builds, use the runtime/build setup documented in the repository's
-`docs/platform.md`. CUDA 12.9 was validated with the MSVC **14.42** developer
-environment; selecting that compiler while retaining newer MSVC include paths
-is insufficient. Run the corresponding `vcvars64.bat -vcvars_ver=14.42` first.
+`docs/platform.md`. CUDA 12.9 was validated with MSVC **14.42.34433**. Configure
+`[build-cuda.windows]` with the Visual Studio root and exact toolset version;
+the native build initializes matching compiler, header and library paths automatically.
+The `standalone-app,grpc` build needs no CUDA/TensorRT or `build-cuda` settings.
 No developer SDK path is compiled into the application configuration.
 
 ## Convert or replace the head
@@ -196,7 +197,7 @@ no automatic downloads or package replacement occur.
 - `audio2face3d-gui-core`: CPU model types, validation and optional GLB read/write.
 - `audio2face3d-headgen`: CPU OBJ conversion library and standard CLI (no feature flag).
 - `audio2face3d-gui`: playback/session/logging library; `render-wgpu` and `ui-egui`
-  are optional. `desktop` adds the standard CPAL/eframe host. `local` and `grpc`
+  are optional. `standalone-app` adds the standard CPAL/eframe host. `local` and `grpc`
   independently enable inference. `mock` and `capture` are development features.
 
 All default feature sets are empty. A host can feed `Clip`, call `Player` with
@@ -219,8 +220,8 @@ tests and desktop gRPC compilation. Hardware tests are intentionally separate:
 
 ```powershell
 cargo test -p audio2face3d-gui --features render-wgpu --test gpu -- --ignored --nocapture
-cargo run -p audio2face3d-gui --features desktop --example audio_probe
-cargo run --release -p audio2face3d-gui --features desktop,local,grpc --example stream_probe -- local input.wav models/mark/model.json
+cargo run -p audio2face3d-gui --features standalone-app --example audio_probe
+cargo run --release -p audio2face3d-gui --features standalone-app,local,grpc --example stream_probe -- local input.wav models/mark/model.json
 ```
 
 The stream probe requires a long enough input to start audible playback before

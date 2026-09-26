@@ -19,7 +19,7 @@ embeddable gRPC server.
 The base package has no default features. Select `native` for local CUDA/TensorRT
 inference, `client-grpc` for remote inference, or `mock` for diagnostics.
 The inference and server executables require `cli`; the server enables `native` by default.
-The GUI executable requires `desktop` plus `grpc` and/or `local`; see the [GUI guide](docs/gui.md).
+The GUI executable requires `standalone-app` plus `grpc` and/or `local`; see the [GUI guide](docs/gui.md).
 See [packages and features](docs/features.md) for the complete breakdown.
 
 ## Getting started

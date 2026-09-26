@@ -1,9 +1,14 @@
 cuda-root = 'shared/cuda'
 tensorrt-root = 'shared/trt'
 
-[build]
+[build-cuda]
 cuda-root = 'build/cuda'
+[build-cuda.linux]
 cuda-host-compiler = 'build/compiler'
+
+[build-cuda.windows]
+visual-studio-root = 'build/vs'
+msvc-toolset-version = '14.42.34433'
 
 [runtime]
 cuda-library-dirs = ['deploy/cuda']

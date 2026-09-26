@@ -1,4 +1,4 @@
-#![cfg(feature = "desktop")]
+#![cfg(feature = "standalone-app")]
 use audio2face3d::runtime::NativeSearchPolicy;
 use audio2face3d_gui::startup::Args;
 use clap::Parser;

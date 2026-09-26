@@ -7,5 +7,15 @@ tensorrt-root = "SDK/TensorRT-10.16.1.11"
 [runtime]
 search-policy = "explicit"
 
-[build]
-# cuda-host-compiler = "path/to/cl.exe"
+# Optional build-only SDK overrides belong in [build-cuda].
+# [build-cuda]
+# cuda-root = "SDK/build/CUDA"
+
+# Windows: specify BOTH fields; the exact installed MSVC toolset is required.
+# [build-cuda.windows]
+# visual-studio-root = 'C:\Program Files\Microsoft Visual Studio\18\BuildTools'
+# msvc-toolset-version = "14.42.34433"
+
+# Linux: CUDA host C++ compiler executable; omitted means nvcc's default.
+# [build-cuda.linux]
+# cuda-host-compiler = "/usr/bin/g++-13"

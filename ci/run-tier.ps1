@@ -78,8 +78,8 @@ switch ($Tier) {
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui-core", "--features", "gltf-read,gltf-write")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-headgen")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "ui-egui,grpc,mock")
-        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "desktop,grpc,mock", "--test", "startup")
-        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "desktop,grpc,mock", "--lib")
+        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "standalone-app,grpc,mock", "--test", "startup")
+        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "standalone-app,grpc,mock", "--lib")
         Invoke-Checked @("cargo", "clippy", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "capture,grpc,mock", "--all-targets", "--", "-D", "warnings")
         foreach ($features in @("", "animation", "emotion")) {
             $arguments = @("cargo", "test", "-p", "audio2face3d", "--no-default-features")

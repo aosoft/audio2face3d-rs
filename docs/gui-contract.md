@@ -19,7 +19,7 @@ Use eframe only in the desktop host; the renderer receives a host device/queue.
 GPU morph deltas use storage buffers, supporting all 52 targets together.
 
 Features: core `gltf-read` / `gltf-write`; headgen requires no feature flags; GUI `local`, `grpc`,
-`render-wgpu`, `ui-egui`, `desktop`. Default features are empty. `desktop` selects
+`render-wgpu`, `ui-egui`, `standalone-app`. Default features are empty. `standalone-app` selects
 rendering/UI/audio/file dialogs, never native inference. `local` selects native;
 `grpc` selects client-grpc and a host-owned Tokio runtime. Mock is development-only.
 

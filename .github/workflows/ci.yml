@@ -29,7 +29,7 @@ jobs:
         run: cargo check --workspace --locked --no-default-features --features audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/mock --all-targets
 
       - name: Check desktop gRPC on minimum supported Rust
-        run: cargo check --locked -p audio2face3d-gui --no-default-features --features desktop,grpc
+        run: cargo check --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc
 
   portable:
     runs-on: windows-latest
@@ -56,3 +56,13 @@ jobs:
       - name: Run portable release tier
         shell: powershell
         run: ./ci/run-tier.ps1 portable
+
+  macos-grpc:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91.0
+      - name: Check gRPC app without CUDA or TensorRT
+        run: cargo check --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc --all-targets
+      - name: Test portable configuration
+        run: cargo test --locked -p audio2face3d --no-default-features --features runtime-cli --test native_build_config

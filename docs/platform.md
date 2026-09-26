@@ -12,9 +12,13 @@ Create `platform.toml` at this repository's root (ignored by Git):
 cuda-root = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9'
 tensorrt-root = 'C:\SDK\TensorRT-10.16.1.11'
 
-[build]
-# Optional: select an installed compatible host compiler.
-# cuda-host-compiler = 'C:\...\bin\Hostx64\x64\cl.exe'
+[build-cuda.windows]
+visual-studio-root = 'C:\Program Files\Microsoft Visual Studio\18\Community'
+msvc-toolset-version = '14.42.34433'
+
+# Optional on Linux; ignored by Windows builds.
+[build-cuda.linux]
+cuda-host-compiler = '/usr/bin/g++-13'
 
 [runtime]
 search-policy = 'explicit'
@@ -25,7 +29,9 @@ The common roots apply to both phases. Both sections are optional. Each phase ca
 | Location | Accepted keys | Purpose |
 | --- | --- | --- |
 | Top level | `cuda-root`, `tensorrt-root` | Shared SDK locations |
-| `[build]` | `cuda-root`, `tensorrt-root`, `cuda-host-compiler` | Build-only overrides and compiler options |
+| `[build-cuda]` | `cuda-root`, `tensorrt-root` | CUDA/native build-only SDK overrides |
+| `[build-cuda.windows]` | `visual-studio-root`, `msvc-toolset-version` | Explicit MSVC environment; both fields required together |
+| `[build-cuda.linux]` | `cuda-host-compiler` | CUDA host C++ compiler executable |
 | `[runtime]` | `cuda-root`, `tensorrt-root`, `cuda-library-dirs`, `tensorrt-library-dirs`, `search-policy` | Runtime-only overrides and library discovery |
 
 All file-relative paths are relative to the configuration file. Unknown keys, wrong types and empty path lists are errors, including in the other phase's section. The whole file is validated before it is used. Actual SDK files are checked only by the phase that uses them; for example, running a distributed executable does not require a build host compiler to exist.
@@ -68,7 +74,7 @@ User configuration is `%LOCALAPPDATA%\audio2face3d\platform.toml` on Windows, or
 
 The file is optional. If no file is selected or found and no SDK flags are supplied, the existing environment-based discovery remains active:
 
-- Native builds use `CUDA_PATH`, `TENSORRT_ROOT_DIR` and `AUDIO2FACE3D_CUDA_HOST_COMPILER`; missing SDK roots use the first installed SDK in path-name order. The usual compiler environment is still required. PATH alone does not select build SDK roots.
+- Native builds use `CUDA_PATH`, `TENSORRT_ROOT_DIR` and, on Linux only, `AUDIO2FACE3D_CUDA_HOST_COMPILER`; missing SDK roots use the first installed SDK in path-name order. The usual compiler environment is still required. PATH alone does not select build SDK roots.
 - Executables use the default `discover` policy: `CUDA_PATH` and `TENSORRT_ROOT_DIR` select SDK roots; otherwise `PATH` (Windows) or `LD_LIBRARY_PATH` (Linux) is searched in order, followed by installed SDK directories. Environment-selected roots take precedence over those search paths.
 
 Omitting `--platform-config` does not disable automatic file selection: a workspace/working-directory or user `platform.toml` still takes precedence over legacy SDK variables. An empty runtime configuration also uses discovery, but a selected build configuration must supply the required SDK roots; missing build fields are not filled from environment variables. Invalid files or invalid explicit SDK locations remain errors.
@@ -77,7 +83,15 @@ When an SDK location is not explicitly configured, discovery accepts the first m
 
 ## Build and install
 
-Native builds need CUDA headers and nvcc, TensorRT headers, and a compatible host C++ compiler. On Windows use an MSVC developer shell. The validated CUDA 12.9 build uses MSVC 14.42; its compiler environment's headers must match the chosen host compiler.
+Native builds need CUDA headers and nvcc, TensorRT headers, and a compatible host C++ compiler. On Windows, specifying `[build-cuda.windows]` initializes the selected Visual Studio or Build Tools environment automatically for this crate's CUDA compiler and TensorRT C++ shim. The exact three-part MSVC toolset version must exist; there is no fallback to another version. The validated CUDA 12.9 build uses MSVC 14.42.34433.
+
+The build invokes that installation's `vcvarsall.bat` in an isolated child process, verifies the selected toolset and header/library paths, and passes the resulting environment to `nvcc`, `cl.exe` and `lib.exe`. Cargo HOST/TARGET determine the host/target architecture. Windows SDK selection uses vcvarsall's default. This does not modify the parent shell, other crates, or Rust's final linker environment. When these settings are omitted, nvcc and cc use their usual compiler discovery; a compatible development environment is then the caller's responsibility.
+
+On Linux, `cuda-host-compiler` is a C++ compiler file path (not a PATH command name or directory), passed to nvcc only. If omitted, nvcc selects its default. The normal C++ shim compiler remains controlled by cc's usual configuration. No environment setup script runs on Linux.
+
+Old `[build]` settings are rejected with migration guidance: move SDK overrides to `[build-cuda]`, Linux compiler selection to `[build-cuda.linux]`, and replace Windows compiler paths with the two `[build-cuda.windows]` fields.
+
+The entire `build-cuda` section and SDK roots may be omitted for gRPC-only builds, including `standalone-app,grpc` on macOS. With CUDA features disabled, the build never discovers SDKs or initializes MSVC. Runtime parsing validates TOML syntax but does not check unused SDK/compiler paths. Both OS sections may coexist; only the native build host's section is applied. CUDA cross-OS builds are not configured by selecting the other OS section.
 
 From this checkout, the root `platform.toml` is used automatically:
 

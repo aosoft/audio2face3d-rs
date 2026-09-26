@@ -3,7 +3,7 @@
 /// Application version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "standalone-app")]
 pub mod audio;
 pub mod core;
 pub mod inference;
@@ -11,9 +11,9 @@ pub mod logging;
 pub mod playback;
 pub mod wav;
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "standalone-app")]
 pub mod desktop;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "standalone-app")]
 pub mod startup;
 
 #[cfg(feature = "render-wgpu")]

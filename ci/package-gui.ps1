@@ -12,7 +12,7 @@ try {
     $destination = [IO.Path]::GetFullPath([IO.Path]::Combine($repoRoot, $OutputDirectory))
     if (Test-Path -LiteralPath $destination) { throw "Choose a new output directory; already exists: $destination" }
     if ($PlatformConfig) { $env:AUDIO2FACE3D_PLATFORM_CONFIG = [IO.Path]::GetFullPath([IO.Path]::Combine($repoRoot, $PlatformConfig)) }
-    $features = 'desktop,grpc'
+    $features = 'standalone-app,grpc'
     if ($Mode -eq 'local-grpc') { $features += ',local' }
     $target = 'x86_64-pc-windows-msvc'
     & cargo build --release --locked -p audio2face3d-gui --no-default-features --features $features --target $target

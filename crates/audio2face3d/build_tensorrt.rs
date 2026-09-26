@@ -20,6 +20,17 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
         "TensorRT NvInfer.h is missing"
     );
     let mut build = cc::Build::new();
+    if !config.compiler_env.is_empty() {
+        let compiler = config
+            .cuda_host_compiler
+            .as_ref()
+            .expect("resolved MSVC compiler");
+        build.compiler(compiler);
+        build.archiver(compiler.with_file_name("lib.exe"));
+        for (key, value) in &config.compiler_env {
+            build.env(key, value);
+        }
+    }
     build
         .cpp(true)
         .file("cpp/tensorrt_shim.cpp")

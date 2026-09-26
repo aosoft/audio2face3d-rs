@@ -17,7 +17,11 @@ fn file_configuration_is_complete_and_relative_to_itself() {
     );
     assert_eq!(
         config.cuda_host_compiler,
-        Some(file.parent().unwrap().join("build/compiler"))
+        if cfg!(target_os = "linux") {
+            Some(file.parent().unwrap().join("build/compiler"))
+        } else {
+            None
+        }
     );
 }
 #[test]
@@ -26,7 +30,7 @@ fn incomplete_or_unknown_configuration_does_not_fall_back() {
         "",
         "schema_version=2\ncuda_root='cuda'",
         "cuda-root='cuda'\nunknown=true",
-        "cuda-root='cuda'\n[build]\ncuda-archs=[]",
+        "cuda-root='cuda'\n[build-cuda]\ncuda-archs=[]",
     ] {
         assert!(parse_config(text, &file(), false).is_err(), "{text}");
     }
@@ -66,7 +70,7 @@ fn build_rejects_invalid_runtime_sections_even_when_not_used() {
     for tail in [
         "[runtime]\nsearch-policy='latest'",
         "[runtime]\ncuda-library-dirs=[]",
-        "[build]\ncuda_arch='86'",
+        "[build-cuda]\ncuda_arch='86'",
         "[runtime]\ncuda-root='a'\ncuda-library-dirs=['b']",
     ] {
         assert!(parse_config(&format!("cuda-root='sdk'\n{tail}"), &file(), false).is_err());
@@ -81,7 +85,14 @@ fn absent_platform_file_uses_legacy_build_environment() {
         let config = native_build::resolve(true).unwrap();
         assert_eq!(config.cuda_root, root.join("cuda"));
         assert_eq!(config.tensorrt_root, Some(root.join("trt")));
-        assert_eq!(config.cuda_host_compiler, Some(root.join("compiler")));
+        assert_eq!(
+            config.cuda_host_compiler,
+            if cfg!(target_os = "linux") {
+                Some(root.join("compiler"))
+            } else {
+                None
+            }
+        );
         return;
     }
     // Keep environment changes isolated from parallel tests, including Rust 2024 env safety.
@@ -168,11 +179,52 @@ fn absent_build_configuration_accepts_multiple_installed_sdks_in_stable_order() 
 fn cuda_architecture_is_not_a_user_configuration_setting() {
     for setting in ["cuda-arch='86'", "cuda-archs=['86', '89']"] {
         let error = parse_config(
-            &format!("cuda-root='sdk'\n[build]\n{setting}"),
+            &format!("cuda-root='sdk'\n[build-cuda]\n{setting}"),
             &file(),
             false,
         )
         .unwrap_err();
         assert!(error.contains("unknown platform setting"), "{error}");
     }
+}
+
+#[test]
+fn os_build_sections_are_strict_and_independent() {
+    for tail in [
+        "[build]",
+        "[build-cuda]\ncuda-host-compiler='old'",
+        "[build-cuda.windows]\nvisual-studio-root='vs'",
+        "[build-cuda.windows]\nmsvc-toolset-version='14.42.34433'",
+        "[build-cuda.windows]\nvisual-studio-root='vs'\nmsvc-toolset-version='14.42'",
+        "[build-cuda.windows]\nvisual-studio-root='vs'\nmsvc-toolset-version='14.42.3 & set'",
+        "[build-cuda.linux]\ncuda-host-compiler=123",
+        "[build-cuda.macos]",
+    ] {
+        assert!(
+            parse_config(&format!("cuda-root='sdk'\n{tail}"), &file(), false).is_err(),
+            "{tail}"
+        );
+    }
+    let config = parse_config(
+        include_str!("fixtures/platform-config.toml"),
+        &file(),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        config.visual_studio_root,
+        if cfg!(windows) {
+            Some(file().parent().unwrap().join("build/vs"))
+        } else {
+            None
+        }
+    );
+    assert_eq!(
+        config.msvc_toolset_version.as_deref(),
+        if cfg!(windows) {
+            Some("14.42.34433")
+        } else {
+            None
+        }
+    );
 }
