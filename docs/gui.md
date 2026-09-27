@@ -189,8 +189,10 @@ The desktop app retains one inference backend after a successful request. Repeat
 starts with the same model path, GPU and runtime settings reuse the loaded local
 model; gRPC retains its connection/runtime when the endpoint and API key match.
 Changing the WAV or playback pacing does not reload the backend. Backend settings
-are compared at the next start. A different backend configuration, a failed or
-cancelled request, or application exit releases the retained backend. Keeping a
+are compared at the next start. A different backend configuration, a failed request, or
+application exit releases the retained backend. A user Stop retains the backend;
+pending work is drained and request state is reset before reuse. Native errors or
+reset failures discard the affected model even if Stop was also pressed. Keeping a
 local model loaded retains its CPU/GPU memory between requests. If model files
 are replaced in place, restart the app to load the new contents.
 

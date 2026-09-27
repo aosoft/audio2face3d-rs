@@ -65,11 +65,11 @@ pub fn run(
         request,
         logger,
         sender,
-        cancelled,
+        cancelled.clone(),
         control_slot.clone(),
     );
     *control_slot.lock().unwrap() = None;
-    if result.is_err() {
+    if result.is_err() && !cancelled.load(Ordering::Acquire) {
         cache.backend.take();
     }
     result

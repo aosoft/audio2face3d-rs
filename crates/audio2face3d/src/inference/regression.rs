@@ -545,7 +545,10 @@ impl Backend for RegressionBackend {
                 .ok_or_else(|| internal("backend closed"))?
                 .call(move |state| state.next_frame(&cancel))
                 .await;
-            self.failed |= result.is_err();
+            // Cancellation leaves native state valid once the worker has drained its jobs.
+            self.failed |= result
+                .as_ref()
+                .is_err_and(|e| e.kind() != ErrorKind::Cancelled);
             result
         })
     }

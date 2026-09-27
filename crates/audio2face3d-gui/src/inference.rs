@@ -131,7 +131,7 @@ pub enum Event {
     Output(OutputEvent),
 }
 /// Retains one backend between jobs. Drop after jobs to release its resources.
-/// Settings changes are applied when the next job starts. Errors invalidate the cache.
+/// Settings changes apply at the next start. Errors invalidate the cache; user stops retain it.
 #[derive(Default, Clone)]
 pub struct Engine {
     #[cfg(any(feature = "local", feature = "grpc", feature = "mock"))]

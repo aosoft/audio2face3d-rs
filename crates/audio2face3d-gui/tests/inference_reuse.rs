@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 fn collect(mut job: Job) -> Clip {
     let mut clip = Clip::running();
     let start = Instant::now();
+    let mut ready = false;
     loop {
         let mut events: Vec<_> = job.events.try_iter().collect();
         let finished = job.try_finish();
@@ -18,6 +19,10 @@ fn collect(mut job: Job) -> Clip {
             if let Event::Output(event) = event {
                 apply_event(&mut clip, event).unwrap();
             }
+        }
+        if !ready && clip.ready_until() >= 0.1 {
+            ready = true;
+            println!("Playback ready: {:?}", start.elapsed());
         }
         if let Some(result) = finished {
             result.unwrap();
@@ -32,6 +37,33 @@ fn collect(mut job: Job) -> Clip {
     assert_eq!(clip.session, SessionState::Completed);
     clip
 }
+// Stop only after real output has arrived, while paced input is still active.
+fn stop_during_playback(mut job: Job) {
+    let start = Instant::now();
+    let mut clip = Clip::running();
+    loop {
+        for event in job.events.try_iter() {
+            if let Event::Output(event) = event {
+                apply_event(&mut clip, event).unwrap();
+            }
+        }
+        assert!(job.try_finish().is_none(), "request finished before Stop");
+        if clip.ready_until() >= 0.1 {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(180));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    job.cancel();
+    loop {
+        if let Some(result) = job.try_finish() {
+            assert!(result.is_err());
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(180));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
 fn compare(a: &Clip, b: &Clip) {
     assert_eq!(a.audio, b.audio);
     assert_eq!(a.names, b.names);
@@ -45,7 +77,7 @@ fn compare(a: &Clip, b: &Clip) {
 }
 #[cfg(feature = "mock")]
 #[test]
-fn completed_jobs_reuse_backend_and_cancelled_jobs_are_replaced() {
+fn completed_and_stopped_jobs_reuse_backend_but_errors_invalidate_it() {
     let folder = tempfile::tempdir().unwrap();
     let wav = folder.path().join("input.wav");
     let mut writer = hound::WavWriter::create(
@@ -72,8 +104,13 @@ fn completed_jobs_reuse_backend_and_cancelled_jobs_are_replaced() {
         audio2face3d_gui::logging::channel(2048, 10000, audio2face3d::logging::LogLevel::Info);
     let first = collect(engine.start(1, request.clone(), logger.clone()).unwrap());
     request.pace_input = true;
+    request.pace_input = true;
     let second = collect(engine.start(2, request.clone(), logger.clone()).unwrap());
     compare(&first, &second);
+    let start = Instant::now();
+    let third = collect(engine.start(5, request.clone(), logger.clone()).unwrap());
+    println!("Repeated streaming request: {:?}", start.elapsed());
+    compare(&second, &third);
     logs.drain();
     assert_eq!(
         logs.entries
@@ -87,16 +124,37 @@ fn completed_jobs_reuse_backend_and_cancelled_jobs_are_replaced() {
             .iter()
             .filter(|e| e.record.message == "Reusing inference backend")
             .count(),
-        1
+        2
     );
-    let job = engine.start(3, request.clone(), logger.clone()).unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    job.cancel();
-    drop(job);
+    stop_during_playback(engine.start(3, request.clone(), logger.clone()).unwrap());
     request.pace_input = false;
     compare(
         &first,
-        &collect(engine.start(4, request, logger.clone()).unwrap()),
+        &collect(engine.start(4, request.clone(), logger.clone()).unwrap()),
+    );
+    logs.drain();
+    assert_eq!(
+        logs.entries
+            .iter()
+            .filter(|e| e.record.message == "Initializing inference backend")
+            .count(),
+        1
+    );
+    let mut invalid = request.clone();
+    invalid.wav = folder.path().join("missing.wav");
+    let mut job = engine.start(6, invalid, logger.clone()).unwrap();
+    let start = Instant::now();
+    loop {
+        if let Some(result) = job.try_finish() {
+            assert!(result.is_err());
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    compare(
+        &first,
+        &collect(engine.start(7, request, logger.clone()).unwrap()),
     );
     logs.drain();
     assert_eq!(
@@ -111,7 +169,7 @@ fn completed_jobs_reuse_backend_and_cancelled_jobs_are_replaced() {
 #[test]
 #[ignore = "requires A2F_MODEL, A2F_WAV, CUDA_PATH and TENSORRT_ROOT_DIR"]
 fn native_model_reuse_matches_fresh_inference() {
-    let request = Request {
+    let mut request = Request {
         mode: Mode::Local,
         wav: std::env::var_os("A2F_WAV").expect("A2F_WAV").into(),
         model: std::env::var_os("A2F_MODEL").expect("A2F_MODEL").into(),
@@ -128,9 +186,25 @@ fn native_model_reuse_matches_fresh_inference() {
     let first = collect(engine.start(1, request.clone(), logger.clone()).unwrap());
     println!("First request: {:?}", start.elapsed());
     let start = Instant::now();
+    request.pace_input = true;
     let second = collect(engine.start(2, request.clone(), logger.clone()).unwrap());
     println!("Reused request: {:?}", start.elapsed());
     compare(&first, &second);
+    let start = Instant::now();
+    let third = collect(engine.start(5, request.clone(), logger.clone()).unwrap());
+    println!("Repeated streaming request: {:?}", start.elapsed());
+    compare(&second, &third);
+    for id in 10..13 {
+        stop_during_playback(engine.start(id, request.clone(), logger.clone()).unwrap());
+        let start = Instant::now();
+        let restarted = collect(
+            engine
+                .start(id + 10, request.clone(), logger.clone())
+                .unwrap(),
+        );
+        println!("After Stop: {:?}", start.elapsed());
+        compare(&first, &restarted);
+    }
     logs.drain();
     assert_eq!(
         logs.entries
@@ -144,7 +218,7 @@ fn native_model_reuse_matches_fresh_inference() {
             .iter()
             .filter(|e| e.record.message == "Reusing loaded regression model")
             .count(),
-        1
+        8
     );
     drop(engine);
     let fresh = collect(
