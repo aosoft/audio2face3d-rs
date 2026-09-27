@@ -214,8 +214,12 @@ No developer SDK path is compiled into the application configuration.
 Use the CPU-only OBJ converter described in [headgen.md](headgen.md):
 
 ```powershell
-cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output temp/ict-facekit.glb
+cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output models/heads/ict-facekit.glb
 ```
+
+Create `models/heads` before conversion. To load the result at startup, set
+`head = "models/heads/ict-facekit.glb"` in the repository-root `gui.toml`, as
+shown in `gui.example.toml`. Head paths are relative to the configuration file.
 
 Open the resulting GLB with **Open head** or `--head`. The head's unsupported
 channels are displayed separately; inference values and timeline tracks stay intact.

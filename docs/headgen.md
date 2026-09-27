@@ -37,12 +37,12 @@ Run the following commands from the audio2face3d-rs repository root. Create the
 output directory first if necessary:
 
 ```powershell
-New-Item -ItemType Directory -Force temp | Out-Null
+New-Item -ItemType Directory -Force models/heads, temp | Out-Null
 ```
 
 ```powershell
 cargo run -p audio2face3d-gui -- obj2morph --inspect --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --report temp/ict-inspect.json
-cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output temp/ict-facekit.glb
+cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output models/heads/ict-facekit.glb
 ```
 
 Output directories must already exist. Convert also writes `ict-facekit.report.json`.
@@ -52,8 +52,19 @@ synced before either is replaced. Two-file atomicity is not guaranteed: a report
 commit failure identifies the already-committed GLB and its hash. Inspect performs
 all shape validation and exact GLB size measurement but writes no GLB.
 
-In the GUI, choose **Open head** and select `temp/ict-facekit.glb`, or pass
-`--head temp/ict-facekit.glb` when starting it. This GLB is the display head;
+The recommended generated-head location is `models/heads/ict-facekit.glb`.
+To load it on every startup, set this in the repository-root `gui.toml` (as shown
+in `gui.example.toml`):
+
+```toml
+head = "models/heads/ict-facekit.glb"
+```
+
+This path is relative to `gui.toml`. The `models/` directory is ignored by Git;
+converted model data and its report are not committed.
+
+In the GUI, choose **Open head** and select `models/heads/ict-facekit.glb`, or pass
+`--head models/heads/ict-facekit.glb` when starting it. This GLB is the display head;
 it is separate from the **Model JSON** used for Audio2Face inference.
 See [ICT reference preset and visual review](#ict-reference-preset-and-visual-review)
 for channel mapping and [validation results](#ict-facekit-validation-and-explicit-pose-tolerance)
@@ -125,8 +136,8 @@ Use `head_atlas` for supported channels at 0 / 0.5 / 1 and a three-quarter view.
 Use `capture_head` for Neutral and combinations, for example:
 
 ```powershell
-cargo run -p audio2face3d-gui --features render-wgpu,gltf-read --example head_atlas -- temp/ict-facekit.glb temp/ict-atlas
-cargo run -p audio2face3d-gui --features render-wgpu,gltf-read --example capture_head -- temp/ict-facekit.glb temp/ict-jaw.png JawOpen=0.7 MouthClose=0.3 yaw=0.6
+cargo run -p audio2face3d-gui --features render-wgpu,gltf-read --example head_atlas -- models/heads/ict-facekit.glb temp/ict-atlas
+cargo run -p audio2face3d-gui --features render-wgpu,gltf-read --example capture_head -- models/heads/ict-facekit.glb temp/ict-jaw.png JawOpen=0.7 MouthClose=0.3 yaw=0.6
 ```
 
 Check eyelids, eyes, lips, oral cavity, teeth/tongue motion and left/right meanings.

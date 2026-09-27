@@ -4,8 +4,9 @@
 # Uncomment for local inference; SDK settings stay in the shared file.
 # platform-config = "platform.toml"
 
+# Recommended location for a converted ICT-FaceKit head; uncomment after conversion.
 # Omit head to use assets/default-head.glb next to the executable.
-# head = "models/ict-facekit.glb"
+# head = "models/heads/ict-facekit.glb"
 
 [inference]
 mode = "grpc" # Use "local" with a local-enabled build.
