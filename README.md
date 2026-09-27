@@ -13,11 +13,10 @@ embeddable gRPC server.
 | `audio2face3d` | Shared types, direct/remote client, inference engines, and optional CLI |
 | `audio2face3d-server` | Embeddable gRPC server and executable |
 | `audio2face3d-gui` | Head models, inspection library and desktop executable |
-| `audio2face3d-headgen` | OBJ head converter library and CLI |
 
 The base package has no default features. Select `native` for local CUDA/TensorRT
 inference, `client-grpc` for remote inference, or `mock` for diagnostics.
-The server defaults to `native,cli`; the GUI defaults to `standalone-app,grpc`.
+The server defaults to `native,cli`; the GUI defaults to `standalone-app,grpc,obj2morph`.
 Library users can disable default features and select only the capabilities they need.
 Add `local` for GUI native inference; see the [GUI guide](docs/gui.md).
 See [packages and features](docs/features.md) for the complete breakdown.

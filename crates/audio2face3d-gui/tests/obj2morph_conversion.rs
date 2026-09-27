@@ -1,6 +1,8 @@
+#![cfg(all(feature = "standalone-app", feature = "obj2morph"))]
+#[path = "obj2morph/common.rs"]
 mod common;
+use audio2face3d_gui::obj2morph::convert;
 use audio2face3d_gui::{gltf::to_glb, model::evaluate};
-use audio2face3d_headgen::convert;
 #[test]
 fn additive_shapes_evaluate_and_round_trip_deterministically() {
     let (dir, c) = common::fixture();
@@ -68,7 +70,7 @@ fn rejects_degenerate_composite_and_transform_overflow() {
 
 #[test]
 fn pose_tolerance_is_explicit_and_keeps_geometry() {
-    use audio2face3d_headgen::config::DegeneratePoseTriangles;
+    use audio2face3d_gui::obj2morph::config::DegeneratePoseTriangles;
     let (dir, mut c) = common::fixture();
     c.targets.retain(|name, _| name == "JawOpen");
     c.unsupported_channels = audio2face3d_gui::rig::CHANNELS
@@ -87,7 +89,7 @@ fn pose_tolerance_is_explicit_and_keeps_geometry() {
     let serialized = toml::to_string(&c)
         .unwrap()
         .replace("degenerate_pose_triangles = \"error\"\n", "");
-    let default = audio2face3d_headgen::Config::parse(&serialized).unwrap();
+    let default = audio2face3d_gui::obj2morph::Config::parse(&serialized).unwrap();
     assert_eq!(
         default.geometry.degenerate_pose_triangles,
         DegeneratePoseTriangles::Error

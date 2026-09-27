@@ -1,4 +1,4 @@
-use crate::{
+use crate::obj2morph::{
     config::DegeneratePoseTriangles,
     error::{Error, Result},
     transform::{cross, dot, sub},

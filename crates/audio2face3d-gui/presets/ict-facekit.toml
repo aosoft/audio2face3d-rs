@@ -1,4 +1,4 @@
-# audio2face3d-headgen OBJ 変換 CLI 用。
+# obj2morph OBJ 変換 CLI 用。
 # ユーザーが取得した ICT-FaceKit/FaceXModel を --input-root に指定する。
 # OBJ 名・53表情の構成・材質名は公式定義と照合済み。
 # +Y up / +Z forward and all 51 channels checked; visual limitations remain.

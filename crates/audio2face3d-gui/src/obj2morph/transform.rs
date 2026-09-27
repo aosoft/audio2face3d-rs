@@ -1,4 +1,4 @@
-use crate::{
+use crate::obj2morph::{
     config,
     error::{Error, Result},
 };

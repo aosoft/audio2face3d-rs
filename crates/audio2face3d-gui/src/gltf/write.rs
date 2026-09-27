@@ -109,7 +109,7 @@ fn encode(model: &HeadModel) -> Result<(Vec<u8>, Vec<u8>)> {
         nodes.push(json!({"name":mesh.name,"mesh":meshes.len()}));
         meshes.push(value);
     }
-    let document = json!({"asset":{"version":"2.0","generator":"audio2face3d-headgen"},"scene":0,
+    let document = json!({"asset":{"version":"2.0","generator":"obj2morph"},"scene":0,
         "scenes":[{"nodes":(0..nodes.len()).collect::<Vec<_>>()}],"nodes":nodes,"meshes":meshes,"materials":materials,
         "buffers":[{"byteLength":buffer.bytes.len()}],"bufferViews":buffer.views,"accessors":buffer.accessors,
         "extras":{"audio2face3d_preview":model.metadata}});

@@ -1,7 +1,9 @@
 # OBJ head conversion
 
-`audio2face3d-headgen` is a CPU-only library and executable. No CUDA, TensorRT,
-Blender, Python, or Cargo feature selection is required. The tool does not fetch
+`audio2face3d-gui obj2morph` converts matching OBJ files into GUI head models.
+The `obj2morph` feature is enabled by default. Conversion runs on the CPU without
+reading GUI/platform startup settings or initializing windows, audio devices or
+inference. No CUDA, TensorRT, Blender or Python is required. The tool does not fetch
 models. Users provide input data and decide how their converted models are used.
 
 ## Reference input: ICT-FaceKit
@@ -10,10 +12,10 @@ models. Users provide input data and decide how their converted models are used.
 published by the USC Institute for Creative Technologies. Its `FaceXModel`
 directory contains a neutral head and expression OBJ files sharing the same
 vertex topology. This makes it a reference input for testing the converter.
-The converter itself is generic: another dataset can be used by supplying matching
-neutral/expression OBJ files and a corresponding TOML configuration.
+Other datasets can be used by supplying matching neutral/expression OBJ files
+and a TOML mapping to the GUI's channel names and head profile.
 
-This repository includes an [ICT-FaceKit conversion preset](../crates/audio2face3d-headgen/presets/ict-facekit.toml),
+This repository includes an [ICT-FaceKit conversion preset](../crates/audio2face3d-gui/presets/ict-facekit.toml),
 not the ICT model data or a converted head. Users obtain ICT-FaceKit separately
 and review its upstream license for their intended use and distribution.
 The tool does not download the dataset or install it as the GUI's default head.
@@ -39,8 +41,8 @@ New-Item -ItemType Directory -Force temp | Out-Null
 ```
 
 ```powershell
-cargo run -p audio2face3d-headgen -- inspect --config crates/audio2face3d-headgen/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --report temp/ict-inspect.json
-cargo run -p audio2face3d-headgen -- convert --config crates/audio2face3d-headgen/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output temp/ict-facekit.glb
+cargo run -p audio2face3d-gui -- obj2morph --inspect --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --report temp/ict-inspect.json
+cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output temp/ict-facekit.glb
 ```
 
 Output directories must already exist. Convert also writes `ict-facekit.report.json`.
@@ -76,7 +78,7 @@ listed files are read, including on ICT datasets containing identity models.
 
 ## Configuration
 
-See `crates/audio2face3d-headgen/presets/ict-facekit.toml` for all required sections.
+See `crates/audio2face3d-gui/presets/ict-facekit.toml` for all required sections.
 Unknown fields, duplicate keys and unknown enum values are rejected. The keys in
 `targets` and `unsupported_channels` must partition the canonical 52 channel names.
 An output channel lists one or more unique expression files; their neutral-relative

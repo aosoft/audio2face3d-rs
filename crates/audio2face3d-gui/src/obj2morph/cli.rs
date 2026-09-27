@@ -1,24 +1,15 @@
-use audio2face3d_headgen::{
+use super::{
     config::Config,
     error::{Error, Result},
     report::{self, Report},
 };
-use clap::{Args, Parser, Subcommand};
 use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Convert matching neutral and expression OBJ meshes into a preview GLB"
-)]
-struct Arguments {
-    #[command(subcommand)]
-    command: Command,
-}
-#[derive(Args)]
-struct Inputs {
+/// Convert matching OBJ meshes without initializing the GUI or inference.
+#[derive(clap::Args, Debug)]
+pub struct Arguments {
     #[arg(long)]
     config: PathBuf,
     #[arg(long)]
@@ -27,21 +18,12 @@ struct Inputs {
     report: Option<PathBuf>,
     #[arg(long)]
     force: bool,
-}
-#[derive(Subcommand)]
-enum Command {
-    /// Validate all inputs, composed shapes and exact output size, without writing a GLB.
-    Inspect {
-        #[command(flatten)]
-        input: Inputs,
-    },
-    /// Write a self-contained GLB and its conversion report.
-    Convert {
-        #[command(flatten)]
-        input: Inputs,
-        #[arg(long)]
-        output: PathBuf,
-    },
+    /// Validate and report without writing a GLB.
+    #[arg(long, conflicts_with = "output")]
+    inspect: bool,
+    /// Destination GLB; required unless --inspect is selected.
+    #[arg(long, required_unless_present = "inspect")]
+    output: Option<PathBuf>,
 }
 fn io_error(path: &Path, e: impl std::fmt::Display) -> Error {
     Error::Output(format!("{}: {e}", path.display()))
@@ -140,15 +122,12 @@ fn print_report(report: &Report) {
         println!("warning: {warning}");
     }
 }
-fn run(command: Command) -> Result<()> {
-    let (input, output) = match command {
-        Command::Inspect { input } => (input, None),
-        Command::Convert { input, output } => (input, Some(output)),
-    };
+pub fn run(mut input: Arguments) -> Result<()> {
+    let output = input.output.take();
     let config_text =
         std::fs::read_to_string(&input.config).map_err(|e| io_error(&input.config, e))?;
     let config = Config::parse(&config_text)?;
-    let paths = audio2face3d_headgen::obj::resolve_inputs(&config, &input.input_root)?;
+    let paths = crate::obj2morph::obj::resolve_inputs(&config, &input.input_root)?;
     let report_path = input
         .report
         .or_else(|| output.as_ref().map(|p| p.with_extension("report.json")));
@@ -158,10 +137,10 @@ fn run(command: Command) -> Result<()> {
         .map(PathBuf::as_path)
         .collect::<Vec<_>>();
     validate_outputs(&outputs, &paths, &input.config, input.force)?;
-    let mut converted = audio2face3d_headgen::convert(&config, &input.input_root)?;
+    let mut converted = crate::obj2morph::convert(&config, &input.input_root)?;
     let glb = if output.is_some() {
-        let bytes = audio2face3d_gui::gltf::to_glb(&converted.model)
-            .map_err(|e| Error::Output(e.to_string()))?;
+        let bytes =
+            crate::gltf::to_glb(&converted.model).map_err(|e| Error::Output(e.to_string()))?;
         converted.report.output_glb_sha256 = Some(report::hash(&bytes));
         converted.report.output_glb_bytes = Some(bytes.len());
         Some(bytes)
@@ -201,10 +180,4 @@ fn run(command: Command) -> Result<()> {
         println!("Report: {}", path.display());
     }
     Ok(())
-}
-fn main() {
-    if let Err(error) = run(Arguments::parse().command) {
-        eprintln!("{error}");
-        std::process::exit(error.exit_code());
-    }
 }

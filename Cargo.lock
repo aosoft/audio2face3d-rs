@@ -441,25 +441,13 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "wgpu",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "audio2face3d-headgen"
-version = "0.2.0"
-dependencies = [
- "audio2face3d-gui",
- "clap",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "toml",
 ]
 
 [[package]]

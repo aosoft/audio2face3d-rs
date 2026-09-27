@@ -1,4 +1,4 @@
-use crate::{
+use crate::obj2morph::{
     error::{Error, Result},
     obj::Obj,
 };
@@ -28,22 +28,23 @@ mod tests {
     #[test]
     fn same_counts_are_not_sufficient() {
         let v = "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
-        let a = crate::obj::parse(format!("{v}f 1 2 3").as_bytes(), "a").unwrap();
-        let b = crate::obj::parse(format!("{v}f 1 3 2").as_bytes(), "b").unwrap();
+        let a = crate::obj2morph::obj::parse(format!("{v}f 1 2 3").as_bytes(), "a").unwrap();
+        let b = crate::obj2morph::obj::parse(format!("{v}f 1 3 2").as_bytes(), "b").unwrap();
         assert!(
             validate(&a, &b, "b")
                 .unwrap_err()
                 .to_string()
                 .contains("face 1")
         );
-        let c = crate::obj::parse(format!("{v}vt 0\nf 1/1 2/1 3/1").as_bytes(), "c").unwrap();
+        let c = crate::obj2morph::obj::parse(format!("{v}vt 0\nf 1/1 2/1 3/1").as_bytes(), "c")
+            .unwrap();
         validate(&a, &c, "c").unwrap();
     }
 }
 
 /// Select a neutral-space diagonal once. The same indices apply to every pose.
 pub fn triangulate(obj: &Obj) -> Result<(Vec<Vec<u32>>, Vec<String>)> {
-    use crate::transform::{cross, dot, sub};
+    use crate::obj2morph::transform::{cross, dot, sub};
     let mut result = Vec::new();
     let mut warnings = Vec::new();
     for (face_index, face) in obj.faces.iter().enumerate() {
@@ -128,7 +129,7 @@ pub fn triangulate(obj: &Obj) -> Result<(Vec<Vec<u32>>, Vec<String>)> {
 mod triangulation_tests {
     use super::*;
     fn obj(v: &str) -> Obj {
-        crate::obj::parse(format!("{v}\nf 1 2 3 4").as_bytes(), "quad").unwrap()
+        crate::obj2morph::obj::parse(format!("{v}\nf 1 2 3 4").as_bytes(), "quad").unwrap()
     }
     #[test]
     fn convex_concave_and_crossed_quads() {
@@ -146,7 +147,7 @@ mod nonplanar_projection_tests {
     #[test]
     fn face_plane_projection_does_not_fold_a_nonplanar_quad() {
         // Independent integer fixture; no source dataset geometry is embedded.
-        let obj = crate::obj::parse(
+        let obj = crate::obj2morph::obj::parse(
             b"v 0 0 0\nv -3 -3 -1\nv -2 1 -1\nv -3 -3 1\nf 1 2 3 4".as_slice(),
             "synthetic",
         )

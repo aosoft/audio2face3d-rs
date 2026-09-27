@@ -12,7 +12,7 @@ try {
     $destination = [IO.Path]::GetFullPath([IO.Path]::Combine($repoRoot, $OutputDirectory))
     if (Test-Path -LiteralPath $destination) { throw "Choose a new output directory; already exists: $destination" }
     if ($PlatformConfig) { $env:AUDIO2FACE3D_PLATFORM_CONFIG = [IO.Path]::GetFullPath([IO.Path]::Combine($repoRoot, $PlatformConfig)) }
-    $features = 'standalone-app,grpc'
+    $features = 'standalone-app,grpc,obj2morph'
     if ($Mode -eq 'local-grpc') { $features += ',local' }
     $target = 'x86_64-pc-windows-msvc'
     & cargo build --release --locked -p audio2face3d-gui --no-default-features --features $features --target $target
@@ -35,13 +35,15 @@ try {
             if (@($dependency.dep_kinds | Where-Object kind -ne 'dev').Count) { $pending.Push($dependency.pkg) }
         }
     }
-    New-Item -ItemType Directory -Path (Join-Path $destination 'assets'),(Join-Path $destination 'licenses'),(Join-Path $destination 'source') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $destination 'assets'),(Join-Path $destination 'licenses'),(Join-Path $destination 'source'),(Join-Path $destination 'presets') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $metadata.target_directory "$target/release/audio2face3d-gui.exe") -Destination $destination
     Copy-Item -LiteralPath 'crates/audio2face3d-gui/assets/default-head.glb','crates/audio2face3d-gui/assets/README.md' -Destination (Join-Path $destination 'assets')
     Copy-Item -LiteralPath 'LICENSE','LICENSE-MPL-2.0','THIRD-PARTY-NOTICES.md' -Destination $destination
     Copy-Item -LiteralPath 'crates/audio2face3d/LICENSE-APACHE' -Destination $destination
     Copy-Item -LiteralPath 'gui.example.toml','platform.example.toml' -Destination $destination
     Copy-Item -LiteralPath 'docs/gui.md' -Destination (Join-Path $destination 'README.md')
+    Copy-Item -LiteralPath 'crates/audio2face3d-gui/presets/ict-facekit.toml' -Destination (Join-Path $destination 'presets')
+    Copy-Item -LiteralPath 'docs/headgen.md' -Destination $destination
     # Include exact MPL-covered source alongside native binaries, not only a mutable URL.
     Copy-Item -LiteralPath 'crates/audio2face3d/src/animation/blendshape/bvls/svd.rs' -Destination (Join-Path $destination 'source/svd.rs')
     $rows = @('# Dependency notices', '', 'Conservative dependency inventory, including build tools. See each directory for license texts and bundled font/data notices.', '', '| Package | Version | License expression |', '| --- | --- | --- |')

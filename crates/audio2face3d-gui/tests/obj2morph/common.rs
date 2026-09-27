@@ -1,7 +1,7 @@
-use audio2face3d_headgen::config::Config;
+use audio2face3d_gui::obj2morph::config::Config;
 pub fn fixture() -> (tempfile::TempDir, Config) {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::parse(include_str!("../presets/ict-facekit.toml")).unwrap();
+    let mut config = Config::parse(include_str!("../../presets/ict-facekit.toml")).unwrap();
     config.expected = None;
     config.neutral = "基準.obj".into();
     config.targets = std::collections::BTreeMap::from([

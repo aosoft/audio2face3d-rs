@@ -1,3 +1,5 @@
+#![cfg(all(feature = "standalone-app", feature = "obj2morph"))]
+#[path = "obj2morph/common.rs"]
 mod common;
 use std::process::Command;
 #[test]
@@ -6,9 +8,17 @@ fn cli_round_trip_and_output_protection() {
     let config = dir.path().join("設定 file.toml");
     std::fs::write(&config, toml::to_string(&c).unwrap()).unwrap();
     let output = dir.path().join("head.glb");
+    // Conversion must bypass GUI config discovery entirely.
+    std::fs::write(dir.path().join("gui.toml"), "invalid GUI config").unwrap();
     let run = |command: &str, extra: &[&std::ffi::OsStr]| {
-        Command::new(env!("CARGO_BIN_EXE_audio2face3d-headgen"))
-            .arg(command)
+        Command::new(env!("CARGO_BIN_EXE_audio2face3d-gui"))
+            .arg("obj2morph")
+            .args(if command == "inspect" {
+                vec!["--inspect"]
+            } else {
+                vec![]
+            })
+            .current_dir(dir.path())
             .arg("--config")
             .arg(&config)
             .arg("--input-root")

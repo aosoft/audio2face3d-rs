@@ -1,12 +1,12 @@
 //! Shared, neutral-space topology and vertex remapping.
-use crate::{
+use crate::obj2morph::{
     config::{Config, SplitBy},
     error::{Error, Result},
     obj::Obj,
     topology,
     transform::Transform,
 };
-use audio2face3d_gui::{Material, Mesh};
+use crate::{Material, Mesh};
 use std::collections::{BTreeMap, BTreeSet};
 pub struct Part {
     pub mesh: Mesh,
@@ -76,7 +76,7 @@ pub fn geometry(config: &Config, neutral: &Obj) -> Result<Geometry> {
     if positions.iter().flatten().any(|x| !x.is_finite()) {
         return Err(Error::Input("nonfinite transformed neutral".into()));
     }
-    let normals = crate::normals::checked(&positions, &indices, "neutral")?;
+    let normals = crate::obj2morph::normals::checked(&positions, &indices, "neutral")?;
     let mut parts = Vec::new();
     let mut vertices = 0usize;
     for ((object, group, material), indices) in groups {
@@ -135,17 +135,17 @@ pub fn geometry(config: &Config, neutral: &Obj) -> Result<Geometry> {
 }
 
 pub struct Conversion {
-    pub model: audio2face3d_gui::HeadModel,
-    pub report: crate::report::Report,
+    pub model: crate::HeadModel,
+    pub report: crate::obj2morph::report::Report,
 }
 /// Complete all validation before returning a model. No files are written here.
 pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversion> {
-    use crate::{
+    use crate::obj2morph::{
         obj,
         report::{self, Channel, Input, Report},
         transform::{cross, dot, sub},
     };
-    use audio2face3d_gui::{HeadModel, Metadata, MorphTarget};
+    use crate::{HeadModel, Metadata, MorphTarget};
     let resolved = obj::resolve_inputs(config, input_root)?;
     let neutral = obj::read(&resolved[0].1)?;
     let mut inputs = vec![Input::new(config.neutral.clone(), &neutral)];
@@ -182,7 +182,7 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         .map(|i| (i.path.as_str(), i.sha256.as_str()))
         .collect::<BTreeMap<_, _>>();
     let mut g = geometry(config, &neutral)?;
-    let neutral_normals = crate::normals::checked(&g.positions, &g.indices, "neutral")?;
+    let neutral_normals = crate::obj2morph::normals::checked(&g.positions, &g.indices, "neutral")?;
     let retained = g.indices.iter().copied().collect::<BTreeSet<_>>();
     let mut channels = BTreeMap::new();
     let mut decoded_bytes = g
@@ -215,7 +215,7 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         if posed.iter().flatten().any(|x| !x.is_finite()) {
             return Err(Error::Input(format!("{name}: position overflow")));
         }
-        let normal_result = crate::normals::posed(
+        let normal_result = crate::obj2morph::normals::posed(
             &posed,
             &g.indices,
             name,
@@ -278,7 +278,7 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
             decoded_bytes = decoded_bytes
                 .checked_add(part.original_vertices.len() * 24)
                 .ok_or_else(|| Error::Output("decoded size overflow".into()))?;
-            if decoded_bytes > audio2face3d_gui::validation::MAX_GLB_BYTES {
+            if decoded_bytes > crate::validation::MAX_GLB_BYTES {
                 return Err(Error::Output("decoded morph data exceeds 64 MiB".into()));
             }
             part.mesh.targets.push(MorphTarget {
@@ -312,7 +312,7 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         metadata: Metadata {
             schema_version: 1,
             rig_profile: config.output_profile.clone(),
-            generator_version: crate::GENERATOR_VERSION.into(),
+            generator_version: crate::obj2morph::GENERATOR_VERSION.into(),
         },
         meshes: g.parts.into_iter().map(|p| p.mesh).collect(),
     };
@@ -333,11 +333,11 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
         .max()
         .unwrap_or(0);
     let glb_upper_bound_bytes =
-        audio2face3d_gui::gltf::encoded_size(&model).map_err(|e| Error::Output(e.to_string()))?;
+        crate::gltf::encoded_size(&model).map_err(|e| Error::Output(e.to_string()))?;
     let effective = serde_json::to_vec(config).map_err(|e| Error::Config(e.to_string()))?;
     let report = Report {
         schema_version: 1,
-        generator_version: crate::GENERATOR_VERSION.into(),
+        generator_version: crate::obj2morph::GENERATOR_VERSION.into(),
         config_sha256: config.source_sha256.clone(),
         effective_config_sha256: report::hash(&effective),
         inputs,
@@ -360,7 +360,10 @@ pub fn convert(config: &Config, input_root: &std::path::Path) -> Result<Conversi
     };
     Ok(Conversion { model, report })
 }
-pub fn inspect(config: &Config, input_root: &std::path::Path) -> Result<crate::report::Report> {
+pub fn inspect(
+    config: &Config,
+    input_root: &std::path::Path,
+) -> Result<crate::obj2morph::report::Report> {
     Ok(convert(config, input_root)?.report)
 }
 
@@ -369,13 +372,13 @@ mod tests {
     use super::*;
     #[test]
     fn material_split_keeps_shared_normals_and_exclusion_is_explicit() {
-        let obj = crate::obj::parse(
+        let obj = crate::obj2morph::obj::parse(
             b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nusemtl a\nf 1 2 3\nusemtl b\nf 1 4 2\n"
                 .as_slice(),
             "fixture",
         )
         .unwrap();
-        let mut c = Config::parse(include_str!("../presets/ict-facekit.toml")).unwrap();
+        let mut c = Config::parse(include_str!("../../presets/ict-facekit.toml")).unwrap();
         let g = geometry(&c, &obj).unwrap();
         assert_eq!(g.parts.len(), 2);
         assert_eq!(g.parts[0].mesh.normals[0], g.parts[1].mesh.normals[0]);

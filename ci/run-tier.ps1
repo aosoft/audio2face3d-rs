@@ -76,17 +76,12 @@ switch ($Tier) {
         Invoke-Checked @("cargo", "clippy", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock", "--all-targets", "--", "-D", "warnings")
         Invoke-Checked @("cargo", "test", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "gltf-read,gltf-write")
-        # Model conversion must remain independent of inference, UI and device runtimes.
-        $headgenTree = @(& cargo tree --locked -p audio2face3d-headgen --edges normal,build --prefix none)
-        if ($LASTEXITCODE -ne 0) { throw "Could not inspect headgen dependencies" }
-        if ($headgenTree | Select-String '^(audio2face3d |wgpu |eframe |egui |cpal |tokio |tonic |cudarc )') {
-            throw "headgen unexpectedly depends on inference/UI/device libraries"
-        }
-        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-headgen")
+        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "obj2morph", "--lib")
+        Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "standalone-app,obj2morph", "--test", "obj2morph_cli", "--test", "obj2morph_conversion")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "ui-egui,grpc,mock")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "standalone-app,grpc,mock", "--test", "startup")
         Invoke-Checked @("cargo", "test", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "standalone-app,grpc,mock", "--lib")
-        Invoke-Checked @("cargo", "clippy", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "capture,grpc,mock", "--all-targets", "--", "-D", "warnings")
+        Invoke-Checked @("cargo", "clippy", "--locked", "-p", "audio2face3d-gui", "--no-default-features", "--features", "capture,grpc,mock,obj2morph", "--all-targets", "--", "-D", "warnings")
         foreach ($features in @("", "animation", "emotion")) {
             $arguments = @("cargo", "test", "-p", "audio2face3d", "--no-default-features")
             if ($features) { $arguments += @("--features", $features) }

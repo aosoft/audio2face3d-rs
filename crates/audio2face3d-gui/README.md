@@ -1,7 +1,7 @@
 # audio2face3d-gui
 
 Head models, playback, inference and UI library with a desktop executable.
-By default, the application supports gRPC inference only (`standalone-app,grpc`). From the repository root:
+By default, the application supports gRPC inference only (`standalone-app,grpc,obj2morph`). From the repository root:
 
 ```sh
 cargo run -p audio2face3d-gui
@@ -17,3 +17,12 @@ Configure `gui.toml` and, for local
 inference, `platform.toml`. Library users disable default features; model-only
 users enable just `gltf-read` or `gltf-write` as needed.
 See the [GUI guide](../../docs/gui.md).
+
+The default `obj2morph` feature adds head conversion without opening a window:
+
+```sh
+cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root /path/to/ICT-FaceKit/FaceXModel --output head.glb
+```
+
+For a GUI without conversion, use `--no-default-features --features standalone-app,grpc`.
+See the [head conversion guide](../../docs/headgen.md).

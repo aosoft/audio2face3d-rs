@@ -206,7 +206,7 @@ For local builds, use the runtime/build setup documented in the repository's
 `docs/platform.md`. CUDA 12.9 was validated with MSVC **14.42.34433**. Configure
 `[build-cuda.windows]` with the Visual Studio root and exact toolset version;
 the native build initializes matching compiler, header and library paths automatically.
-The default `standalone-app,grpc` build needs no CUDA/TensorRT or `build-cuda` settings.
+The default `standalone-app,grpc,obj2morph` build needs no CUDA/TensorRT or `build-cuda` settings.
 No developer SDK path is compiled into the application configuration.
 
 ## Convert or replace the head
@@ -214,7 +214,7 @@ No developer SDK path is compiled into the application configuration.
 Use the CPU-only OBJ converter described in [headgen.md](headgen.md):
 
 ```powershell
-cargo run -p audio2face3d-headgen -- convert --config crates/audio2face3d-headgen/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output temp/ict-facekit.glb
+cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output temp/ict-facekit.glb
 ```
 
 Open the resulting GLB with **Open head** or `--head`. The head's unsupported
@@ -227,10 +227,10 @@ no automatic downloads or package replacement occur.
 
 - `audio2face3d-gui`: model types, validation, GLB I/O, inference sessions,
   playback, logs, rendering and UI, plus the standard executable.
-- `audio2face3d-headgen`: CPU OBJ conversion library and CLI. It depends on
-  `audio2face3d-gui` with `default-features = false` and only `gltf-write`.
+- `audio2face3d_gui::obj2morph`: CPU OBJ head conversion, sharing the GUI
+  model types and GLB writer. Enabled by the `obj2morph` feature.
 
-GUI defaults are `standalone-app,grpc`. `standalone-app` enables the executable,
+GUI defaults are `standalone-app,grpc,obj2morph`. `standalone-app` enables the executable,
 CLI/config loading, eframe window, file dialogs and CPAL audio device support.
 With `--no-default-features --features standalone-app`, no inference backend is
 compiled: Manual is locked on, and inference/playback controls are hidden. Enable
@@ -239,7 +239,8 @@ compiled: Manual is locked on, and inference/playback controls are hidden. Enabl
 Disable defaults for library use: without features, only model types and validation
 remain. `gltf-read` / `gltf-write` add GLB I/O; `session` adds media/session APIs;
 `render-wgpu` and `ui-egui` select reusable rendering/UI. `local`, `grpc`, `mock`
-select inference backends. `capture` is a development feature.
+select inference backends. `obj2morph` adds conversion and, with `standalone-app`,
+the conversion subcommand. `capture` is a development feature.
 
 For a model-only dependency from a sibling workspace crate:
 

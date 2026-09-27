@@ -8,7 +8,8 @@ and integration boundaries.
 Rust 2024, workspace MSRV 1.91. `audio2face3d-gui` owns model data,
 validation, GLB I/O, playback, inference sessions, logs, rendering and reusable UI,
 plus the optional executable host. There is no separate core crate.
-`audio2face3d-headgen` uses only its model/GLB features with defaults disabled.
+`obj2morph` is an optional module and subcommand within the GUI crate, sharing
+its model types, validation and GLB writer.
 Inference integration uses `audio2face3d`, never the server package.
 No build script regenerates assets. No library installs a process-global logger.
 
@@ -19,11 +20,12 @@ transitive versions are recorded in Cargo.lock and checked against the MSRV.
 Use eframe only in the desktop host; the renderer receives a host device/queue.
 GPU morph deltas use storage buffers, supporting all 52 targets together.
 
-GUI defaults are `standalone-app,grpc`. With defaults disabled, only model types
+GUI defaults are `standalone-app,grpc,obj2morph`. With defaults disabled, only model types
 and validation remain. `gltf-read` / `gltf-write`, `session`, `render-wgpu` and
 `ui-egui` enable reusable components. `standalone-app` adds main, startup/config,
 window and audio device support. `local`, `grpc`, `mock` select inference backends;
-`capture` is for development. Headgen requires no feature flags.
+`capture` is for development. `obj2morph` enables CPU OBJ conversion; the CLI
+subcommand additionally requires `standalone-app`.
 
 ## GLB profile version 1
 

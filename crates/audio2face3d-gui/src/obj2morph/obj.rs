@@ -1,5 +1,5 @@
 //! A deliberately constrained OBJ reader. Original vertex identities are retained.
-use crate::error::{Error, Result};
+use crate::obj2morph::error::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -32,7 +32,7 @@ pub struct Obj {
 /// Canonicalize every explicitly named file before reading any shape.
 /// No external MTL, texture, or directory discovery is performed.
 pub fn resolve_inputs(
-    config: &crate::config::Config,
+    config: &crate::obj2morph::config::Config,
     root: &Path,
 ) -> Result<Vec<(String, PathBuf)>> {
     config.validate()?;
@@ -46,7 +46,7 @@ pub fn resolve_inputs(
     let mut identities = BTreeSet::new();
     let mut total = 0u64;
     for name in std::iter::once(config.neutral.as_str()).chain(config.expression_files()) {
-        crate::config::relative_path(name)?;
+        crate::obj2morph::config::relative_path(name)?;
         let path = root
             .join(name)
             .canonicalize()
@@ -282,7 +282,8 @@ mod path_tests {
     fn resolves_unicode_paths_and_rejects_traversal() {
         let dir = tempfile::tempdir().unwrap();
         let mut c =
-            crate::config::Config::parse(include_str!("../presets/ict-facekit.toml")).unwrap();
+            crate::obj2morph::config::Config::parse(include_str!("../../presets/ict-facekit.toml"))
+                .unwrap();
         c.neutral = "基準.obj".into();
         for name in std::iter::once(c.neutral.as_str()).chain(c.expression_files()) {
             std::fs::write(dir.path().join(name), b"fixture").unwrap();
@@ -296,7 +297,9 @@ mod path_tests {
     fn rejects_symlink_outside_root() {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::NamedTempFile::new().unwrap();
-        let c = crate::config::Config::parse(include_str!("../presets/ict-facekit.toml")).unwrap();
+        let c =
+            crate::obj2morph::config::Config::parse(include_str!("../../presets/ict-facekit.toml"))
+                .unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join(&c.neutral)).unwrap();
         assert!(resolve_inputs(&c, dir.path()).is_err());
     }

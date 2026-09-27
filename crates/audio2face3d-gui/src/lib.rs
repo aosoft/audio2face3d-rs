@@ -33,3 +33,6 @@ pub mod wav;
 
 #[cfg(feature = "standalone-app")]
 pub mod startup;
+
+#[cfg(feature = "obj2morph")]
+pub mod obj2morph;

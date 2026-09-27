@@ -8,8 +8,8 @@ Choose Cargo features for the capabilities your application needs.
 
 `audio2face3d` provides inference/client APIs and an optional CLI.
 `audio2face3d-server` and `audio2face3d-gui` each combine reusable libraries with
-an executable; there are no separate core packages. `audio2face3d-headgen` uses
-only the GUI crate's model/GLB features with default features disabled.
+an executable; there are no separate core packages. OBJ head conversion is the
+GUI crate's optional `obj2morph` module and subcommand.
 
 ## Application features
 
@@ -20,7 +20,8 @@ only the GUI crate's model/GLB features with default features disabled.
 | `audio2face3d` | `cli` | Base package executable |
 | `audio2face3d-server` | default (`native,cli`) | Full native server executable |
 | `audio2face3d-server` | `mock` | Diagnostic backend; disable defaults and add `cli` to run it |
-| `audio2face3d-gui` | default (`standalone-app,grpc`) | Standard GUI with remote inference |
+| `audio2face3d-gui` | default (`standalone-app,grpc,obj2morph`) | Standard GUI with remote inference |
+| `audio2face3d-gui` | `obj2morph` | OBJ head conversion; included by default |
 | `audio2face3d-gui` | `local` | Native inference |
 | `audio2face3d-gui` | `gltf-read` / `gltf-write` | GLB I/O; disable defaults for model-only use |
 | `audio2face3d-gui` | `session`, `render-wgpu`, `ui-egui` | Reusable media, rendering and UI components |

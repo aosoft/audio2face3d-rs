@@ -1,5 +1,5 @@
-use crate::error::{Error, Result};
-use audio2face3d_gui::rig;
+use crate::obj2morph::error::{Error, Result};
+use crate::rig;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -213,7 +213,7 @@ pub enum DegeneratePoseTriangles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const PRESET: &str = include_str!("../presets/ict-facekit.toml");
+    const PRESET: &str = include_str!("../../presets/ict-facekit.toml");
     #[test]
     fn preset_contract() {
         let c = Config::parse(PRESET).unwrap();

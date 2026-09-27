@@ -11,3 +11,6 @@ pub mod topology;
 pub mod transform;
 pub use config::Config;
 pub use convert::{Conversion, convert, inspect};
+
+#[cfg(feature = "standalone-app")]
+pub mod cli;

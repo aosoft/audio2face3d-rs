@@ -12,7 +12,7 @@ pub struct Input {
     pub material_libraries: Vec<String>,
 }
 impl Input {
-    pub(crate) fn new(path: String, obj: &crate::obj::Obj) -> Self {
+    pub(crate) fn new(path: String, obj: &crate::obj2morph::obj::Obj) -> Self {
         Self {
             path,
             sha256: obj.sha256.clone(),
@@ -42,7 +42,7 @@ pub struct Report {
     pub config_sha256: String,
     pub effective_config_sha256: String,
     pub inputs: Vec<Input>,
-    pub transform: crate::transform::Transform,
+    pub transform: crate::obj2morph::transform::Transform,
     pub excluded_material_faces: BTreeMap<String, usize>,
     pub output_vertices: usize,
     pub output_triangles: usize,
@@ -57,7 +57,7 @@ pub struct Report {
     pub output_glb_sha256: Option<String>,
     pub output_glb_bytes: Option<usize>,
     pub warnings: Vec<String>,
-    pub reference: Option<crate::config::Reference>,
+    pub reference: Option<crate::obj2morph::config::Reference>,
 }
 pub fn hash(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};

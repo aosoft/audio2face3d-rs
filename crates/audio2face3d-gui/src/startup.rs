@@ -18,8 +18,15 @@ enum Backend {
 
 /// Inspect Audio2Face-3D inference and blendshape animation.
 #[derive(Debug, Parser)]
-#[command(name = "audio2face3d-gui", version)]
+#[command(
+    name = "audio2face3d-gui",
+    version,
+    args_conflicts_with_subcommands = true
+)]
 pub struct Args {
+    #[cfg(feature = "obj2morph")]
+    #[command(subcommand)]
+    pub command: Option<Command>,
     #[command(flatten)]
     platform: PlatformArgs,
     /// GUI settings; searches the working directory, then the executable directory.
@@ -55,6 +62,13 @@ pub struct Args {
     /// Pace input and play audio/curves while inference is running.
     #[arg(long, num_args = 0..=1, default_missing_value = "true", require_equals = true)]
     play_while_inferring: Option<bool>,
+}
+
+#[cfg(feature = "obj2morph")]
+#[derive(Debug, clap::Subcommand)]
+pub enum Command {
+    /// Convert neutral and expression OBJ files to a GUI head GLB (no window).
+    Obj2morph(crate::obj2morph::cli::Arguments),
 }
 
 pub use crate::desktop::Options;
@@ -123,6 +137,12 @@ impl Config {
 impl Args {
     /// CLI values override GUI settings; embedded hosts pass Options directly.
     pub fn resolve(self) -> Result<Options> {
+        #[cfg(feature = "obj2morph")]
+        if self.command.is_some() {
+            return Err(Error(
+                "Dispatch the conversion subcommand before resolving GUI settings".into(),
+            ));
+        }
         let exe = std::env::current_exe().map_err(|e| Error(e.to_string()))?;
         let cwd = std::env::current_dir().map_err(|e| Error(e.to_string()))?;
         self.resolve_at(&cwd, &exe)
