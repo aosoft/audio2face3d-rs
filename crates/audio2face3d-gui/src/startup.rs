@@ -168,11 +168,13 @@ impl Args {
                 .unwrap_or(config.inference.play_while_inferring),
             ..Default::default()
         };
+        let infer = self.infer.unwrap_or(config.inference.auto_start);
         if let Some(mode) = self.mode.or(config.inference.mode) {
             request.mode = match mode {
                 Backend::Local if cfg!(feature = "local") => Mode::Local,
                 Backend::Grpc if cfg!(feature = "grpc") => Mode::Grpc,
                 Backend::Mock if cfg!(feature = "mock") => Mode::Mock,
+                _ if self.mode.is_none() && !infer => request.mode,
                 _ => {
                     return Err(Error(format!(
                         "{mode:?} inference is not enabled in this build"
@@ -180,7 +182,6 @@ impl Args {
                 }
             };
         }
-        let infer = self.infer.unwrap_or(config.inference.auto_start);
         if infer {
             request.validate()?;
         }
@@ -195,6 +196,67 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(any(feature = "grpc", feature = "local", feature = "mock")))]
+    fn backend_free_build_opens_for_manual_inspection() {
+        assert!(!crate::inference::inference_available());
+        assert_eq!(Request::default().mode, Mode::Disabled);
+        let dir = std::env::temp_dir().join(format!("a2f-manual-only-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("gui.toml");
+        std::fs::write(&config, "[inference]\nmode='local'").unwrap();
+        let exe = dir.join("gui.exe");
+        let options = Args::try_parse_from(["gui"])
+            .unwrap()
+            .resolve_at(&dir, &exe)
+            .unwrap();
+        assert_eq!(options.request.mode, Mode::Disabled);
+        assert!(!options.infer);
+        assert!(options.request.validate().is_err());
+        assert!(
+            Args::try_parse_from(["gui", "--infer"])
+                .unwrap()
+                .resolve_at(&dir, &exe)
+                .is_err()
+        );
+        std::fs::remove_file(config).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(all(feature = "grpc", not(feature = "local")))]
+    fn unavailable_config_mode_falls_back_only_for_interactive_startup() {
+        let dir =
+            std::env::temp_dir().join(format!("a2f-gui-backend-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gui.exe");
+        let config = dir.join("gui.toml");
+        std::fs::write(
+            &config,
+            "[inference]\nmode='local'\n[local]\nmodel='model.json'",
+        )
+        .unwrap();
+        let resolve = |args: &[&str]| Args::try_parse_from(args).unwrap().resolve_at(&dir, &exe);
+        let options = resolve(&["gui"]).unwrap();
+        assert_eq!(options.request.mode, Mode::Grpc);
+        assert_eq!(options.request.model, dir.join("model.json"));
+        assert!(!options.infer);
+        assert!(resolve(&["gui", "--mode", "local"]).is_err());
+        assert!(resolve(&["gui", "--infer"]).is_err());
+        assert_eq!(
+            resolve(&["gui", "--mode", "grpc"]).unwrap().request.mode,
+            Mode::Grpc
+        );
+        std::fs::write(&config, "[inference]\nmode='local'\nauto-start=true").unwrap();
+        assert!(resolve(&["gui"]).is_err());
+        assert_eq!(
+            resolve(&["gui", "--infer=false"]).unwrap().request.mode,
+            Mode::Grpc
+        );
+        std::fs::remove_file(config).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn config_search_prefers_explicit_then_working_directory_then_executable() {

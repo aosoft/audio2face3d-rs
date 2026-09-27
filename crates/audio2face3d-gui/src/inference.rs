@@ -17,10 +17,17 @@ use std::{
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mode {
+    /// No inference backend is compiled; only manual inspection is available.
+    Disabled,
     Local,
     Grpc,
     Mock,
 }
+/// Whether this build supports any inference backend.
+pub const fn inference_available() -> bool {
+    cfg!(any(feature = "local", feature = "grpc", feature = "mock"))
+}
+
 #[derive(Clone)]
 pub struct Request {
     pub mode: Mode,
@@ -40,8 +47,12 @@ impl Default for Request {
         Self {
             mode: if cfg!(feature = "grpc") {
                 Mode::Grpc
-            } else {
+            } else if cfg!(feature = "local") {
                 Mode::Local
+            } else if cfg!(feature = "mock") {
+                Mode::Mock
+            } else {
+                Mode::Disabled
             },
             wav: PathBuf::new(),
             model: PathBuf::new(),
@@ -57,6 +68,11 @@ impl Default for Request {
 }
 impl Request {
     pub fn validate(&self) -> Result<()> {
+        if self.mode == Mode::Disabled {
+            return Err(Error(
+                "No inference backend is enabled; use Manual controls.".into(),
+            ));
+        }
         if self.wav.as_os_str().is_empty() {
             return Err(Error(
                 "WAV is required. Select an audio file with Browse next to WAV.".into(),

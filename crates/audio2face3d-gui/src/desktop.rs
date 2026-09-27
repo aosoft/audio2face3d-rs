@@ -58,7 +58,7 @@ impl DesktopApp {
             audio: crate::audio::AudioOutput::new(std::sync::Arc::new(std::sync::Mutex::new(
                 crate::playback::Player::default(),
             ))),
-            manual: false,
+            manual: !crate::inference::inference_available(),
             selected: [0, 7, 17].into_iter().collect(),
             timeline: Default::default(),
             logger,
@@ -85,7 +85,7 @@ impl DesktopApp {
             }
         }
         #[cfg(feature = "capture")]
-        if std::env::var_os("A2F_GUI_DEMO").is_some() {
+        if crate::inference::inference_available() && std::env::var_os("A2F_GUI_DEMO").is_some() {
             app.audio
                 .player
                 .lock()
@@ -343,7 +343,10 @@ impl eframe::App for DesktopApp {
             ui.horizontal(|ui| {
                 ui.heading("Audio2Face-3D");
                 if ui
-                    .add_enabled(settings_editable, egui::Button::new("Sync demo"))
+                    .add_enabled(
+                        settings_editable && crate::inference::inference_available(),
+                        egui::Button::new("Sync demo"),
+                    )
                     .clicked()
                 {
                     self.audio.stop();
@@ -362,7 +365,7 @@ impl eframe::App for DesktopApp {
                 }
                 if ui
                     .add_enabled(
-                        settings_editable,
+                        settings_editable && crate::inference::inference_available(),
                         egui::Checkbox::new(&mut self.manual, "Manual"),
                     )
                     .changed()
@@ -520,103 +523,109 @@ impl eframe::App for DesktopApp {
             .transport
             .action(self.request.pace_input, self.job.is_some(), snapshot.state)
             .editable();
-        egui::TopBottomPanel::bottom("inference").show(ctx, |ui| {
-            let previous = self.request.clone();
-            egui::CollapsingHeader::new("Inference")
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.add_enabled_ui(settings_editable, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("WAV");
-                            path_edit(ui, &mut self.request.wav);
-                            if ui.button("Browse").clicked()
-                                && let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("WAV", &["wav"])
-                                    .pick_file()
-                            {
-                                self.request.wav = path;
-                            }
+        if crate::inference::inference_available() {
+            egui::TopBottomPanel::bottom("inference").show(ctx, |ui| {
+                let previous = self.request.clone();
+                egui::CollapsingHeader::new("Inference")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.add_enabled_ui(settings_editable, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("WAV");
+                                path_edit(ui, &mut self.request.wav);
+                                if ui.button("Browse").clicked()
+                                    && let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("WAV", &["wav"])
+                                        .pick_file()
+                                {
+                                    self.request.wav = path;
+                                }
+                            });
+                            ui.checkbox(
+                                &mut self.request.pace_input,
+                                "Play while inferring (paced input, 100 ms buffer)",
+                            );
+                            ui.add_space(ui.spacing().interact_size.y);
+                            ui.horizontal(|ui| {
+                                ui.label("Mode");
+                                egui::ComboBox::from_id_salt("inference-mode")
+                                    .selected_text(match self.request.mode {
+                                        crate::inference::Mode::Disabled => "Unavailable",
+                                        crate::inference::Mode::Local => "Local",
+                                        crate::inference::Mode::Grpc => "gRPC",
+                                        crate::inference::Mode::Mock => "Mock",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        #[cfg(feature = "local")]
+                                        ui.selectable_value(
+                                            &mut self.request.mode,
+                                            crate::inference::Mode::Local,
+                                            "Local",
+                                        );
+                                        #[cfg(feature = "grpc")]
+                                        ui.selectable_value(
+                                            &mut self.request.mode,
+                                            crate::inference::Mode::Grpc,
+                                            "gRPC",
+                                        );
+                                        #[cfg(feature = "mock")]
+                                        ui.selectable_value(
+                                            &mut self.request.mode,
+                                            crate::inference::Mode::Mock,
+                                            "Mock (development)",
+                                        );
+                                        let _ = ui;
+                                    });
+                            });
+                            ui.group(|ui| match self.request.mode {
+                                crate::inference::Mode::Local => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Local");
+                                        ui.label("Model JSON");
+                                        path_edit(ui, &mut self.request.model);
+                                        if ui.button("Browse").clicked()
+                                            && let Some(path) = rfd::FileDialog::new()
+                                                .add_filter("Model", &["json"])
+                                                .pick_file()
+                                        {
+                                            self.request.model = path;
+                                        }
+                                    });
+                                }
+                                crate::inference::Mode::Grpc => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("gRPC");
+                                        ui.label("End Point");
+                                        ui.text_edit_singleline(&mut self.request.endpoint);
+                                        ui.label("API Key");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.request.api_key)
+                                                .password(true),
+                                        );
+                                    });
+                                }
+                                crate::inference::Mode::Disabled => {
+                                    ui.label("No inference backend enabled");
+                                }
+                                crate::inference::Mode::Mock => {
+                                    ui.label("Mock (development)");
+                                }
+                            });
                         });
-                        ui.checkbox(
-                            &mut self.request.pace_input,
-                            "Play while inferring (paced input, 100 ms buffer)",
-                        );
-                        ui.add_space(ui.spacing().interact_size.y);
-                        ui.horizontal(|ui| {
-                            ui.label("Mode");
-                            egui::ComboBox::from_id_salt("inference-mode")
-                                .selected_text(match self.request.mode {
-                                    crate::inference::Mode::Local => "Local",
-                                    crate::inference::Mode::Grpc => "gRPC",
-                                    crate::inference::Mode::Mock => "Mock",
-                                })
-                                .show_ui(ui, |ui| {
-                                    #[cfg(feature = "local")]
-                                    ui.selectable_value(
-                                        &mut self.request.mode,
-                                        crate::inference::Mode::Local,
-                                        "Local",
-                                    );
-                                    #[cfg(feature = "grpc")]
-                                    ui.selectable_value(
-                                        &mut self.request.mode,
-                                        crate::inference::Mode::Grpc,
-                                        "gRPC",
-                                    );
-                                    #[cfg(feature = "mock")]
-                                    ui.selectable_value(
-                                        &mut self.request.mode,
-                                        crate::inference::Mode::Mock,
-                                        "Mock (development)",
-                                    );
-                                    let _ = ui;
-                                });
-                        });
-                        ui.group(|ui| match self.request.mode {
-                            crate::inference::Mode::Local => {
-                                ui.horizontal(|ui| {
-                                    ui.label("Local");
-                                    ui.label("Model JSON");
-                                    path_edit(ui, &mut self.request.model);
-                                    if ui.button("Browse").clicked()
-                                        && let Some(path) = rfd::FileDialog::new()
-                                            .add_filter("Model", &["json"])
-                                            .pick_file()
-                                    {
-                                        self.request.model = path;
-                                    }
-                                });
-                            }
-                            crate::inference::Mode::Grpc => {
-                                ui.horizontal(|ui| {
-                                    ui.label("gRPC");
-                                    ui.label("End Point");
-                                    ui.text_edit_singleline(&mut self.request.endpoint);
-                                    ui.label("API Key");
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut self.request.api_key)
-                                            .password(true),
-                                    );
-                                });
-                            }
-                            crate::inference::Mode::Mock => {
-                                ui.label("Mock (development)");
-                            }
-                        });
+                        let player = self.audio.player.lock().unwrap();
+                        ui.label(format!(
+                            "Input sent: {} | Result: {:?} | Resources released: {}",
+                            self.input_finished,
+                            player.clip.session,
+                            self.job.is_none()
+                        ));
                     });
-                    let player = self.audio.player.lock().unwrap();
-                    ui.label(format!(
-                        "Input sent: {} | Result: {:?} | Resources released: {}",
-                        self.input_finished,
-                        player.clip.session,
-                        self.job.is_none()
-                    ));
-                });
-            if transport::inputs_changed(&previous, &self.request) {
-                self.transport.invalidate();
-                ctx.request_repaint();
-            }
-        });
+                if transport::inputs_changed(&previous, &self.request) {
+                    self.transport.invalidate();
+                    ctx.request_repaint();
+                }
+            });
+        }
         egui::SidePanel::left("head-preview")
             .default_width(260.)
             .width_range(180.0..=360.0)

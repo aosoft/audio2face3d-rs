@@ -138,6 +138,13 @@ values override file values, including `--device 0`, `--infer=false` and
 merging, so the WAV/model can come from either source. Without auto-start, files
 are selected for later use and inference does not begin.
 
+When opening the GUI without auto-start, an unavailable `[inference].mode` in
+`gui.toml` falls back to an enabled backend (gRPC, then Local, then Mock). Other
+settings are preserved and the file is not rewritten. An explicit `--mode` or
+auto-start still rejects an unavailable backend instead of running inference on
+a different backend. For example, a gRPC-only build opens in gRPC mode even when
+the shared configuration specifies `mode = "local"`.
+
 All paths written in a GUI TOML are relative to that TOML's directory. A referenced
 `platform.toml` resolves its own paths relative to its own directory, independently
 of the GUI file. Absolute paths are preserved. CLI paths are relative to the working
@@ -225,6 +232,10 @@ no automatic downloads or package replacement occur.
 
 GUI defaults are `standalone-app,grpc`. `standalone-app` enables the executable,
 CLI/config loading, eframe window, file dialogs and CPAL audio device support.
+With `--no-default-features --features standalone-app`, no inference backend is
+compiled: Manual is locked on, and inference/playback controls are hidden. Enable
+`local` or `grpc` to use inference (`mock` is for development).
+
 Disable defaults for library use: without features, only model types and validation
 remain. `gltf-read` / `gltf-write` add GLB I/O; `session` adds media/session APIs;
 `render-wgpu` and `ui-egui` select reusable rendering/UI. `local`, `grpc`, `mock`
