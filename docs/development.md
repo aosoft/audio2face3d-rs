@@ -8,8 +8,8 @@ Support targets, test tiers, reference parity, and benchmark procedures.
 
 The required release target is Windows x86-64 with MSVC, CUDA 12.9.x,
 TensorRT 10.16.1.x, an SM 8.6 GPU, and both FP32 and FP16 engines. Linux
-x86-64 with the same CUDA and TensorRT families is currently build-only and
-experimental. The minimum supported Rust version is 1.91.
+x86-64 native inference with the same CUDA and TensorRT families is currently
+build-only and experimental. The minimum supported Rust version is 1.91.
 
 The CI tiers separate portable tests, CUDA ownership tests, real-model tests,
 and original-SDK reference parity:
@@ -36,7 +36,23 @@ and the corresponding `--workspace`; it is not part of CI or publication.
 Public API and feature changes are reviewed in pull request diffs.
 Portable CI checks formatting, builds, linting, tests, and documentation across
 the portable feature configurations. It runs automatically
-on pull requests and can also be run manually. Other workflows remain manual-only.
+on pull requests and can also be run manually. Windows covers the portable tier
+and MSRV. macOS checks the gRPC GUI and portable configuration. The Linux job runs
+library/mock-server tests, native-loader fixtures, configuration tests, a gRPC GUI
+build without the converter, and GUI/OBJ conversion tests. Linux tests run without
+a window or audio device; GPU tests remain opt-in. The loader fixtures use small
+test libraries and do not require CUDA or TensorRT.
+
+Windows Server 2022 and Ubuntu 24.04 also run native build-only jobs on every PR.
+They compile and link the library, server, GUI and test targets with native features,
+using CUDA 12.9.1 redistributable compiler/header components and the TensorRT 10.16
+public headers pinned to commit `d0faf303ba766f20cd9fd8c413a112fc2e5a397b` (10.16.0.72).
+`ci/setup-native-build.ps1` verifies the CUDA archive SHA-256 hashes and generates
+an explicit `platform.toml`. Windows selects a VS 2022 MSVC 14.4x toolset; Linux
+uses GCC 13. No GPU, driver, inference model or TensorRT runtime binary is installed
+or required. The jobs use `cargo build --all-targets`; they do not run the compiled
+applications or tests. Runtime/ABI compatibility remains covered by the separate
+GPU tiers with the validated TensorRT runtime. Other workflows remain manual-only.
 CUDA/TensorRT validation requires CUDA and TensorRT
 installations; original-SDK reference comparison additionally requires the
 Audio2Face-3D SDK checkout.
@@ -44,7 +60,7 @@ Passing portable checks does not imply model-runtime validation.
 
 ## CI build cache
 
-Both portable CI jobs use GitHub's `actions/cache` to preserve Cargo registry/git
+The Windows and Linux portable CI jobs use GitHub's `actions/cache` to preserve Cargo registry/git
 dependencies and `target` build outputs. Incremental compilation artifacts and
 generated API documentation are excluded to limit cache size.
 

@@ -66,3 +66,72 @@ jobs:
         run: cargo check --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc --all-targets
       - name: Test portable configuration
         run: cargo test --locked -p audio2face3d --no-default-features --features runtime-cli --test native_build_config
+
+  linux-portable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev
+      - name: Cache Cargo dependencies and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            ~/.cargo/git/checkouts
+            target
+            !target/**/incremental
+            !target/doc
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-rust-1.97.1-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/**', '.github/workflows/ci.yml') }}
+          restore-keys: |
+            cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-rust-1.97.1-
+      - name: Test library, mock server and Linux native loader fixtures
+        run: cargo test --workspace --locked --no-default-features --features audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock
+      - name: Test portable and Linux build configuration
+        run: cargo test --locked -p audio2face3d --no-default-features --features runtime-cli --test native_build_config
+      - name: Check gRPC GUI without converter, CUDA or TensorRT
+        run: cargo check --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc --all-targets
+      - name: Test GUI and OBJ head conversion without CUDA or TensorRT
+        run: cargo test --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc,mock,obj2morph
+
+  native-build:
+    name: native-build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Install Linux host compiler and GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-13 g++-13 pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev
+      - name: Fetch TensorRT 10.16 public headers
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA/TensorRT
+          ref: d0faf303ba766f20cd9fd8c413a112fc2e5a397b
+          path: temp/ci-tensorrt
+          sparse-checkout: include
+          persist-credentials: false
+      - name: Cache CUDA build components
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/a2f-native-sdk/downloads
+          key: cuda-build-12.9.1-${{ runner.os }}-${{ hashFiles('ci/setup-native-build.ps1') }}
+      - name: Configure CUDA and native host compiler
+        shell: pwsh
+        run: ./ci/setup-native-build.ps1 -SdkDirectory "$env:RUNNER_TEMP/a2f-native-sdk" -TensorRtRoot "$env:GITHUB_WORKSPACE/temp/ci-tensorrt"
+      - name: Compile and link native library, server, GUI and test targets (no execution)
+        run: cargo build --workspace --locked --all-targets --features audio2face3d/native,audio2face3d/cli,audio2face3d-gui/local
