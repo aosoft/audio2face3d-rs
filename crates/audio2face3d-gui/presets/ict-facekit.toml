@@ -1,6 +1,6 @@
-# obj2morph OBJ 変換 CLI 用。
-# ユーザーが取得した ICT-FaceKit/FaceXModel を --input-root に指定する。
-# OBJ 名・53表情の構成・材質名は公式定義と照合済み。
+# Preset for the audio2face3d-gui obj2morph subcommand.
+# Set --input-root to the FaceXModel directory of your ICT-FaceKit checkout.
+# OBJ filenames, the 53 expression inputs and material names match the upstream definitions.
 # +Y up / +Z forward and all 51 channels checked; visual limitations remain.
 schema_version = 1
 neutral = "generic_neutral_mesh.obj"
@@ -28,7 +28,7 @@ split_by = "material"
 exclude_materials = ["M_EyeBlend", "M_EyeOcclusion", "M_LacrimalFluid", "M_EyeLashes"]
 
 [materials]
-# 診断表示用に独自に選んだ不透明色。MTL/PBR を再現する設定ではない。
+# Custom opaque colors for diagnostic display; these do not reproduce MTL/PBR materials.
 default_color = [0.62, 0.47, 0.39, 1.0]
 
 [materials.colors]
@@ -42,14 +42,14 @@ M_IrisLeft = [0.12, 0.19, 0.17, 1.0]
 M_IrisRight = [0.12, 0.19, 0.17, 1.0]
 
 [expected]
-# 公式 README の Neutral 全体（材質除外・分割・三角形化前）。
+# Full neutral mesh counts from the upstream README, before material exclusion, splitting or triangulation.
 source_vertices = 26719
 source_faces = 26384
 mapped_channels = 51
 unique_expression_files = 53
 
 [targets]
-# 各 OBJ は絶対座標。複数指定では各形状の Neutral との差分を加算する。
+# OBJ files contain absolute positions. Multiple inputs add their deltas from the neutral mesh.
 EyeBlinkLeft = ["eyeBlink_L.obj"]
 EyeLookDownLeft = ["eyeLookDown_L.obj"]
 EyeLookInLeft = ["eyeLookIn_L.obj"]

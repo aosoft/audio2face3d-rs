@@ -209,23 +209,10 @@ the native build initializes matching compiler, header and library paths automat
 The default `standalone-app,grpc,obj2morph` build needs no CUDA/TensorRT or `build-cuda` settings.
 No developer SDK path is compiled into the application configuration.
 
-## Convert or replace the head
+## Head model generation
 
-Use the CPU-only OBJ converter described in [headgen.md](headgen.md):
-
-```powershell
-cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output models/heads/ict-facekit.glb
-```
-
-Create `models/heads` before conversion. To load the result at startup, set
-`head = "models/heads/ict-facekit.glb"` in the repository-root `gui.toml`, as
-shown in `gui.example.toml`. Head paths are relative to the configuration file.
-
-Open the resulting GLB with **Open head** or `--head`. The head's unsupported
-channels are displayed separately; inference values and timeline tracks stay intact.
-The original bundled mannequin remains a diagnostic fallback. It is not ICT data.
-Third-party inputs and converted assets are obtained and managed by the user;
-no automatic downloads or package replacement occur.
+See the [head model conversion guide](headgen.md) for input data, presets,
+conversion commands, recommended output location and loading the result.
 
 ## Library boundaries and engine embedding
 

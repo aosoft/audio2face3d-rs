@@ -66,6 +66,9 @@ converted model data and its report are not committed.
 In the GUI, choose **Open head** and select `models/heads/ict-facekit.glb`, or pass
 `--head models/heads/ict-facekit.glb` when starting it. This GLB is the display head;
 it is separate from the **Model JSON** used for Audio2Face inference.
+Unsupported head channels do not remove inference values or timeline tracks.
+The bundled diagnostic mannequin is original geometry, not ICT data, and remains
+the fallback when no custom head is configured.
 See [ICT reference preset and visual review](#ict-reference-preset-and-visual-review)
 for channel mapping and [validation results](#ict-facekit-validation-and-explicit-pose-tolerance)
 for known limitations.

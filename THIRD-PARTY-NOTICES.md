@@ -31,3 +31,15 @@ binary releases must also retain notices required by their other dependencies.
 The ACE protocol definitions under `crates/audio2face3d/proto` retain their
 upstream notices and use Apache-2.0. The license text is included in
 [the library package](crates/audio2face3d/LICENSE-APACHE).
+
+[ICT-FaceKit](https://github.com/USC-ICT/ICT-FaceKit), published by the USC
+Institute for Creative Technologies, is an external reference dataset for the
+GUI's OBJ head converter. This repository includes a
+[conversion preset](crates/audio2face3d-gui/presets/ict-facekit.toml), but does not
+include ICT-FaceKit model data or heads converted from that data. The bundled
+diagnostic head is original procedural geometry, not ICT-FaceKit data.
+
+Users obtain the dataset separately and should consult its upstream license
+and notices for their intended use and distribution of inputs and converted
+models. This project's MIT license does not license the external dataset.
+See the [head model conversion guide](docs/headgen.md) for setup and usage.
