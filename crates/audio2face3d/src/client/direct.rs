@@ -15,6 +15,7 @@ pub struct DirectConfig {
     pub(crate) engine: engine::Config,
     pub(crate) limits: Limits,
     pub(crate) max_executions: usize,
+    reuse_model: bool,
     pub(crate) max_queued: usize,
     /// Zero means no admission timeout; RequestOptions.timeout still applies.
     pub(crate) queue_timeout: Duration,
@@ -42,6 +43,7 @@ impl DirectConfig {
             engine: engine::Config::default(),
             limits: Limits::default(),
             max_executions: 1,
+            reuse_model: false,
             max_queued: 64,
             queue_timeout: Duration::ZERO,
         }
@@ -66,7 +68,12 @@ impl Client {
         // Executor ownership travels with initialization; dropping the caller cannot leak it.
         let holder = Arc::new(executor);
         holder.spawn(async move {
-            let result = engine::Factory::prepare(config.engine).await;
+            let result = engine::Factory::prepare(config.engine)
+                .await
+                .map(|mut factory| {
+                    factory.set_reuse_model(config.reuse_model);
+                    factory
+                });
             tx.send(result);
         })?;
         let factory = match rx.await {
@@ -265,6 +272,12 @@ impl DirectConfigBuilder {
     }
     pub fn max_executions(mut self, value: usize) -> Self {
         self.config.max_executions = value;
+        self
+    }
+    /// Retain one idle default-parameter regression model between requests.
+    /// Disabled by default; shutdown releases the retained model.
+    pub fn reuse_model(mut self, value: bool) -> Self {
+        self.config.reuse_model = value;
         self
     }
     pub fn max_queued(mut self, value: usize) -> Self {

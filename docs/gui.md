@@ -184,6 +184,24 @@ restart the application.
 Embedded hosts provide `startup::Options` or `Request::runtime` explicitly;
 constructing a library request never reads process arguments or config files.
 
+
+The desktop app retains one inference backend after a successful request. Repeated
+starts with the same model path, GPU and runtime settings reuse the loaded local
+model; gRPC retains its connection/runtime when the endpoint and API key match.
+Changing the WAV or playback pacing does not reload the backend. Backend settings
+are compared at the next start. A different backend configuration, a failed or
+cancelled request, or application exit releases the retained backend. Keeping a
+local model loaded retains its CPU/GPU memory between requests. If model files
+are replaced in place, restart the app to load the new contents.
+
+Each request resets audio, timestamps, emotion history and BlendShape solver state;
+results from previous requests are not carried forward. Logs distinguish
+`Initializing inference backend`, `Reusing inference backend` and
+`Reusing loaded regression model`. Embedded hosts can retain `inference::Engine`
+and call `Engine::start`; `Job::start` remains a one-shot API. Local model reuse is
+opt-in through `DirectConfig::builder(...).reuse_model(true)` and does not change
+the default server/library resource lifecycle.
+
 ## Build and package from source
 
 Rust 2024 / Rust 1.91+, Windows x64 MSVC. From the checkout:

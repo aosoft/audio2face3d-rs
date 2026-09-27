@@ -53,6 +53,29 @@ fn error(e: impl std::fmt::Display) -> Error {
 }
 
 pub fn run(
+    cache: &mut Cache,
+    request: Request,
+    logger: Arc<dyn Logger>,
+    sender: SyncSender<Event>,
+    cancelled: Arc<AtomicBool>,
+    control_slot: Arc<Mutex<Option<Control>>>,
+) -> Result<()> {
+    let result = run_inner(
+        cache,
+        request,
+        logger,
+        sender,
+        cancelled,
+        control_slot.clone(),
+    );
+    *control_slot.lock().unwrap() = None;
+    if result.is_err() {
+        cache.backend.take();
+    }
+    result
+}
+fn run_inner(
+    cache: &mut Cache,
     request: Request,
     logger: Arc<dyn Logger>,
     sender: SyncSender<Event>,
@@ -67,6 +90,100 @@ pub fn run(
     if cancelled.load(Ordering::Acquire) {
         return Err(Error("cancelled".into()));
     }
+    let key = Key::new(&request)?;
+    if cache
+        .backend
+        .as_ref()
+        .is_some_and(|backend| backend.key != key)
+    {
+        cache.backend.take();
+    }
+    if cache.backend.is_none() {
+        logger.write_log(
+            LogLevel::Info,
+            LogRecord::new("Initializing inference backend").field("source", "gui.inference"),
+        );
+        cache.backend = Some(create(&request, logger.clone(), key)?);
+    } else {
+        logger.write_log(
+            LogLevel::Info,
+            LogRecord::new("Reusing inference backend").field("source", "gui.inference"),
+        );
+    }
+    let client = cache.backend.as_ref().unwrap().client.as_ref().unwrap();
+    if cancelled.load(Ordering::Acquire) {
+        return Err(Error("cancelled".into()));
+    }
+    let options = RequestOptions::builder(AudioFormat::MONO_16KHZ)
+        .timeout(Duration::from_secs(1200))
+        .build()
+        .map_err(error)?;
+    let (mut input, mut output, control) = client.start(options).map_err(error)?.split();
+    *control_slot.lock().unwrap() = Some(control.clone());
+    if cancelled.load(Ordering::Acquire) {
+        control.cancel();
+    }
+    std::thread::scope(|scope| {
+        let input_control = control.clone();
+        let token = cancelled.clone();
+        let events = sender.clone();
+        let input_worker = scope.spawn(move || -> Result<()> {
+            let result = (|| {
+                let start = Instant::now();
+                for (index, chunk) in bytes.chunks(3200).enumerate() {
+                    if token.load(Ordering::Acquire) {
+                        return Err(Error("cancelled".into()));
+                    }
+                    if request.pace_input && index > 4 {
+                        let due = Duration::from_millis((index as u64 - 4) * 100);
+                        while start.elapsed() < due && !token.load(Ordering::Acquire) {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                    }
+                    wait(input.send(InputChunk::new(
+                        PcmBuffer::from_vec(chunk.to_vec()).map_err(error)?,
+                        vec![],
+                    )))
+                    .map_err(error)?;
+                }
+                wait(input.finish()).map_err(error)?;
+                send(&events, Event::InputFinished, &token)
+            })();
+            if result.is_err() {
+                input_control.cancel();
+            }
+            result
+        });
+        let received = (|| -> Result<()> {
+            let mut completed = false;
+            while let Some(event) = wait(output.recv()).map_err(error)? {
+                if let OutputEvent::Diagnostic(ref d) = event {
+                    logger.write_log(
+                        LogLevel::Info,
+                        LogRecord::new(&d.message).field("source", "inference"),
+                    );
+                }
+                if matches!(event, OutputEvent::Completed(_)) {
+                    completed = true;
+                }
+                send(&sender, Event::Output(event), &cancelled)?;
+            }
+            if !completed {
+                return Err(Error("response ended without successful completion".into()));
+            }
+            Ok(())
+        })();
+        if received.is_err() {
+            control.cancel();
+        }
+        let sent = input_worker
+            .join()
+            .unwrap_or_else(|_| Err(Error("input worker panicked".into())));
+        let closed = wait(control.closed()).map_err(error);
+        received.and(sent).and(closed)
+    })
+}
+fn create(request: &Request, logger: Arc<dyn Logger>, key: Key) -> Result<CachedBackend> {
     let context = Audio2Face3DContext::builder()
         .logger(logger.clone())
         .native_runtime(request.native_runtime()?)
@@ -95,6 +212,7 @@ pub fn run(
             .map_err(error)?;
             wait(Client::direct_with_context(
                 audio2face3d::client::DirectConfig::builder(engine)
+                    .reuse_model(true)
                     .build()
                     .map_err(error)?,
                 context,
@@ -110,6 +228,7 @@ pub fn run(
             .map_err(error)?;
             wait(Client::direct_with_context(
                 audio2face3d::client::DirectConfig::builder(engine)
+                    .reuse_model(true)
                     .build()
                     .map_err(error)?,
                 context,
@@ -121,7 +240,7 @@ pub fn run(
             let rt = runtime.as_ref().expect("gRPC runtime initialized above");
             let config = audio2face3d::client::ServerConfig::builder(&request.endpoint)
                 .runtime(rt.handle().clone())
-                .optional_api_key((!request.api_key.is_empty()).then_some(request.api_key))
+                .optional_api_key((!request.api_key.is_empty()).then_some(request.api_key.clone()))
                 .max_message_bytes(1024 * 1024)
                 .build()
                 .map_err(error)?;
@@ -130,86 +249,102 @@ pub fn run(
         #[allow(unreachable_patterns)]
         _ => return Err(Error("inference mode not enabled in this build".into())),
     };
-    let result = (|| -> Result<()> {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(Error("cancelled".into()));
-        }
-        let options = RequestOptions::builder(AudioFormat::MONO_16KHZ)
-            .timeout(Duration::from_secs(1200))
-            .build()
-            .map_err(error)?;
-        let (mut input, mut output, control) = client.start(options).map_err(error)?.split();
-        *control_slot.lock().unwrap() = Some(control.clone());
-        if cancelled.load(Ordering::Acquire) {
-            control.cancel();
-        }
-        std::thread::scope(|scope| {
-            let input_control = control.clone();
-            let token = cancelled.clone();
-            let events = sender.clone();
-            let input_worker = scope.spawn(move || -> Result<()> {
-                let result = (|| {
-                    let start = Instant::now();
-                    for (index, chunk) in bytes.chunks(3200).enumerate() {
-                        if token.load(Ordering::Acquire) {
-                            return Err(Error("cancelled".into()));
-                        }
-                        if request.pace_input && index > 4 {
-                            let due = Duration::from_millis((index as u64 - 4) * 100);
-                            while start.elapsed() < due && !token.load(Ordering::Acquire) {
-                                std::thread::sleep(Duration::from_millis(2));
-                            }
-                        }
-                        wait(input.send(InputChunk::new(
-                            PcmBuffer::from_vec(chunk.to_vec()).map_err(error)?,
-                            vec![],
-                        )))
-                        .map_err(error)?;
-                    }
-                    wait(input.finish()).map_err(error)?;
-                    send(&events, Event::InputFinished, &token)
-                })();
-                if result.is_err() {
-                    input_control.cancel();
-                }
-                result
-            });
-            let received = (|| -> Result<()> {
-                let mut completed = false;
-                while let Some(event) = wait(output.recv()).map_err(error)? {
-                    if let OutputEvent::Diagnostic(ref d) = event {
-                        logger.write_log(
-                            LogLevel::Info,
-                            LogRecord::new(&d.message).field("source", "inference"),
-                        );
-                    }
-                    if matches!(event, OutputEvent::Completed(_)) {
-                        completed = true;
-                    }
-                    send(&sender, Event::Output(event), &cancelled)?;
-                }
-                if !completed {
-                    return Err(Error("response ended without successful completion".into()));
-                }
-                Ok(())
-            })();
-            if received.is_err() {
-                control.cancel();
-            }
-            let sent = input_worker
-                .join()
-                .unwrap_or_else(|_| Err(Error("input worker panicked".into())));
-            let closed = wait(control.closed()).map_err(error);
-            received.and(sent).and(closed)
+    Ok(CachedBackend {
+        key,
+        client: Some(client),
+        #[cfg(feature = "grpc")]
+        runtime,
+    })
+}
+
+#[derive(Default)]
+pub(super) struct Cache {
+    backend: Option<CachedBackend>,
+}
+// Keys exclude WAV, playback pacing and settings irrelevant to the selected mode.
+#[derive(PartialEq)]
+enum Key {
+    Local {
+        model: std::path::PathBuf,
+        device: usize,
+        runtime: audio2face3d::runtime::NativeRuntimeConfig,
+    },
+    Grpc {
+        endpoint: String,
+        api_key: String,
+    },
+    Mock,
+}
+impl Key {
+    fn new(request: &Request) -> Result<Self> {
+        Ok(match request.mode {
+            Mode::Local => Self::Local {
+                model: request.model.clone(),
+                device: request.device,
+                runtime: request.native_runtime()?,
+            },
+            Mode::Grpc => Self::Grpc {
+                endpoint: request.endpoint.clone(),
+                api_key: request.api_key.clone(),
+            },
+            Mode::Mock => Self::Mock,
+            Mode::Disabled => return Err(Error("inference disabled".into())),
         })
-    })();
-    let shutdown = wait(client.shutdown()).map_err(error);
-    *control_slot.lock().unwrap() = None;
+    }
+}
+struct CachedBackend {
+    key: Key,
+    client: Option<Client>,
     #[cfg(feature = "grpc")]
-    drop(runtime);
-    logger.write_log(
-        LogLevel::Info,
-        LogRecord::new("Inference resources released").field("source", "gui.inference"),
-    );
-    result.and(shutdown)
+    runtime: Option<tokio::runtime::Runtime>,
+}
+impl Drop for CachedBackend {
+    fn drop(&mut self) {
+        let client = self.client.take();
+        #[cfg(feature = "grpc")]
+        let runtime = self.runtime.take();
+        // Library hosts may drop the cache inside Tokio. Release outside that runtime.
+        let _ = std::thread::spawn(move || {
+            if let Some(client) = client {
+                let _ = wait(client.shutdown());
+            }
+            #[cfg(feature = "grpc")]
+            drop(runtime);
+        })
+        .join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reuse_key_tracks_backend_settings_only() {
+        let mut request = Request {
+            mode: Mode::Local,
+            model: "model.json".into(),
+            ..Default::default()
+        };
+        let original = Key::new(&request).unwrap();
+        request.wav = "other.wav".into();
+        request.pace_input = true;
+        request.endpoint = "unused".into();
+        assert!(original == Key::new(&request).unwrap());
+        request.model = "another.json".into();
+        assert!(original != Key::new(&request).unwrap());
+        request.model = "model.json".into();
+        request.device = 1;
+        assert!(original != Key::new(&request).unwrap());
+        request.device = 0;
+        request.cuda_root = std::env::temp_dir().join("another-cuda");
+        assert!(original != Key::new(&request).unwrap());
+        request.mode = Mode::Grpc;
+        let grpc = Key::new(&request).unwrap();
+        assert!(original != grpc);
+        request.api_key = "changed".into();
+        assert!(grpc != Key::new(&request).unwrap());
+        request.api_key.clear();
+        request.endpoint = "another-server".into();
+        assert!(grpc != Key::new(&request).unwrap());
+    }
 }

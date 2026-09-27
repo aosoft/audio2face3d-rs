@@ -31,6 +31,7 @@ pub struct DesktopApp {
     last_message: String,
     request: crate::inference::Request,
     job: Option<crate::inference::Job>,
+    engine: crate::inference::Engine,
     next_job: u64,
     input_finished: bool,
     user_cancelled: bool,
@@ -67,6 +68,7 @@ impl DesktopApp {
             last_message: String::new(),
             request: options.request,
             job: None,
+            engine: Default::default(),
             next_job: 1,
             input_finished: false,
             user_cancelled: false,
@@ -146,7 +148,9 @@ impl DesktopApp {
         if self.job.is_some() {
             return;
         }
-        match crate::inference::Job::start(self.next_job, self.request.clone(), self.logger.clone())
+        match self
+            .engine
+            .start(self.next_job, self.request.clone(), self.logger.clone())
         {
             Ok(job) => {
                 self.transport.invalidate();
@@ -234,12 +238,12 @@ impl DesktopApp {
             let mut player = self.audio.player.lock().unwrap();
             if self.user_cancelled {
                 player.clip.session = crate::core::SessionState::Cancelled;
-                self.message = "Cancelled; resources released".into();
+                self.message = "Cancelled".into();
             } else if let Err(e) = result {
                 player.clip.session = crate::core::SessionState::Failed(e.to_string());
                 self.message = e.to_string();
             } else if player.clip.session == crate::core::SessionState::Completed {
-                self.message = "Results complete; resources released".into();
+                self.message = "Results complete; backend retained".into();
             } else if !matches!(player.clip.session, crate::core::SessionState::Failed(_)) {
                 player.clip.session =
                     crate::core::SessionState::Failed("missing completion".into());
@@ -614,7 +618,7 @@ impl eframe::App for DesktopApp {
                         });
                         let player = self.audio.player.lock().unwrap();
                         ui.label(format!(
-                            "Input sent: {} | Result: {:?} | Resources released: {}",
+                            "Input sent: {} | Result: {:?} | Worker finished: {}",
                             self.input_finished,
                             player.clip.session,
                             self.job.is_none()

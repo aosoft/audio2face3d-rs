@@ -130,6 +130,18 @@ pub enum Event {
     InputFinished,
     Output(OutputEvent),
 }
+/// Retains one backend between jobs. Drop after jobs to release its resources.
+/// Settings changes are applied when the next job starts. Errors invalidate the cache.
+#[derive(Default, Clone)]
+pub struct Engine {
+    #[cfg(any(feature = "local", feature = "grpc", feature = "mock"))]
+    cache: Arc<Mutex<worker::Cache>>,
+}
+impl Engine {
+    pub fn start(&self, id: u64, request: Request, logger: Arc<dyn Logger>) -> Result<Job> {
+        Job::start_with_engine(id, request, logger, self.clone())
+    }
+}
 pub struct Job {
     pub id: u64,
     pub events: Receiver<Event>,
@@ -139,6 +151,14 @@ pub struct Job {
 }
 impl Job {
     pub fn start(id: u64, request: Request, logger: Arc<dyn Logger>) -> Result<Self> {
+        Self::start_with_engine(id, request, logger, Engine::default())
+    }
+    fn start_with_engine(
+        id: u64,
+        request: Request,
+        logger: Arc<dyn Logger>,
+        engine: Engine,
+    ) -> Result<Self> {
         request.validate()?;
         #[cfg(any(feature = "local", feature = "grpc", feature = "mock"))]
         {
@@ -149,7 +169,13 @@ impl Job {
             let slot = control.clone();
             let worker = std::thread::Builder::new()
                 .name(format!("a2f-preview-{id}"))
-                .spawn(move || worker::run(request, logger, sender, token, slot))
+                .spawn(move || {
+                    let mut cache = engine
+                        .cache
+                        .try_lock()
+                        .map_err(|_| Error("inference engine is busy".into()))?;
+                    worker::run(&mut cache, request, logger, sender, token, slot)
+                })
                 .map_err(|e| Error(e.to_string()))?;
             Ok(Self {
                 id,
@@ -161,7 +187,7 @@ impl Job {
         }
         #[cfg(not(any(feature = "local", feature = "grpc", feature = "mock")))]
         {
-            let _ = (id, request, logger);
+            let _ = (id, request, logger, engine);
             Err(Error("enable local or grpc feature to infer".into()))
         }
     }
