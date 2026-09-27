@@ -24,7 +24,10 @@ and original-SDK reference parity:
 Native tiers accept `-PlatformConfig platform.toml`. Runtime SDK locations must resolve to roots (from common settings or `[runtime]`) for legacy test adapters; only child processes receive their SDK environment. Existing environment-based runs still work. See [platform configuration](platform.md). Real-model tests require `AUDIO2FACE3D_TEST_FACADE_MODELS`. See the
 [reference guide](../reference/README.md) for original-SDK comparison setup.
 Machine-local SDK/model/audio paths and generated captures are not committed.
-The `release` tier verifies native documentation and publishable packages.
+The `release` tier verifies native documentation and publishable packages:
+`audio2face3d`, `audio2face3d-server`, and `audio2face3d-gui`. The crates.io
+workflow publishes these together; GUI defaults include `standalone-app,grpc,obj2morph`,
+while `local` remains opt-in.
 The optional `release audit` command requires an explicit `--baseline` path
 and the corresponding `--workspace`; it is not part of CI or publication.
 

@@ -5,8 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+publish.workspace = true
 description = "Reusable Audio2Face-3D inspection, rendering and playback library"
+
+[package.metadata.docs.rs]
+default-features = false
+features = ["gltf-read", "obj2morph", "ui-egui", "render-wgpu", "grpc"]
 
 [features]
 default = ["standalone-app", "grpc", "obj2morph"]
