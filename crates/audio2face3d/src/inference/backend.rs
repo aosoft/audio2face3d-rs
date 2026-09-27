@@ -28,7 +28,7 @@ pub trait Backend: Send {
     fn close(&mut self) -> EngineFuture<'_, ()>;
     fn success_message(&self) -> &'static str;
 }
-/// Performs a warm load, with optional bounded reuse for direct clients.
+/// Performs a warm load, with optional bounded reuse between requests.
 pub struct Factory {
     scope: LogScope,
     #[cfg_attr(not(any(feature = "mock", feature = "native")), allow(dead_code))]
@@ -39,6 +39,13 @@ pub struct Factory {
     reuse: Option<crate::inference::regression::IdleModel>,
 }
 impl Factory {
+    /// Retain at most one idle default-parameter regression model between requests.
+    /// Configure before starting requests. Active requests still own independent state;
+    /// custom parameters bypass reuse. `release_prepared` releases the idle model.
+    pub fn with_model_reuse(mut self) -> Self {
+        self.set_reuse_model(true);
+        self
+    }
     pub(crate) fn set_reuse_model(&mut self, enabled: bool) {
         #[cfg(feature = "native")]
         {

@@ -201,8 +201,10 @@ results from previous requests are not carried forward. Logs distinguish
 `Initializing inference backend`, `Reusing inference backend` and
 `Reusing loaded regression model`. Embedded hosts can retain `inference::Engine`
 and call `Engine::start`; `Job::start` remains a one-shot API. Local model reuse is
-opt-in through `DirectConfig::builder(...).reuse_model(true)` and does not change
-the default server/library resource lifecycle.
+opt-in for direct library clients through `DirectConfig::builder(...).reuse_model(true)`.
+The gRPC server also retains one idle default-parameter model; see the
+[server guide](server.md). An existing server process must be rebuilt and restarted
+to enable this behavior; a GUI update alone cannot change remote model loading.
 
 ## Build and package from source
 

@@ -50,7 +50,8 @@ impl Factory {
         Ok(Self {
             inner: inference::Factory::prepare(engine_config(config)?)
                 .await
-                .map_err(status)?,
+                .map_err(status)?
+                .with_model_reuse(),
         })
     }
     pub async fn release_prepared(&self) -> Result<(), Status> {

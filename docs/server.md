@@ -1,6 +1,6 @@
 # gRPC server guide
 
-[Project overview](../README.md) · [Documentation index](../README.md#documentation)
+[Project overview](../README.md) ﾂｷ [Documentation index](../README.md#documentation)
 
 Generate facial animation from audio through the ACE
 `A2FControllerService/ProcessAudioStream` bidirectional RPC. The server uses
@@ -36,8 +36,12 @@ TLS. API-key authentication is opt-in. The default bind address is loopback.
 `--device` selects the CUDA device (default 0). `--emotion-model` optionally
 adds an Audio2Emotion classifier descriptor. Without it, the emotion
 post-processing path uses configured/preferred emotions without classifier
-inference. Each concurrent RPC owns its runtime; model loading and GPU
-memory requirements must be included in the deployment budget. Start with
+inference. The server retains at most one idle default-parameter regression model
+between RPCs, including after normal client cancellation. Audio, emotion and solver
+state are reset before reuse; server shutdown releases the idle model. Requests
+with face/BlendShape/emotion parameter overrides use separate models. Concurrent
+RPCs still own independent runtimes; model loading and retained GPU memory must
+be included in the deployment budget. Start with
 `--max-streams 1`, especially with Audio2Emotion.
 
 Use `RUST_LOG=debug` for detailed logs. Ctrl+C changes health to NOT_SERVING,
