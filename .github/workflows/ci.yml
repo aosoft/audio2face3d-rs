@@ -99,7 +99,7 @@ jobs:
       - name: Check gRPC GUI without converter, CUDA or TensorRT
         run: cargo check --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc --all-targets
       - name: Test GUI and OBJ head conversion without CUDA or TensorRT
-        run: cargo test --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc,mock,obj2morph
+        run: cargo test --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc,mock,obj2morph,emotion
 
   build-native:
     name: build-native-${{ matrix.platform }}

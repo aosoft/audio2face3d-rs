@@ -21,3 +21,19 @@ device = 0
 [grpc]
 endpoint = "http://127.0.0.1:52000"
 api-key = ""
+
+# Emotion is a default feature. Uncomment only in emotion-enabled builds.
+# Local: omit model for inference without Audio2Emotion/emotion overrides.
+# gRPC: the model is selected on the SERVER; send-to-server enables overrides.
+# [emotion]
+# model = "models/emotion/model.json"
+# send-to-server = false
+# transition-time = 0.5
+# contrast = 1.0
+# smoothing = 0.7
+# use-preferred = false
+# preferred-strength = 1.0
+# strength = 1.0
+# max-emotions = 3
+# [emotion.beginning]
+# joy = 0.8

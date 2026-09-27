@@ -26,7 +26,7 @@ Native tiers accept `-PlatformConfig platform.toml`. Runtime SDK locations must 
 Machine-local SDK/model/audio paths and generated captures are not committed.
 The `release` tier verifies native documentation and publishable packages:
 `audio2face3d`, `audio2face3d-server`, and `audio2face3d-gui`. The crates.io
-workflow publishes these together; GUI defaults include `standalone-app,grpc,obj2morph`,
+workflow publishes these together; GUI defaults include `standalone-app,grpc,obj2morph,emotion`,
 while `local` remains opt-in.
 The optional `release audit` command requires an explicit `--baseline` path
 and the corresponding `--workspace`; it is not part of CI or publication.

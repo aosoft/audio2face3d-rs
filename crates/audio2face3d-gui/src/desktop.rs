@@ -616,7 +616,27 @@ impl eframe::App for DesktopApp {
                                 }
                             });
                         });
+                        #[cfg(feature = "emotion")]
+                        ui.add_enabled_ui(settings_editable, |ui| {
+                            crate::emotion::controls(
+                                ui,
+                                &mut self.request.emotion,
+                                self.request.mode,
+                            );
+                        });
                         let player = self.audio.player.lock().unwrap();
+                        #[cfg(feature = "emotion")]
+                        ui.collapsing("Emotion output (smoothed)", |ui| {
+                            if let Some(values) = player.clip.emotion_at(snapshot.time) {
+                                ui.horizontal_wrapped(|ui| {
+                                    for (name, value) in values {
+                                        ui.label(format!("{name}: {value:.3}"));
+                                    }
+                                });
+                            } else {
+                                ui.label("No emotion output at this playback position");
+                            }
+                        });
                         ui.label(format!(
                             "Input sent: {} | Result: {:?} | Worker finished: {}",
                             self.input_finished,

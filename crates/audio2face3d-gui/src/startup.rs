@@ -44,6 +44,10 @@ pub struct Args {
     /// Local model.json; required when starting local inference.
     #[arg(long, value_name = "JSON")]
     model: Option<PathBuf>,
+    #[cfg(feature = "emotion")]
+    /// Local Audio2Emotion model.json. Remote models are configured on the server.
+    #[arg(long, value_name = "JSON")]
+    emotion_model: Option<PathBuf>,
     /// Input WAV. Loading is deferred until inference starts.
     #[arg(long, value_name = "WAV")]
     wav: Option<PathBuf>,
@@ -81,6 +85,8 @@ struct Config {
     inference: InferenceConfig,
     local: LocalConfig,
     grpc: GrpcConfig,
+    #[cfg(feature = "emotion")]
+    emotion: crate::emotion::Settings,
 }
 
 #[derive(Default, Deserialize)]
@@ -128,6 +134,15 @@ impl Config {
                 if path.is_relative() {
                     *path = file.parent().unwrap().join(&*path);
                 }
+            }
+        }
+        #[cfg(feature = "emotion")]
+        {
+            config.emotion.validate()?;
+            if let Some(path) = &mut config.emotion.model
+                && path.is_relative()
+            {
+                *path = file.parent().unwrap().join(&*path);
             }
         }
         Ok(config)
@@ -188,6 +203,14 @@ impl Args {
                 .unwrap_or(config.inference.play_while_inferring),
             ..Default::default()
         };
+        #[cfg(feature = "emotion")]
+        {
+            request.emotion = config.emotion;
+            if let Some(path) = self.emotion_model {
+                request.emotion.model = Some(path);
+            }
+            request.emotion.validate()?;
+        }
         let infer = self.infer.unwrap_or(config.inference.auto_start);
         if let Some(mode) = self.mode.or(config.inference.mode) {
             request.mode = match mode {
@@ -216,6 +239,25 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn emotion_configuration_feature_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gui.toml");
+        std::fs::write(&file, "[emotion]\nmodel='models/emotion/model.json'\nsend-to-server=true\n[emotion.beginning]\njoy=0.8").unwrap();
+        #[cfg(feature = "emotion")]
+        {
+            let config = Config::read(&file).unwrap();
+            assert_eq!(
+                config.emotion.model,
+                Some(dir.path().join("models/emotion/model.json"))
+            );
+            assert_eq!(config.emotion.beginning["joy"], 0.8);
+            std::fs::write(&file, "[emotion]\nmodel=''").unwrap();
+            assert!(Config::read(&file).is_err());
+        }
+        #[cfg(not(feature = "emotion"))]
+        assert!(Config::read(&file).is_err());
+    }
 
     #[test]
     #[cfg(not(any(feature = "grpc", feature = "local", feature = "mock")))]

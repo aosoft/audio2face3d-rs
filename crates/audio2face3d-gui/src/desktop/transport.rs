@@ -56,6 +56,10 @@ impl Transport {
 }
 
 pub(super) fn inputs_changed(a: &Request, b: &Request) -> bool {
+    #[cfg(feature = "emotion")]
+    if a.emotion != b.emotion {
+        return true;
+    }
     a.wav != b.wav
         || a.model != b.model
         || a.mode != b.mode
@@ -69,6 +73,20 @@ pub(super) fn inputs_changed(a: &Request, b: &Request) -> bool {
 mod tests {
     use super::*;
     use PlaybackState::*;
+    #[cfg(feature = "emotion")]
+    #[test]
+    fn emotion_edits_invalidate_cached_playback() {
+        let original = Request::default();
+        let mut edited = original.clone();
+        edited.emotion.send_to_server = true;
+        assert!(inputs_changed(&original, &edited));
+        edited = original.clone();
+        edited.emotion.model = Some("emotion.json".into());
+        assert!(inputs_changed(&original, &edited));
+        edited = original.clone();
+        edited.emotion.beginning.insert("joy".into(), 0.5);
+        assert!(inputs_changed(&original, &edited));
+    }
 
     #[test]
     fn offline_requires_completion_then_supports_pause_resume_and_invalidation() {

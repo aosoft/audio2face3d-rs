@@ -13,11 +13,12 @@ default-features = false
 features = ["gltf-read", "obj2morph", "ui-egui", "render-wgpu", "grpc"]
 
 [features]
-default = ["standalone-app", "grpc", "obj2morph"]
+default = ["standalone-app", "grpc", "obj2morph", "emotion"]
 gltf-read = ["dep:gltf", "dep:serde_json"]
 gltf-write = ["dep:gltf-json", "dep:serde_json"]
 
 session = ["dep:audio2face3d", "dep:hound"]
+emotion = ["session", "audio2face3d/emotion"]
 local = ["session", "audio2face3d/native"]
 grpc = ["session", "audio2face3d/client-grpc", "dep:tokio"]
 mock = ["session", "audio2face3d/mock"]

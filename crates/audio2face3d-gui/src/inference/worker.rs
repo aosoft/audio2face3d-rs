@@ -114,10 +114,7 @@ fn run_inner(
     if cancelled.load(Ordering::Acquire) {
         return Err(Error("cancelled".into()));
     }
-    let options = RequestOptions::builder(AudioFormat::MONO_16KHZ)
-        .timeout(Duration::from_secs(1200))
-        .build()
-        .map_err(error)?;
+    let options = request.options()?;
     let (mut input, mut output, control) = client.start(options).map_err(error)?.split();
     *control_slot.lock().unwrap() = Some(control.clone());
     if cancelled.load(Ordering::Acquire) {
@@ -166,6 +163,13 @@ fn run_inner(
                 if matches!(event, OutputEvent::Completed(_)) {
                     completed = true;
                 }
+                #[cfg(feature = "emotion")]
+                if request.mode == Mode::Local
+                    && request.emotion.model.is_none()
+                    && matches!(event, OutputEvent::Emotion(_))
+                {
+                    continue;
+                }
                 send(&sender, Event::Output(event), &cancelled)?;
             }
             if !completed {
@@ -207,9 +211,10 @@ fn create(request: &Request, logger: Arc<dyn Logger>, key: Key) -> Result<Cached
             )
             .model(&request.model)
             .device(request.device)
-            .max_audio_seconds(600)
-            .build()
-            .map_err(error)?;
+            .max_audio_seconds(600);
+            #[cfg(feature = "emotion")]
+            let engine = engine.optional_emotion_model(request.emotion.model.clone());
+            let engine = engine.build().map_err(error)?;
             wait(Client::direct_with_context(
                 audio2face3d::client::DirectConfig::builder(engine)
                     .reuse_model(true)
@@ -266,6 +271,8 @@ pub(super) struct Cache {
 enum Key {
     Local {
         model: std::path::PathBuf,
+        #[cfg(feature = "emotion")]
+        emotion_model: Option<std::path::PathBuf>,
         device: usize,
         runtime: audio2face3d::runtime::NativeRuntimeConfig,
     },
@@ -280,6 +287,8 @@ impl Key {
         Ok(match request.mode {
             Mode::Local => Self::Local {
                 model: request.model.clone(),
+                #[cfg(feature = "emotion")]
+                emotion_model: request.emotion.model.clone(),
                 device: request.device,
                 runtime: request.native_runtime()?,
             },

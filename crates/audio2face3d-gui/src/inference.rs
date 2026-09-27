@@ -41,6 +41,8 @@ pub struct Request {
     pub runtime: audio2face3d::runtime::NativeRuntimeConfig,
     pub device: usize,
     pub pace_input: bool,
+    #[cfg(feature = "emotion")]
+    pub emotion: crate::emotion::Settings,
 }
 impl Default for Request {
     fn default() -> Self {
@@ -63,6 +65,8 @@ impl Default for Request {
             runtime: Default::default(),
             device: 0,
             pace_input: false,
+            #[cfg(feature = "emotion")]
+            emotion: Default::default(),
         }
     }
 }
@@ -84,7 +88,20 @@ impl Request {
                     .into(),
             ));
         }
+        #[cfg(feature = "emotion")]
+        self.emotion.validate()?;
         Ok(())
+    }
+    pub fn options(&self) -> Result<audio2face3d::types::RequestOptions> {
+        let builder = audio2face3d::types::RequestOptions::builder(AudioFormat::MONO_16KHZ)
+            .timeout(std::time::Duration::from_secs(1200));
+        #[cfg(feature = "emotion")]
+        let builder = if self.emotion.active(self.mode) {
+            self.emotion.apply(builder)?
+        } else {
+            builder
+        };
+        builder.build().map_err(|e| Error(e.to_string()))
     }
     /// Preserve configured directory lists/search policy when applying programmatic root overrides.
     pub fn native_runtime(&self) -> Result<audio2face3d::runtime::NativeRuntimeConfig> {
@@ -253,6 +270,8 @@ pub fn apply_event(clip: &mut Clip, event: OutputEvent) -> Result<()> {
             let (_, time, values) = frame.into_parts();
             clip.push_frame(time.as_seconds(), values)?;
         }
+        #[cfg(feature = "emotion")]
+        OutputEvent::Emotion(trace) => clip.push_emotions(trace.smoothed)?,
         OutputEvent::Completed(_) => {
             clip.session = SessionState::Completed;
             if clip.ready_until() + 1e-6 < clip.duration() {

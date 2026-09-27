@@ -231,3 +231,61 @@ fn native_model_reuse_matches_fresh_inference() {
     );
     compare(&second, &fresh);
 }
+
+#[cfg(all(feature = "local", feature = "emotion"))]
+#[test]
+#[ignore = "requires A2F_MODEL, A2F_EMOTION_MODEL, A2F_WAV and CUDA/TensorRT"]
+fn native_emotion_model_is_optional_and_reusable() {
+    let mut request = Request {
+        mode: Mode::Local,
+        wav: std::env::var_os("A2F_WAV").expect("A2F_WAV").into(),
+        model: std::env::var_os("A2F_MODEL").expect("A2F_MODEL").into(),
+        cuda_root: std::env::var_os("CUDA_PATH").expect("CUDA_PATH").into(),
+        tensorrt_root: std::env::var_os("TENSORRT_ROOT_DIR")
+            .expect("TENSORRT_ROOT_DIR")
+            .into(),
+        ..Default::default()
+    };
+    let engine = Engine::default();
+    let (logger, mut logs) =
+        audio2face3d_gui::logging::channel(4096, 10000, audio2face3d::logging::LogLevel::Info);
+    let without = collect(engine.start(1, request.clone(), logger.clone()).unwrap());
+    assert!(without.emotions.is_empty());
+    request.emotion.model = Some(
+        std::env::var_os("A2F_EMOTION_MODEL")
+            .expect("A2F_EMOTION_MODEL")
+            .into(),
+    );
+    request.emotion.beginning.insert("joy".into(), 0.8);
+    let first = collect(engine.start(2, request.clone(), logger.clone()).unwrap());
+    assert!(!first.emotions.is_empty());
+    let reused = collect(engine.start(3, request.clone(), logger.clone()).unwrap());
+    compare(&first, &reused);
+    assert_eq!(first.emotions, reused.emotions);
+    stop_during_playback(
+        engine
+            .start(
+                4,
+                Request {
+                    pace_input: true,
+                    ..request.clone()
+                },
+                logger.clone(),
+            )
+            .unwrap(),
+    );
+    let after_stop = collect(engine.start(5, request.clone(), logger.clone()).unwrap());
+    compare(&first, &after_stop);
+    assert_eq!(first.emotions, after_stop.emotions);
+    request.emotion.model = None;
+    let disabled = collect(engine.start(6, request, logger.clone()).unwrap());
+    compare(&without, &disabled);
+    logs.drain();
+    assert_eq!(
+        logs.entries
+            .iter()
+            .filter(|e| e.record.message == "Initializing inference backend")
+            .count(),
+        3
+    );
+}

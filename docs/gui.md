@@ -228,7 +228,7 @@ For local builds, use the runtime/build setup documented in the repository's
 `docs/platform.md`. CUDA 12.9 was validated with MSVC **14.42.34433**. Configure
 `[build-cuda.windows]` with the Visual Studio root and exact toolset version;
 the native build initializes matching compiler, header and library paths automatically.
-The default `standalone-app,grpc,obj2morph` build needs no CUDA/TensorRT or `build-cuda` settings.
+The default `standalone-app,grpc,obj2morph,emotion` build needs no CUDA/TensorRT or `build-cuda` settings.
 No developer SDK path is compiled into the application configuration.
 
 ## Head model generation
@@ -243,7 +243,7 @@ conversion commands, recommended output location and loading the result.
 - `audio2face3d_gui::obj2morph`: CPU OBJ head conversion, sharing the GUI
   model types and GLB writer. Enabled by the `obj2morph` feature.
 
-GUI defaults are `standalone-app,grpc,obj2morph`. `standalone-app` enables the executable,
+GUI defaults are `standalone-app,grpc,obj2morph,emotion`. `standalone-app` enables the executable,
 CLI/config loading, eframe window, file dialogs and CPAL audio device support.
 With `--no-default-features --features standalone-app`, no inference backend is
 compiled: Manual is locked on, and inference/playback controls are hidden. Enable
@@ -292,3 +292,33 @@ When recording performance, distinguish a fresh inference context with cached
 engine files from engine generation and retained, prewarmed contexts. Portable
 tests do not establish GPU performance, acoustic latency or Unreal ACE plugin
 playback compatibility; validate those separately on the target system.
+
+
+## Emotion
+
+The default `emotion` feature enables the Emotion controls, configuration and
+playback-position display of smoothed emotion output. It does not enable CUDA.
+With Local, leave Audio2Emotion model unchecked (or omit `emotion.model`) for
+inference without Audio2Emotion or emotion overrides. Select its `model.json` to
+enable it. The path can also be supplied with `--emotion-model PATH`; paths in
+`gui.toml` are relative to that file. Local inference still requires `--features local`.
+
+For gRPC, the server selects the Audio2Emotion model (`--emotion-model`). Enable
+"Send emotion settings" to send overrides; a local model path is never sent.
+Disabling this option omits overrides, but cannot disable a server's configured
+Audio2Emotion model. Unchecked individual settings preserve backend defaults.
+Beginning emotion values initialize the emotion state; they are not a timeline
+of per-frame overrides. Post-processing mixing controls require an Audio2Emotion
+model on the backend. Model/configuration edits invalidate offline playback;
+controls are locked while inference or playback is active. Identical settings
+reuse the backend/model; changing the local emotion model rebuilds the backend.
+
+To build the application without emotion controls:
+
+```sh
+cargo run -p audio2face3d-gui --no-default-features --features standalone-app,grpc,obj2morph
+```
+
+Such builds reject `[emotion]` configuration and `--emotion-model` instead of
+silently ignoring them. Remove that section when sharing a configuration with
+an emotion-disabled build. Received emotion traces are ignored in that build.

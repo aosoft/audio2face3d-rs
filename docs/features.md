@@ -20,7 +20,7 @@ GUI crate's optional `obj2morph` module and subcommand.
 | `audio2face3d` | `cli` | Base package executable |
 | `audio2face3d-server` | default (`native,cli`) | Full native server executable |
 | `audio2face3d-server` | `mock` | Diagnostic backend; disable defaults and add `cli` to run it |
-| `audio2face3d-gui` | default (`standalone-app,grpc,obj2morph`) | Standard GUI with remote inference |
+| `audio2face3d-gui` | default (`standalone-app,grpc,obj2morph,emotion`) | Standard GUI with remote inference |
 | `audio2face3d-gui` | `obj2morph` | OBJ head conversion; included by default |
 | `audio2face3d-gui` | `local` | Native inference |
 | `audio2face3d-gui` | `gltf-read` / `gltf-write` | GLB I/O; disable defaults for model-only use |

@@ -20,7 +20,7 @@ transitive versions are recorded in Cargo.lock and checked against the MSRV.
 Use eframe only in the desktop host; the renderer receives a host device/queue.
 GPU morph deltas use storage buffers, supporting all 52 targets together.
 
-GUI defaults are `standalone-app,grpc,obj2morph`. With defaults disabled, only model types
+GUI defaults are `standalone-app,grpc,obj2morph,emotion`. With defaults disabled, only model types
 and validation remain. `gltf-read` / `gltf-write`, `session`, `render-wgpu` and
 `ui-egui` enable reusable components. `standalone-app` adds main, startup/config,
 window and audio device support. `local`, `grpc`, `mock` select inference backends;
