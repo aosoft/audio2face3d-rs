@@ -87,7 +87,7 @@ foreach ($packageName in @("audio2face3d", "audio2face3d-server", "audio2face3d-
 Invoke-Checked @("cargo", "package", "--workspace", "--locked", "--allow-dirty", "--no-default-features")
 
 
-# Verify Cargo copied the shared root text into every packaged crate.
+# Verify every packaged crate retains the shared root license text.
 $rootLicense = [IO.File]::ReadAllText((Join-Path $repoRoot 'LICENSE')).Replace("`r`n", "`n")
 foreach ($package in $packages) {
     $archiveRoot = Join-Path $metadata.target_directory "package/$($package.name)-$($package.version)"

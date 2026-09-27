@@ -40,7 +40,12 @@ pub struct Request {
     /// Host-resolved base configuration. Programmatic root fields override the corresponding SDK group.
     pub runtime: audio2face3d::runtime::NativeRuntimeConfig,
     pub device: usize,
+    /// Stream paced incremental Output events when true; otherwise publish one Ready clip.
     pub pace_input: bool,
+    /// Streaming startup/rebuffer target in milliseconds (10..=10000).
+    pub stream_buffer_ms: u32,
+    #[cfg(feature = "emotion")]
+    pub emotion: crate::emotion::Settings,
 }
 impl Default for Request {
     fn default() -> Self {
@@ -63,11 +68,23 @@ impl Default for Request {
             runtime: Default::default(),
             device: 0,
             pace_input: false,
+            stream_buffer_ms: 100,
+            #[cfg(feature = "emotion")]
+            emotion: Default::default(),
         }
     }
 }
 impl Request {
+    pub fn validate_stream_buffer(&self) -> Result<()> {
+        if !(10..=10000).contains(&self.stream_buffer_ms) {
+            return Err(Error(
+                "stream-buffer-ms must be between 10 and 10000".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<()> {
+        self.validate_stream_buffer()?;
         if self.mode == Mode::Disabled {
             return Err(Error(
                 "No inference backend is enabled; use Manual controls.".into(),
@@ -84,7 +101,20 @@ impl Request {
                     .into(),
             ));
         }
+        #[cfg(feature = "emotion")]
+        self.emotion.validate()?;
         Ok(())
+    }
+    pub fn options(&self) -> Result<audio2face3d::types::RequestOptions> {
+        let builder = audio2face3d::types::RequestOptions::builder(AudioFormat::MONO_16KHZ)
+            .timeout(std::time::Duration::from_secs(1200));
+        #[cfg(feature = "emotion")]
+        let builder = if self.emotion.active(self.mode) {
+            self.emotion.apply(builder)?
+        } else {
+            builder
+        };
+        builder.build().map_err(|e| Error(e.to_string()))
     }
     /// Preserve configured directory lists/search policy when applying programmatic root overrides.
     pub fn native_runtime(&self) -> Result<audio2face3d::runtime::NativeRuntimeConfig> {
@@ -127,8 +157,22 @@ impl Request {
     }
 }
 pub enum Event {
+    /// Complete offline result, published only after successful worker cleanup.
+    Ready(Box<Clip>),
     InputFinished,
     Output(OutputEvent),
+}
+/// Retains one backend between jobs. Drop after jobs to release its resources.
+/// Settings changes apply at the next start. Errors invalidate the cache; user stops retain it.
+#[derive(Default, Clone)]
+pub struct Engine {
+    #[cfg(any(feature = "local", feature = "grpc", feature = "mock"))]
+    cache: Arc<Mutex<worker::Cache>>,
+}
+impl Engine {
+    pub fn start(&self, id: u64, request: Request, logger: Arc<dyn Logger>) -> Result<Job> {
+        Job::start_with_engine(id, request, logger, self.clone())
+    }
 }
 pub struct Job {
     pub id: u64,
@@ -139,6 +183,14 @@ pub struct Job {
 }
 impl Job {
     pub fn start(id: u64, request: Request, logger: Arc<dyn Logger>) -> Result<Self> {
+        Self::start_with_engine(id, request, logger, Engine::default())
+    }
+    fn start_with_engine(
+        id: u64,
+        request: Request,
+        logger: Arc<dyn Logger>,
+        engine: Engine,
+    ) -> Result<Self> {
         request.validate()?;
         #[cfg(any(feature = "local", feature = "grpc", feature = "mock"))]
         {
@@ -149,7 +201,13 @@ impl Job {
             let slot = control.clone();
             let worker = std::thread::Builder::new()
                 .name(format!("a2f-preview-{id}"))
-                .spawn(move || worker::run(request, logger, sender, token, slot))
+                .spawn(move || {
+                    let mut cache = engine
+                        .cache
+                        .try_lock()
+                        .map_err(|_| Error("inference engine is busy".into()))?;
+                    worker::run(&mut cache, request, logger, sender, token, slot)
+                })
                 .map_err(|e| Error(e.to_string()))?;
             Ok(Self {
                 id,
@@ -161,7 +219,7 @@ impl Job {
         }
         #[cfg(not(any(feature = "local", feature = "grpc", feature = "mock")))]
         {
-            let _ = (id, request, logger);
+            let _ = (id, request, logger, engine);
             Err(Error("enable local or grpc feature to infer".into()))
         }
     }
@@ -227,6 +285,8 @@ pub fn apply_event(clip: &mut Clip, event: OutputEvent) -> Result<()> {
             let (_, time, values) = frame.into_parts();
             clip.push_frame(time.as_seconds(), values)?;
         }
+        #[cfg(feature = "emotion")]
+        OutputEvent::Emotion(trace) => clip.push_emotions(trace.smoothed)?,
         OutputEvent::Completed(_) => {
             clip.session = SessionState::Completed;
             if clip.ready_until() + 1e-6 < clip.duration() {

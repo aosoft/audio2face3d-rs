@@ -18,6 +18,8 @@ pub mod audio;
 pub mod core;
 #[cfg(feature = "standalone-app")]
 pub mod desktop;
+#[cfg(feature = "emotion")]
+pub mod emotion;
 #[cfg(feature = "session")]
 pub mod inference;
 #[cfg(feature = "session")]

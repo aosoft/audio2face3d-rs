@@ -31,6 +31,7 @@ pub struct DesktopApp {
     last_message: String,
     request: crate::inference::Request,
     job: Option<crate::inference::Job>,
+    engine: crate::inference::Engine,
     next_job: u64,
     input_finished: bool,
     user_cancelled: bool,
@@ -67,6 +68,7 @@ impl DesktopApp {
             last_message: String::new(),
             request: options.request,
             job: None,
+            engine: Default::default(),
             next_job: 1,
             input_finished: false,
             user_cancelled: false,
@@ -146,17 +148,20 @@ impl DesktopApp {
         if self.job.is_some() {
             return;
         }
-        match crate::inference::Job::start(self.next_job, self.request.clone(), self.logger.clone())
+        match self
+            .engine
+            .start(self.next_job, self.request.clone(), self.logger.clone())
         {
             Ok(job) => {
                 self.transport.invalidate();
                 self.audio.stop();
-                self.audio
-                    .player
-                    .lock()
-                    .unwrap()
-                    .replace(crate::core::Clip::running());
-                self.audio.player.lock().unwrap().streaming = self.request.pace_input;
+                {
+                    let mut player = self.audio.player.lock().unwrap();
+                    player.replace(crate::core::Clip::running());
+                    player.streaming = self.request.pace_input;
+                    player.stream_buffer =
+                        std::time::Duration::from_millis(self.request.stream_buffer_ms.into());
+                }
                 self.stream_started = false;
                 self.job = Some(job);
                 self.next_job += 1;
@@ -184,6 +189,15 @@ impl DesktopApp {
             for event in events {
                 match event {
                     crate::inference::Event::InputFinished => self.input_finished = true,
+                    crate::inference::Event::Ready(clip) => {
+                        if !self.user_cancelled {
+                            player.replace(*clip);
+                            self.selected = ["JawOpen", "EyeBlinkLeft", "EyeBlinkRight"]
+                                .iter()
+                                .filter_map(|name| player.clip.names.iter().position(|n| n == name))
+                                .collect();
+                        }
+                    }
                     crate::inference::Event::Output(event) => {
                         if matches!(player.clip.session, crate::core::SessionState::Failed(_)) {
                             continue;
@@ -211,7 +225,7 @@ impl DesktopApp {
             player.streaming
                 && !self.stream_started
                 && !self.user_cancelled
-                && (player.clip.ready_until() >= 0.1
+                && (player.clip.ready_until() >= player.stream_buffer.as_secs_f64()
                     || (player.clip.session == crate::core::SessionState::Completed
                         && player.clip.ready_until() > 0.))
                 && !matches!(
@@ -234,12 +248,12 @@ impl DesktopApp {
             let mut player = self.audio.player.lock().unwrap();
             if self.user_cancelled {
                 player.clip.session = crate::core::SessionState::Cancelled;
-                self.message = "Cancelled; resources released".into();
+                self.message = "Cancelled".into();
             } else if let Err(e) = result {
                 player.clip.session = crate::core::SessionState::Failed(e.to_string());
                 self.message = e.to_string();
             } else if player.clip.session == crate::core::SessionState::Completed {
-                self.message = "Results complete; resources released".into();
+                self.message = "Results complete; backend retained".into();
             } else if !matches!(player.clip.session, crate::core::SessionState::Failed(_)) {
                 player.clip.session =
                     crate::core::SessionState::Failed("missing completion".into());
@@ -283,7 +297,9 @@ impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.poll_inference();
         if self.job.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            ctx.request_repaint_after(std::time::Duration::from_millis(
+                if self.request.pace_input { 16 } else { 100 },
+            ));
         }
         if self.message != self.last_message {
             self.logger.log(LogLevel::Info, || {
@@ -541,10 +557,24 @@ impl eframe::App for DesktopApp {
                                     self.request.wav = path;
                                 }
                             });
-                            ui.checkbox(
-                                &mut self.request.pace_input,
-                                "Play while inferring (paced input, 100 ms buffer)",
-                            );
+                            ui.horizontal(|ui| {
+                                ui.checkbox(
+                                    &mut self.request.pace_input,
+                                    "Play while inferring (paced input)",
+                                );
+                                ui.add_enabled_ui(self.request.pace_input, |ui| {
+                                    ui.label("Buffer");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.request.stream_buffer_ms)
+                                            .range(10..=10000)
+                                            .speed(10)
+                                            .suffix(" ms"),
+                                    )
+                                    .on_hover_text(
+                                        "Buffered media needed to start or resume playback",
+                                    );
+                                });
+                            });
                             ui.add_space(ui.spacing().interact_size.y);
                             ui.horizontal(|ui| {
                                 ui.label("Mode");
@@ -612,9 +642,29 @@ impl eframe::App for DesktopApp {
                                 }
                             });
                         });
+                        #[cfg(feature = "emotion")]
+                        ui.add_enabled_ui(settings_editable, |ui| {
+                            crate::emotion::controls(
+                                ui,
+                                &mut self.request.emotion,
+                                self.request.mode,
+                            );
+                        });
                         let player = self.audio.player.lock().unwrap();
+                        #[cfg(feature = "emotion")]
+                        ui.collapsing("Emotion output (smoothed)", |ui| {
+                            if let Some(values) = player.clip.emotion_at(snapshot.time) {
+                                ui.horizontal_wrapped(|ui| {
+                                    for (name, value) in values {
+                                        ui.label(format!("{name}: {value:.3}"));
+                                    }
+                                });
+                            } else {
+                                ui.label("No emotion output at this playback position");
+                            }
+                        });
                         ui.label(format!(
-                            "Input sent: {} | Result: {:?} | Resources released: {}",
+                            "Input sent: {} | Result: {:?} | Worker finished: {}",
                             self.input_finished,
                             player.clip.session,
                             self.job.is_none()

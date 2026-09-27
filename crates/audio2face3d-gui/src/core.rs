@@ -29,6 +29,8 @@ pub struct Clip {
     pub names: Vec<String>,
     pub frames: Vec<CurveSample>,
     pub audio: Vec<f32>,
+    #[cfg(feature = "emotion")]
+    pub emotions: Vec<audio2face3d::types::EmotionKeyframe>,
     pub session: SessionState,
     pub revision: u64,
     curve_end: f64,
@@ -41,6 +43,8 @@ impl Default for Clip {
             names: vec![],
             frames: vec![],
             audio: vec![],
+            #[cfg(feature = "emotion")]
+            emotions: vec![],
             session: SessionState::Idle,
             revision: 0,
             curve_end: 0.,
@@ -50,6 +54,38 @@ impl Default for Clip {
     }
 }
 impl Clip {
+    #[cfg(feature = "emotion")]
+    pub fn push_emotions(
+        &mut self,
+        frames: Vec<audio2face3d::types::EmotionKeyframe>,
+    ) -> Result<()> {
+        let mut previous = self.emotions.last().map_or(0., |f| f.time().as_seconds());
+        let mut bytes = 0usize;
+        for frame in &frames {
+            let time = frame.time().as_seconds();
+            if time < previous || !(0.0..=MAX_SECONDS).contains(&time) {
+                return Err(Error("invalid or out-of-order emotion frame".into()));
+            }
+            previous = time;
+            // Conservative allowance for the sparse map's allocations and tree nodes.
+            bytes = bytes.saturating_add(std::mem::size_of_val(frame));
+            for name in frame.values().keys() {
+                bytes = bytes.saturating_add(name.capacity()).saturating_add(128);
+            }
+        }
+        self.check_budget(bytes)?;
+        self.retained += bytes;
+        self.emotions.extend(frames);
+        Ok(())
+    }
+    #[cfg(feature = "emotion")]
+    pub fn emotion_at(&self, time: f64) -> Option<&audio2face3d::types::EmotionValues> {
+        let index = self
+            .emotions
+            .partition_point(|frame| frame.time().as_seconds() <= time);
+        index.checked_sub(1).map(|i| self.emotions[i].values())
+    }
+
     pub fn running() -> Self {
         Self {
             session: SessionState::Running,

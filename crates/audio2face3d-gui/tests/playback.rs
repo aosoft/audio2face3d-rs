@@ -72,3 +72,43 @@ fn invalid_media_and_future_seek_are_rejected() {
     assert!(player.command(Command::Seek(2.), Instant::now()).is_err());
     assert_eq!(player.state, PlaybackState::Paused);
 }
+
+#[test]
+fn streaming_buffer_controls_start_recovery_and_short_completed_clips() {
+    let now = Instant::now();
+    let mut player = Player::default();
+    player.replace(clip());
+    player.clip.session = SessionState::Running;
+    player.streaming = true;
+    player.stream_buffer = Duration::from_millis(1500);
+    player.command(Command::Play, now).unwrap();
+    assert_eq!(player.state, PlaybackState::Buffering);
+    player.render_audio(1, 16000, now, |_, v| assert_eq!(v, 0.));
+    assert_eq!(player.state, PlaybackState::Buffering);
+    // Complete clips shorter than the target must not wait forever.
+    player.clip.session = SessionState::Completed;
+    player.render_audio(1, 16000, now, |_, v| assert_eq!(v, 0.25));
+    assert_eq!(player.state, PlaybackState::Playing);
+
+    player.replace(clip());
+    player.clip.session = SessionState::Running;
+    player.streaming = true;
+    player.stream_buffer = Duration::from_millis(300);
+    player.command(Command::Play, now).unwrap();
+    assert_eq!(player.state, PlaybackState::Playing);
+    player.render_audio(16001, 16000, now, |_, _| {});
+    assert_eq!(player.state, PlaybackState::Buffering);
+    player.clip.push_audio(16000, &vec![0.25; 4000]).unwrap();
+    for i in 30..38 {
+        player.clip.push_frame(i as f64 / 30., vec![0.]).unwrap();
+    }
+    player.render_audio(1, 16000, now, |_, v| assert_eq!(v, 0.));
+    assert_eq!(player.state, PlaybackState::Buffering);
+    player.clip.push_audio(20000, &vec![0.25; 1600]).unwrap();
+    for i in 38..41 {
+        player.clip.push_frame(i as f64 / 30., vec![0.]).unwrap();
+    }
+    player.render_audio(1, 16000, now, |_, v| assert_eq!(v, 0.25));
+    assert_eq!(player.state, PlaybackState::Playing);
+    assert_eq!(player.underruns, 1);
+}

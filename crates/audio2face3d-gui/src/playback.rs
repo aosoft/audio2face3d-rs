@@ -40,6 +40,8 @@ pub struct Player {
     pub state: PlaybackState,
     pub looping: bool,
     pub streaming: bool,
+    /// Media to accumulate before streaming starts or resumes after an underrun.
+    pub stream_buffer: Duration,
     pub underruns: u64,
     submitted: f64,
     position: f64,
@@ -52,6 +54,7 @@ impl Default for Player {
             state: PlaybackState::Paused,
             looping: false,
             streaming: false,
+            stream_buffer: Duration::from_millis(100),
             underruns: 0,
             submitted: 0.,
             position: 0.,
@@ -103,7 +106,7 @@ impl Player {
                 }
                 self.state = if self.streaming
                     && self.clip.session != SessionState::Completed
-                    && self.clip.ready_until() - self.submitted < 0.1
+                    && self.clip.ready_until() - self.submitted < self.stream_buffer.as_secs_f64()
                 {
                     PlaybackState::Buffering
                 } else {
@@ -185,7 +188,9 @@ impl Player {
         }
         let complete = self.clip.session == SessionState::Completed;
         if self.state == PlaybackState::Buffering {
-            if ready - self.submitted >= 0.1 || (complete && ready > self.submitted) {
+            if ready - self.submitted >= self.stream_buffer.as_secs_f64()
+                || (complete && ready > self.submitted)
+            {
                 self.state = PlaybackState::Playing;
             } else {
                 for i in 0..frames {

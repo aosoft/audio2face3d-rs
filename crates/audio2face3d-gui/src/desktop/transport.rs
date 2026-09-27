@@ -56,6 +56,10 @@ impl Transport {
 }
 
 pub(super) fn inputs_changed(a: &Request, b: &Request) -> bool {
+    #[cfg(feature = "emotion")]
+    if a.emotion != b.emotion {
+        return true;
+    }
     a.wav != b.wav
         || a.model != b.model
         || a.mode != b.mode
@@ -63,12 +67,27 @@ pub(super) fn inputs_changed(a: &Request, b: &Request) -> bool {
         || a.api_key != b.api_key
         || a.device != b.device
         || a.pace_input != b.pace_input
+        || a.stream_buffer_ms != b.stream_buffer_ms
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use PlaybackState::*;
+    #[cfg(feature = "emotion")]
+    #[test]
+    fn emotion_edits_invalidate_cached_playback() {
+        let original = Request::default();
+        let mut edited = original.clone();
+        edited.emotion.send_to_server = true;
+        assert!(inputs_changed(&original, &edited));
+        edited = original.clone();
+        edited.emotion.model = Some("emotion.json".into());
+        assert!(inputs_changed(&original, &edited));
+        edited = original.clone();
+        edited.emotion.beginning.insert("joy".into(), 0.5);
+        assert!(inputs_changed(&original, &edited));
+    }
 
     #[test]
     fn offline_requires_completion_then_supports_pause_resume_and_invalidation() {
@@ -113,12 +132,13 @@ mod tests {
     fn every_editable_inference_input_invalidates_the_result() {
         let original = Request::default();
         assert!(!inputs_changed(&original, &original.clone()));
-        let changes: [fn(&mut Request); 7] = [
+        let changes: [fn(&mut Request); 8] = [
             |r| r.wav = "other.wav".into(),
             |r| r.model = "other.json".into(),
             |r| r.endpoint.push('x'),
             |r| r.api_key.push('x'),
             |r| r.device += 1,
+            |r| r.stream_buffer_ms += 10,
             |r| r.pace_input = !r.pace_input,
             |r| r.mode = crate::inference::Mode::Mock,
         ];

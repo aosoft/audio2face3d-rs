@@ -28,15 +28,32 @@ pub trait Backend: Send {
     fn close(&mut self) -> EngineFuture<'_, ()>;
     fn success_message(&self) -> &'static str;
 }
-/// Performs one warm load; each subsequent utterance owns a fresh native runtime.
+/// Performs a warm load, with optional bounded reuse between requests.
 pub struct Factory {
     scope: LogScope,
     #[cfg_attr(not(any(feature = "mock", feature = "native")), allow(dead_code))]
     config: Config,
     #[cfg(feature = "native")]
     prepared: Mutex<Option<crate::inference::regression::RegressionBackend>>,
+    #[cfg(feature = "native")]
+    reuse: Option<crate::inference::regression::IdleModel>,
 }
 impl Factory {
+    /// Retain at most one idle regression model between requests with identical parameters.
+    /// Configure before starting requests. Active requests still own independent state.
+    /// Changed parameters replace the idle model. `release_prepared` releases the idle model.
+    pub fn with_model_reuse(mut self) -> Self {
+        self.set_reuse_model(true);
+        self
+    }
+    pub(crate) fn set_reuse_model(&mut self, enabled: bool) {
+        #[cfg(feature = "native")]
+        {
+            self.reuse = enabled.then(Default::default);
+        }
+        #[cfg(not(feature = "native"))]
+        let _ = enabled;
+    }
     async fn prepare_inner(config: Config, scope: LogScope) -> Result<Self> {
         let mut observation = crate::logging::operation::Operation::new(
             "inference preparation finished",
@@ -74,6 +91,8 @@ impl Factory {
                 config,
                 #[cfg(feature = "native")]
                 prepared: Mutex::new(prepared),
+                #[cfg(feature = "native")]
+                reuse: None,
             })
         }
         .await;
@@ -98,6 +117,14 @@ impl Factory {
                 });
             #[cfg(feature = "native")]
             {
+                if let Some(pool) = &self.reuse {
+                    let idle = pool.lock().unwrap().take();
+                    if let Some((_, mut worker)) = idle {
+                        worker
+                            .call(crate::inference::regression::RegressionState::close)
+                            .await?;
+                    }
+                }
                 let prepared = self.prepared.lock().unwrap().take();
                 if let Some(mut backend) = prepared {
                     backend.close().await?;
@@ -140,16 +167,20 @@ impl Factory {
                     if custom && let Some(mut backend) = prepared.take() {
                         backend.close().await?;
                     }
-                    Box::new(match prepared {
+                    let pool = self.reuse.clone();
+                    let mut backend = match prepared {
                         Some(backend) => backend,
                         None => {
-                            crate::inference::regression::RegressionBackend::load(
+                            crate::inference::regression::RegressionBackend::load_cached(
                                 self.config.clone(),
                                 options,
+                                pool.clone(),
                             )
                             .await?
                         }
-                    })
+                    };
+                    backend.reuse = pool;
+                    Box::new(backend)
                 }
                 #[cfg(not(feature = "native"))]
                 {

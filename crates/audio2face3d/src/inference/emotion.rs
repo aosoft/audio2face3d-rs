@@ -52,6 +52,7 @@ pub struct Stage {
     names: Vec<String>,
     keys: BTreeMap<i64, Vec<f32>>,
     current: Vec<f32>,
+    beginning: Vec<f32>,
 
     frame: u64,
     fed: u64,
@@ -235,6 +236,7 @@ impl Stage {
             output,
             names: names.to_vec(),
             keys: BTreeMap::new(),
+            beginning: beginning.clone(),
             current: beginning,
 
             frame: 0,
@@ -247,6 +249,24 @@ impl Stage {
             records: BTreeMap::new(),
             max_time: f64::from(config.max_audio_seconds),
         })
+    }
+    pub fn reset(&mut self) -> Result<(), Error> {
+        self.audio.reset().map_err(internal)?;
+        self.preferred.reset();
+        self.output.reset();
+        if let Some(classifier) = &mut self.classifier {
+            crate::audio2x::Executor::reset_track(classifier, 0).map_err(internal)?;
+        }
+        self.keys.clear();
+        self.current.clone_from(&self.beginning);
+        self.frame = 0;
+        self.fed = 0;
+        self.consumed = -1;
+        self.last_input = -1;
+        self.complete = false;
+        self.previous = None;
+        self.records.clear();
+        Ok(())
     }
     pub fn push_keys(&mut self, keys: Vec<EmotionKeyframe>) -> Result<(), Error> {
         for key in keys {

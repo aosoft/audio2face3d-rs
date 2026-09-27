@@ -453,7 +453,26 @@ impl RegressionState {
         Ok(())
     }
 
-    fn close(&mut self) -> Result<(), Error> {
+    fn reset(&mut self) -> Result<(), Error> {
+        let mut runtime = self
+            .runtime
+            .take()
+            .ok_or_else(|| internal("runtime unavailable"))?;
+        runtime
+            .executor
+            .audio_accumulator(0)
+            .map_err(internal)?
+            .reset()
+            .map_err(internal)?;
+        runtime.emotion.reset()?;
+        crate::audio2x::Executor::reset_track(&mut runtime.executor, 0).map_err(internal)?;
+        let max_samples = self.max_samples;
+        *self = Self::new(runtime, &Config::default());
+        self.max_samples = max_samples;
+        Ok(())
+    }
+
+    pub(crate) fn close(&mut self) -> Result<(), Error> {
         self.pending.clear();
         self.pcm.clear();
         if let Some(runtime) = self.runtime.take() {
@@ -465,35 +484,129 @@ impl RegressionState {
 }
 
 /// The handle never owns native state: abandonment still cleans up on the worker.
+pub(crate) type IdleModel = Arc<Mutex<Option<(ModelKey, Worker<RegressionState>)>>>;
+
+/// Only model-affecting options: input is resampled per request and deadlines are external.
+#[derive(Clone, PartialEq)]
+pub(crate) struct ModelKey(RequestOptions);
+impl ModelKey {
+    fn new(options: &RequestOptions) -> Self {
+        let mut options = options.clone();
+        options.input_format = crate::types::AudioFormat::MONO_16KHZ;
+        options.timeout = None;
+        Self(options)
+    }
+}
 pub struct RegressionBackend {
-    worker: Worker<RegressionState>,
+    worker: Option<Worker<RegressionState>>,
+    pub(crate) reuse: Option<IdleModel>,
+    failed: bool,
+    key: ModelKey,
 }
 impl RegressionBackend {
     pub async fn load(config: Config, options: RequestOptions) -> Result<Self, Error> {
-        let worker = Worker::start(move || {
-            let runtime = load_sync(&config, &options)?;
-            Ok(RegressionState::new(runtime, &config))
+        Self::load_cached(config, options, None).await
+    }
+    pub(crate) async fn load_cached(
+        config: Config,
+        options: RequestOptions,
+        reuse: Option<IdleModel>,
+    ) -> Result<Self, Error> {
+        let key = ModelKey::new(&options);
+        let idle = reuse.as_ref().and_then(|pool| pool.lock().unwrap().take());
+        let worker = if let Some((idle_key, worker)) = idle {
+            if idle_key == key {
+                Some(worker)
+            } else {
+                let mut worker = worker;
+                worker.call(RegressionState::close).await?;
+                None
+            }
+        } else {
+            None
+        };
+        let worker = if let Some(worker) = worker {
+            crate::logging::integration::log(crate::logging::LogLevel::Info, || {
+                crate::logging::LogRecord::new("Reusing loaded regression model")
+                    .field("source", module_path!())
+            });
+            worker
+        } else {
+            Worker::start(move || {
+                let runtime = load_sync(&config, &options)?;
+                Ok(RegressionState::new(runtime, &config))
+            })
+            .await?
+        };
+        Ok(Self {
+            worker: Some(worker),
+            reuse,
+            failed: false,
+            key,
         })
-        .await?;
-        Ok(Self { worker })
     }
 }
 impl Backend for RegressionBackend {
     fn push(&mut self, input: InputChunk) -> EngineFuture<'_, ()> {
-        Box::pin(self.worker.call(move |state| state.push(input)))
+        Box::pin(async move {
+            let result = self
+                .worker
+                .as_mut()
+                .ok_or_else(|| internal("backend closed"))?
+                .call(move |state| state.push(input))
+                .await;
+            self.failed |= result.is_err();
+            result
+        })
     }
     fn next_frame<'a>(
         &'a mut self,
         cancel: &'a Cancellation,
     ) -> EngineFuture<'a, Option<OutputBatch>> {
         let cancel = cancel.clone();
-        Box::pin(self.worker.call(move |state| state.next_frame(&cancel)))
+        Box::pin(async move {
+            let result = self
+                .worker
+                .as_mut()
+                .ok_or_else(|| internal("backend closed"))?
+                .call(move |state| state.next_frame(&cancel))
+                .await;
+            // Cancellation leaves native state valid once the worker has drained its jobs.
+            self.failed |= result
+                .as_ref()
+                .is_err_and(|e| e.kind() != ErrorKind::Cancelled);
+            result
+        })
     }
     fn finish(&mut self) -> EngineFuture<'_, ()> {
-        Box::pin(self.worker.call(RegressionState::finish))
+        Box::pin(async move {
+            let result = self
+                .worker
+                .as_mut()
+                .ok_or_else(|| internal("backend closed"))?
+                .call(RegressionState::finish)
+                .await;
+            self.failed |= result.is_err();
+            result
+        })
     }
     fn close(&mut self) -> EngineFuture<'_, ()> {
-        Box::pin(self.worker.call(RegressionState::close))
+        Box::pin(async move {
+            let Some(mut worker) = self.worker.take() else {
+                return Ok(());
+            };
+            if !self.failed
+                && let Some(pool) = &self.reuse
+            {
+                worker.call(RegressionState::reset).await?;
+                let mut idle = pool.lock().unwrap();
+                if idle.is_none() {
+                    *idle = Some((self.key.clone(), worker));
+                    return Ok(());
+                }
+            }
+            worker.call(RegressionState::close).await
+        })
     }
     fn success_message(&self) -> &'static str {
         "Regression audio processing completed successfully."

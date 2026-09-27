@@ -44,6 +44,10 @@ pub struct Args {
     /// Local model.json; required when starting local inference.
     #[arg(long, value_name = "JSON")]
     model: Option<PathBuf>,
+    #[cfg(feature = "emotion")]
+    /// Local Audio2Emotion model.json. Remote models are configured on the server.
+    #[arg(long, value_name = "JSON")]
+    emotion_model: Option<PathBuf>,
     /// Input WAV. Loading is deferred until inference starts.
     #[arg(long, value_name = "WAV")]
     wav: Option<PathBuf>,
@@ -62,6 +66,9 @@ pub struct Args {
     /// Pace input and play audio/curves while inference is running.
     #[arg(long, num_args = 0..=1, default_missing_value = "true", require_equals = true)]
     play_while_inferring: Option<bool>,
+    /// Streaming startup/rebuffer target in milliseconds (10..=10000; default 100).
+    #[arg(long)]
+    stream_buffer_ms: Option<u32>,
 }
 
 #[cfg(feature = "obj2morph")]
@@ -81,6 +88,8 @@ struct Config {
     inference: InferenceConfig,
     local: LocalConfig,
     grpc: GrpcConfig,
+    #[cfg(feature = "emotion")]
+    emotion: crate::emotion::Settings,
 }
 
 #[derive(Default, Deserialize)]
@@ -89,6 +98,7 @@ struct InferenceConfig {
     mode: Option<Backend>,
     wav: Option<PathBuf>,
     play_while_inferring: bool,
+    stream_buffer_ms: Option<u32>,
     auto_start: bool,
 }
 
@@ -128,6 +138,15 @@ impl Config {
                 if path.is_relative() {
                     *path = file.parent().unwrap().join(&*path);
                 }
+            }
+        }
+        #[cfg(feature = "emotion")]
+        {
+            config.emotion.validate()?;
+            if let Some(path) = &mut config.emotion.model
+                && path.is_relative()
+            {
+                *path = file.parent().unwrap().join(&*path);
             }
         }
         Ok(config)
@@ -183,11 +202,24 @@ impl Args {
                 .unwrap_or_else(|| "http://127.0.0.1:52000".into()),
             api_key: self.api_key.or(config.grpc.api_key).unwrap_or_default(),
             device: self.device.or(config.local.device).unwrap_or_default(),
+            stream_buffer_ms: self
+                .stream_buffer_ms
+                .or(config.inference.stream_buffer_ms)
+                .unwrap_or(100),
             pace_input: self
                 .play_while_inferring
                 .unwrap_or(config.inference.play_while_inferring),
             ..Default::default()
         };
+        #[cfg(feature = "emotion")]
+        {
+            request.emotion = config.emotion;
+            if let Some(path) = self.emotion_model {
+                request.emotion.model = Some(path);
+            }
+            request.emotion.validate()?;
+        }
+        request.validate_stream_buffer()?;
         let infer = self.infer.unwrap_or(config.inference.auto_start);
         if let Some(mode) = self.mode.or(config.inference.mode) {
             request.mode = match mode {
@@ -216,6 +248,59 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stream_buffer_defaults_config_cli_precedence_and_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("gui.exe");
+        let resolve = |args: &[&str]| {
+            Args::try_parse_from(args)
+                .unwrap()
+                .resolve_at(dir.path(), &exe)
+        };
+        assert_eq!(resolve(&["gui"]).unwrap().request.stream_buffer_ms, 100);
+        std::fs::write(
+            dir.path().join("gui.toml"),
+            "[inference]\nstream-buffer-ms=500",
+        )
+        .unwrap();
+        assert_eq!(resolve(&["gui"]).unwrap().request.stream_buffer_ms, 500);
+        assert_eq!(
+            resolve(&["gui", "--stream-buffer-ms", "750"])
+                .unwrap()
+                .request
+                .stream_buffer_ms,
+            750
+        );
+        for invalid in ["0", "9", "10001"] {
+            assert!(resolve(&["gui", "--stream-buffer-ms", invalid]).is_err());
+        }
+        std::fs::write(
+            dir.path().join("gui.toml"),
+            "[inference]\nstream-buffer-ms=0",
+        )
+        .unwrap();
+        assert!(resolve(&["gui"]).is_err());
+    }
+
+    #[test]
+    fn emotion_configuration_feature_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gui.toml");
+        std::fs::write(&file, "[emotion]\nmodel='models/emotion/model.json'\nsend-to-server=true\n[emotion.beginning]\njoy=0.8").unwrap();
+        #[cfg(feature = "emotion")]
+        {
+            let config = Config::read(&file).unwrap();
+            assert_eq!(
+                config.emotion.model,
+                Some(dir.path().join("models/emotion/model.json"))
+            );
+            assert_eq!(config.emotion.beginning["joy"], 0.8);
+            std::fs::write(&file, "[emotion]\nmodel=''").unwrap();
+            assert!(Config::read(&file).is_err());
+        }
+        #[cfg(not(feature = "emotion"))]
+        assert!(Config::read(&file).is_err());
+    }
 
     #[test]
     #[cfg(not(any(feature = "grpc", feature = "local", feature = "mock")))]

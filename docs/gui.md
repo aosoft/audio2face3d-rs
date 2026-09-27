@@ -184,6 +184,45 @@ restart the application.
 Embedded hosts provide `startup::Options` or `Request::runtime` explicitly;
 constructing a library request never reads process arguments or config files.
 
+
+The desktop app retains one inference backend after a successful request. Repeated
+starts with the same model path, GPU and runtime settings reuse the loaded local
+model; gRPC retains its connection/runtime when the endpoint and API key match.
+Changing the WAV or playback pacing does not reload the backend. Backend settings
+are compared at the next start. A different backend configuration, a failed request, or
+application exit releases the retained backend. A user Stop retains the backend;
+pending work is drained and request state is reset before reuse. Native errors or
+reset failures discard the affected model even if Stop was also pressed. Keeping a
+local model loaded retains its CPU/GPU memory between requests. If model files
+are replaced in place, restart the app to load the new contents.
+
+With Play while inferring ON, the adjacent **Buffer** field sets the startup and
+underrun-recovery target in milliseconds (10–10000, default 100). More buffering
+adds startup/recovery delay but tolerates longer gaps in incoming results. A
+completed clip or final tail can play even when shorter than the target. Set
+`stream-buffer-ms = 500` under `[inference]` in `gui.toml`, or override it with
+`--stream-buffer-ms 500`. Controls are locked during inference/playback; this
+setting is unused when Play while inferring is OFF. It does not change the audio
+device buffer, input chunk size, or model cache key.
+
+With Play while inferring OFF, the worker collects the bounded clip without sending
+per-frame results through the UI queue. Only successful completion publishes one
+`Event::Ready` clip and starts playback; cancellation or failure discards the
+unfinished clip. The timeline remains empty during loading. With the option ON,
+`Event::Output` continues to deliver incremental results for streaming playback.
+Embedded event consumers must handle both variants. Inference throughput still
+depends on the backend/model and available GPU resources.
+
+Each request resets audio, timestamps, emotion history and BlendShape solver state;
+results from previous requests are not carried forward. Logs distinguish
+`Initializing inference backend`, `Reusing inference backend` and
+`Reusing loaded regression model`. Embedded hosts can retain `inference::Engine`
+and call `Engine::start`; `Job::start` remains a one-shot API. Local model reuse is
+opt-in for direct library clients through `DirectConfig::builder(...).reuse_model(true)`.
+The gRPC server also retains one idle model for identical request parameters; see the
+[server guide](server.md). An existing server process must be rebuilt and restarted
+to enable this behavior; a GUI update alone cannot change remote model loading.
+
 ## Build and package from source
 
 Rust 2024 / Rust 1.91+, Windows x64 MSVC. From the checkout:
@@ -206,7 +245,7 @@ For local builds, use the runtime/build setup documented in the repository's
 `docs/platform.md`. CUDA 12.9 was validated with MSVC **14.42.34433**. Configure
 `[build-cuda.windows]` with the Visual Studio root and exact toolset version;
 the native build initializes matching compiler, header and library paths automatically.
-The default `standalone-app,grpc,obj2morph` build needs no CUDA/TensorRT or `build-cuda` settings.
+The default `standalone-app,grpc,obj2morph,emotion` build needs no CUDA/TensorRT or `build-cuda` settings.
 No developer SDK path is compiled into the application configuration.
 
 ## Head model generation
@@ -221,7 +260,7 @@ conversion commands, recommended output location and loading the result.
 - `audio2face3d_gui::obj2morph`: CPU OBJ head conversion, sharing the GUI
   model types and GLB writer. Enabled by the `obj2morph` feature.
 
-GUI defaults are `standalone-app,grpc,obj2morph`. `standalone-app` enables the executable,
+GUI defaults are `standalone-app,grpc,obj2morph,emotion`. `standalone-app` enables the executable,
 CLI/config loading, eframe window, file dialogs and CPAL audio device support.
 With `--no-default-features --features standalone-app`, no inference backend is
 compiled: Manual is locked on, and inference/playback controls are hidden. Enable
@@ -270,3 +309,33 @@ When recording performance, distinguish a fresh inference context with cached
 engine files from engine generation and retained, prewarmed contexts. Portable
 tests do not establish GPU performance, acoustic latency or Unreal ACE plugin
 playback compatibility; validate those separately on the target system.
+
+
+## Emotion
+
+The default `emotion` feature enables the Emotion controls, configuration and
+playback-position display of smoothed emotion output. It does not enable CUDA.
+With Local, leave Audio2Emotion model unchecked (or omit `emotion.model`) for
+inference without Audio2Emotion or emotion overrides. Select its `model.json` to
+enable it. The path can also be supplied with `--emotion-model PATH`; paths in
+`gui.toml` are relative to that file. Local inference still requires `--features local`.
+
+For gRPC, the server selects the Audio2Emotion model (`--emotion-model`). Enable
+"Send emotion settings" to send overrides; a local model path is never sent.
+Disabling this option omits overrides, but cannot disable a server's configured
+Audio2Emotion model. Unchecked individual settings preserve backend defaults.
+Beginning emotion values initialize the emotion state; they are not a timeline
+of per-frame overrides. Post-processing mixing controls require an Audio2Emotion
+model on the backend. Model/configuration edits invalidate offline playback;
+controls are locked while inference or playback is active. Identical settings
+reuse the backend/model; changing the local emotion model rebuilds the backend.
+
+To build the application without emotion controls:
+
+```sh
+cargo run -p audio2face3d-gui --no-default-features --features standalone-app,grpc,obj2morph
+```
+
+Such builds reject `[emotion]` configuration and `--emotion-model` instead of
+silently ignoring them. Remove that section when sharing a configuration with
+an emotion-disabled build. Received emotion traces are ignored in that build.
