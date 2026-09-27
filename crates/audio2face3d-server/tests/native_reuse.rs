@@ -51,6 +51,11 @@ fn curves(events: &[OutputEvent]) -> Vec<(u64, Vec<f32>)> {
 #[test]
 #[ignore = "requires A2F_MODEL, CUDA_PATH and TENSORRT_ROOT_DIR"]
 fn grpc_reuses_model_across_requests_and_client_cancellation() {
+    run_reuse(false);
+    run_reuse(true);
+}
+
+fn run_reuse(custom: bool) {
     let logs = Arc::new(Loads::default());
     let context = Audio2Face3DContext::builder()
         .logger(logs.clone())
@@ -88,10 +93,25 @@ fn grpc_reuses_model_across_requests_and_client_cancellation() {
             .unwrap(),
     ))
     .unwrap();
-    let options = RequestOptions::builder(AudioFormat::MONO_16KHZ)
-        .timeout(Duration::from_secs(180))
-        .build()
-        .unwrap();
+    let mut builder =
+        RequestOptions::builder(AudioFormat::MONO_16KHZ).timeout(Duration::from_secs(180));
+    if custom {
+        let mut face = FaceParameters::default();
+        face.lower_face_strength = Some(0.7);
+        let mut blendshapes = BlendshapeParameters::default();
+        blendshapes.multipliers.insert("JawOpen".into(), 0.6);
+        let mut emotion = EmotionParameters::default();
+        emotion.transition_time = Some(0.4);
+        let mut post = EmotionPostProcessing::default();
+        post.contrast = Some(1.0);
+        post.smoothing = Some(0.7);
+        builder = builder
+            .face(face)
+            .blendshapes(blendshapes)
+            .emotion(emotion)
+            .emotion_post_processing(post);
+    }
+    let options = builder.build().unwrap();
     let bytes = pcm(31, 16000);
     let first = collect(&client, options.clone(), bytes.clone()).unwrap();
     for iteration in 0..2 {
@@ -129,9 +149,38 @@ fn grpc_reuses_model_across_requests_and_client_cancellation() {
             }
         }
     }
+    assert_eq!(
+        logs.loaded.load(Ordering::Relaxed),
+        if custom { 2 } else { 1 }
+    );
+    assert_eq!(logs.reused.load(Ordering::Relaxed), 3);
+    if custom {
+        // Changed settings must not reuse stale solver settings. Returning to the
+        // original settings must reload and still match the first fresh result.
+        let changed = RequestOptions::builder(AudioFormat::MONO_16KHZ)
+            .timeout(Duration::from_secs(180))
+            .build()
+            .unwrap();
+        let other = collect(&client, changed, bytes.clone()).unwrap();
+        assert_eq!(logs.loaded.load(Ordering::Relaxed), 3);
+        assert!(
+            curves(&first).iter().zip(curves(&other)).any(|(a, b)| a
+                .1
+                .iter()
+                .zip(b.1)
+                .any(|(a, b)| (a - b).abs() > 1e-4))
+        );
+        let fresh = collect(&client, options, bytes).unwrap();
+        assert_eq!(logs.loaded.load(Ordering::Relaxed), 4);
+        for (a, b) in curves(&first).iter().zip(curves(&fresh)) {
+            assert_eq!(a.0, b.0);
+            for (a, b) in a.1.iter().zip(b.1) {
+                assert!((a - b).abs() < 1e-4);
+            }
+        }
+    }
     wait(client.shutdown()).unwrap();
     stop.send(()).unwrap();
     runtime.block_on(task).unwrap().unwrap();
-    assert_eq!(logs.loaded.load(Ordering::Relaxed), 1);
     assert_eq!(logs.reused.load(Ordering::Relaxed), 3);
 }

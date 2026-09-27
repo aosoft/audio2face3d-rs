@@ -484,11 +484,24 @@ impl RegressionState {
 }
 
 /// The handle never owns native state: abandonment still cleans up on the worker.
-pub(crate) type IdleModel = Arc<Mutex<Option<Worker<RegressionState>>>>;
+pub(crate) type IdleModel = Arc<Mutex<Option<(ModelKey, Worker<RegressionState>)>>>;
+
+/// Only model-affecting options: input is resampled per request and deadlines are external.
+#[derive(Clone, PartialEq)]
+pub(crate) struct ModelKey(RequestOptions);
+impl ModelKey {
+    fn new(options: &RequestOptions) -> Self {
+        let mut options = options.clone();
+        options.input_format = crate::types::AudioFormat::MONO_16KHZ;
+        options.timeout = None;
+        Self(options)
+    }
+}
 pub struct RegressionBackend {
     worker: Option<Worker<RegressionState>>,
     pub(crate) reuse: Option<IdleModel>,
     failed: bool,
+    key: ModelKey,
 }
 impl RegressionBackend {
     pub async fn load(config: Config, options: RequestOptions) -> Result<Self, Error> {
@@ -499,8 +512,20 @@ impl RegressionBackend {
         options: RequestOptions,
         reuse: Option<IdleModel>,
     ) -> Result<Self, Error> {
+        let key = ModelKey::new(&options);
         let idle = reuse.as_ref().and_then(|pool| pool.lock().unwrap().take());
-        let worker = if let Some(worker) = idle {
+        let worker = if let Some((idle_key, worker)) = idle {
+            if idle_key == key {
+                Some(worker)
+            } else {
+                let mut worker = worker;
+                worker.call(RegressionState::close).await?;
+                None
+            }
+        } else {
+            None
+        };
+        let worker = if let Some(worker) = worker {
             crate::logging::integration::log(crate::logging::LogLevel::Info, || {
                 crate::logging::LogRecord::new("Reusing loaded regression model")
                     .field("source", module_path!())
@@ -517,6 +542,7 @@ impl RegressionBackend {
             worker: Some(worker),
             reuse,
             failed: false,
+            key,
         })
     }
 }
@@ -575,7 +601,7 @@ impl Backend for RegressionBackend {
                 worker.call(RegressionState::reset).await?;
                 let mut idle = pool.lock().unwrap();
                 if idle.is_none() {
-                    *idle = Some(worker);
+                    *idle = Some((self.key.clone(), worker));
                     return Ok(());
                 }
             }

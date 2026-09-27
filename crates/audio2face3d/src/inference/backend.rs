@@ -39,9 +39,9 @@ pub struct Factory {
     reuse: Option<crate::inference::regression::IdleModel>,
 }
 impl Factory {
-    /// Retain at most one idle default-parameter regression model between requests.
-    /// Configure before starting requests. Active requests still own independent state;
-    /// custom parameters bypass reuse. `release_prepared` releases the idle model.
+    /// Retain at most one idle regression model between requests with identical parameters.
+    /// Configure before starting requests. Active requests still own independent state.
+    /// Changed parameters replace the idle model. `release_prepared` releases the idle model.
     pub fn with_model_reuse(mut self) -> Self {
         self.set_reuse_model(true);
         self
@@ -119,7 +119,7 @@ impl Factory {
             {
                 if let Some(pool) = &self.reuse {
                     let idle = pool.lock().unwrap().take();
-                    if let Some(mut worker) = idle {
+                    if let Some((_, mut worker)) = idle {
                         worker
                             .call(crate::inference::regression::RegressionState::close)
                             .await?;
@@ -167,7 +167,7 @@ impl Factory {
                     if custom && let Some(mut backend) = prepared.take() {
                         backend.close().await?;
                     }
-                    let pool = if custom { None } else { self.reuse.clone() };
+                    let pool = self.reuse.clone();
                     let mut backend = match prepared {
                         Some(backend) => backend,
                         None => {

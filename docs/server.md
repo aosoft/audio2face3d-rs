@@ -36,10 +36,13 @@ TLS. API-key authentication is opt-in. The default bind address is loopback.
 `--device` selects the CUDA device (default 0). `--emotion-model` optionally
 adds an Audio2Emotion classifier descriptor. Without it, the emotion
 post-processing path uses configured/preferred emotions without classifier
-inference. The server retains at most one idle default-parameter regression model
+inference. The server retains at most one idle regression model for identical
+request parameters
 between RPCs, including after normal client cancellation. Audio, emotion and solver
 state are reset before reuse; server shutdown releases the idle model. Requests
-with face/BlendShape/emotion parameter overrides use separate models. Concurrent
+with changed face/BlendShape/emotion parameters replace the idle model; identical
+explicit parameters (including ACE client settings) reuse it. Input sample rate and
+request timeout do not affect the model cache. Concurrent
 RPCs still own independent runtimes; model loading and retained GPU memory must
 be included in the deployment budget. Start with
 `--max-streams 1`, especially with Audio2Emotion.

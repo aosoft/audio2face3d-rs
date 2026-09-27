@@ -274,7 +274,7 @@ impl DirectConfigBuilder {
         self.config.max_executions = value;
         self
     }
-    /// Retain one idle default-parameter regression model between requests.
+    /// Retain one idle regression model between requests with identical parameters.
     /// Disabled by default; shutdown releases the retained model.
     pub fn reuse_model(mut self, value: bool) -> Self {
         self.config.reuse_model = value;
