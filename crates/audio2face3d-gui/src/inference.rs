@@ -40,6 +40,7 @@ pub struct Request {
     /// Host-resolved base configuration. Programmatic root fields override the corresponding SDK group.
     pub runtime: audio2face3d::runtime::NativeRuntimeConfig,
     pub device: usize,
+    /// Stream paced incremental Output events when true; otherwise publish one Ready clip.
     pub pace_input: bool,
     #[cfg(feature = "emotion")]
     pub emotion: crate::emotion::Settings,
@@ -144,6 +145,8 @@ impl Request {
     }
 }
 pub enum Event {
+    /// Complete offline result, published only after successful worker cleanup.
+    Ready(Box<Clip>),
     InputFinished,
     Output(OutputEvent),
 }

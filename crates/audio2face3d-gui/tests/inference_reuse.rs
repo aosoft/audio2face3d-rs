@@ -16,8 +16,10 @@ fn collect(mut job: Job) -> Clip {
             events.extend(job.events.try_iter());
         }
         for event in events {
-            if let Event::Output(event) = event {
-                apply_event(&mut clip, event).unwrap();
+            match event {
+                Event::Output(event) => apply_event(&mut clip, event).unwrap(),
+                Event::Ready(result) => clip = *result,
+                Event::InputFinished => {}
             }
         }
         if !ready && clip.ready_until() >= 0.1 {
@@ -43,8 +45,10 @@ fn stop_during_playback(mut job: Job) {
     let mut clip = Clip::running();
     loop {
         for event in job.events.try_iter() {
-            if let Event::Output(event) = event {
-                apply_event(&mut clip, event).unwrap();
+            match event {
+                Event::Output(event) => apply_event(&mut clip, event).unwrap(),
+                Event::Ready(result) => clip = *result,
+                Event::InputFinished => {}
             }
         }
         assert!(job.try_finish().is_none(), "request finished before Stop");

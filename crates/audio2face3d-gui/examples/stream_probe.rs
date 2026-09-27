@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         for event in events {
             match event {
+                Event::Ready(clip) => shared.lock().unwrap().replace(*clip),
                 Event::InputFinished => sent = true,
                 Event::Output(event) => {
                     if matches!(&event, audio2face3d::types::OutputEvent::Curves(_))

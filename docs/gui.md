@@ -196,6 +196,14 @@ reset failures discard the affected model even if Stop was also pressed. Keeping
 local model loaded retains its CPU/GPU memory between requests. If model files
 are replaced in place, restart the app to load the new contents.
 
+With Play while inferring OFF, the worker collects the bounded clip without sending
+per-frame results through the UI queue. Only successful completion publishes one
+`Event::Ready` clip and starts playback; cancellation or failure discards the
+unfinished clip. The timeline remains empty during loading. With the option ON,
+`Event::Output` continues to deliver incremental results for streaming playback.
+Embedded event consumers must handle both variants. Inference throughput still
+depends on the backend/model and available GPU resources.
+
 Each request resets audio, timestamps, emotion history and BlendShape solver state;
 results from previous requests are not carried forward. Logs distinguish
 `Initializing inference backend`, `Reusing inference backend` and

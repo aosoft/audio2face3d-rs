@@ -188,6 +188,15 @@ impl DesktopApp {
             for event in events {
                 match event {
                     crate::inference::Event::InputFinished => self.input_finished = true,
+                    crate::inference::Event::Ready(clip) => {
+                        if !self.user_cancelled {
+                            player.replace(*clip);
+                            self.selected = ["JawOpen", "EyeBlinkLeft", "EyeBlinkRight"]
+                                .iter()
+                                .filter_map(|name| player.clip.names.iter().position(|n| n == name))
+                                .collect();
+                        }
+                    }
                     crate::inference::Event::Output(event) => {
                         if matches!(player.clip.session, crate::core::SessionState::Failed(_)) {
                             continue;
@@ -287,7 +296,9 @@ impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.poll_inference();
         if self.job.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            ctx.request_repaint_after(std::time::Duration::from_millis(
+                if self.request.pace_input { 16 } else { 100 },
+            ));
         }
         if self.message != self.last_message {
             self.logger.log(LogLevel::Info, || {

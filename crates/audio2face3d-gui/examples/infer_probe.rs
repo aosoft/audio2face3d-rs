@@ -43,6 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         for event in events {
             match event {
+                Event::Ready(result) => clip = *result,
                 Event::InputFinished => input_finished = true,
                 Event::Output(event) => apply_event(&mut clip, event)?,
             }

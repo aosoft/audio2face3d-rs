@@ -34,7 +34,7 @@ fn unreachable_server_finishes_with_error_and_releases_worker() {
     }
     assert!(job.events.try_iter().all(|event| !matches!(
         event,
-        Event::Output(audio2face3d::types::OutputEvent::Completed(_))
+        Event::Ready(_) | Event::Output(audio2face3d::types::OutputEvent::Completed(_))
     )));
     drop(job);
     std::fs::remove_file(path).unwrap();
@@ -84,8 +84,10 @@ fn repeated_jobs_finish_with_audio_curves_and_released_resources() {
                 events.extend(job.events.try_iter());
             }
             for event in events {
-                if let Event::Output(event) = event {
-                    apply_event(&mut clip, event).unwrap();
+                match event {
+                    Event::Output(event) => apply_event(&mut clip, event).unwrap(),
+                    Event::Ready(result) => clip = *result,
+                    Event::InputFinished => {}
                 }
             }
             if let Some(result) = done {
@@ -113,5 +115,60 @@ fn cancellation_releases_a_worker_with_an_unconsumed_bounded_queue() {
     job.cancel();
     drop(job);
     assert!(start.elapsed() < Duration::from_secs(3));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn offline_finishes_without_ui_draining_and_publishes_one_complete_clip() {
+    let request = request();
+    let path = request.wav.clone();
+    let mut job = Job::start(10, request, Arc::new(audio2face3d::logging::NoopLogger)).unwrap();
+    let start = Instant::now();
+    // A per-frame bounded channel would stall here after 16 events.
+    loop {
+        if let Some(result) = job.try_finish() {
+            result.unwrap();
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut ready = 0;
+    for event in job.events.try_iter() {
+        match event {
+            Event::InputFinished => {}
+            Event::Ready(clip) => {
+                ready += 1;
+                assert_eq!(clip.session, SessionState::Completed);
+                assert_eq!(clip.audio.len(), 32000);
+                assert!(clip.frames.len() >= 59);
+            }
+            Event::Output(_) => panic!("offline inference must not send partial results"),
+        }
+    }
+    assert_eq!(ready, 1);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn cancelled_offline_job_does_not_publish_a_clip() {
+    let request = request();
+    let path = request.wav.clone();
+    let mut job = Job::start(11, request, Arc::new(audio2face3d::logging::NoopLogger)).unwrap();
+    job.cancel();
+    let start = Instant::now();
+    loop {
+        if let Some(result) = job.try_finish() {
+            assert!(result.is_err());
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        job.events
+            .try_iter()
+            .all(|event| !matches!(event, Event::Ready(_)))
+    );
     std::fs::remove_file(path).unwrap();
 }

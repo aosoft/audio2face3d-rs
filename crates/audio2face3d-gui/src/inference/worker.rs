@@ -151,6 +151,7 @@ fn run_inner(
             }
             result
         });
+        let mut collected = (!request.pace_input).then(crate::core::Clip::running);
         let received = (|| -> Result<()> {
             let mut completed = false;
             while let Some(event) = wait(output.recv()).map_err(error)? {
@@ -170,7 +171,11 @@ fn run_inner(
                 {
                     continue;
                 }
-                send(&sender, Event::Output(event), &cancelled)?;
+                if let Some(clip) = &mut collected {
+                    super::apply_event(clip, event)?;
+                } else {
+                    send(&sender, Event::Output(event), &cancelled)?;
+                }
             }
             if !completed {
                 return Err(Error("response ended without successful completion".into()));
@@ -184,7 +189,11 @@ fn run_inner(
             .join()
             .unwrap_or_else(|_| Err(Error("input worker panicked".into())));
         let closed = wait(control.closed()).map_err(error);
-        received.and(sent).and(closed)
+        received.and(sent).and(closed)?;
+        if let Some(clip) = collected {
+            send(&sender, Event::Ready(Box::new(clip)), &cancelled)?;
+        }
+        Ok(())
     })
 }
 fn create(request: &Request, logger: Arc<dyn Logger>, key: Key) -> Result<CachedBackend> {
