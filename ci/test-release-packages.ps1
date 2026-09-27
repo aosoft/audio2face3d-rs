@@ -47,9 +47,9 @@ if ($library.license -ne 'MIT AND MPL-2.0 AND Apache-2.0') {
     throw 'The library package must declare the Eigen-derived source license'
 }
 $mplText = [IO.File]::ReadAllText((Join-Path $repoRoot 'LICENSE-MPL-2.0')).Replace("`r`n", "`n").Trim()
-$packagedLicense = [IO.File]::ReadAllText((Join-Path $repoRoot 'crates/audio2face3d/LICENSE')).Replace("`r`n", "`n")
+$packagedLicense = [IO.File]::ReadAllText((Join-Path $repoRoot 'crates/audio2face3d/LICENSE-MPL-2.0')).Replace("`r`n", "`n")
 if (-not $packagedLicense.Contains($mplText)) {
-    throw 'Packaged LICENSE must retain the full root MPL-2.0 text'
+    throw 'Packaged LICENSE-MPL-2.0 must retain the full root MPL-2.0 text'
 }
 foreach ($consumer in @($cli, ($packages | Where-Object name -eq "audio2face3d-gui"))) {
     $libraryDependency = $consumer.dependencies | Where-Object { $_.name -eq "audio2face3d" -and $null -eq $_.kind }
@@ -66,6 +66,11 @@ foreach ($packageName in @("audio2face3d", "audio2face3d-server", "audio2face3d-
             if ($required -notin $files) { throw "GUI package is missing $required" }
         }
     }
+    if ($packageName -eq 'audio2face3d') {
+        foreach ($required in @('LICENSE-MPL-2.0', 'LICENSE-APACHE')) {
+            if ($required -notin $files) { throw "Library package is missing $required" }
+        }
+    }
     if ('LICENSE' -notin $files) { throw "$packageName is missing LICENSE" }
     if ($packageName -eq 'audio2face3d' -and 'src/animation/blendshape/bvls/svd.rs' -notin $files) {
         throw 'The library package must retain its MPL-covered SVD source'
@@ -80,6 +85,17 @@ foreach ($packageName in @("audio2face3d", "audio2face3d-server", "audio2face3d-
 # Modern Cargo stages workspace packages in a temporary local registry, so
 # all packaged manifests can be verified before their initial publication.
 Invoke-Checked @("cargo", "package", "--workspace", "--locked", "--allow-dirty", "--no-default-features")
+
+
+# Verify Cargo copied the shared root text into every packaged crate.
+$rootLicense = [IO.File]::ReadAllText((Join-Path $repoRoot 'LICENSE')).Replace("`r`n", "`n")
+foreach ($package in $packages) {
+    $archiveRoot = Join-Path $metadata.target_directory "package/$($package.name)-$($package.version)"
+    $archiveLicense = [IO.File]::ReadAllText((Join-Path $archiveRoot 'LICENSE')).Replace("`r`n", "`n")
+    if ($archiveLicense -ne $rootLicense) {
+        throw "$($package.name) packaged LICENSE differs from the shared root LICENSE"
+    }
+}
 
 if (-not $SkipPublishDryRun) {
     Invoke-Checked @("cargo", "publish", "--workspace", "--locked", "--allow-dirty", "--no-default-features", "--dry-run", "--registry", "crates-io")
