@@ -36,14 +36,15 @@ and the corresponding `--workspace`; it is not part of CI or publication.
 Public API and feature changes are reviewed in pull request diffs.
 Portable CI checks formatting, builds, linting, tests, and documentation across
 the portable feature configurations. It runs automatically
-on pull requests and can also be run manually. Windows covers the portable tier
-and MSRV. macOS checks the gRPC GUI and portable configuration. The Linux job runs
+on pull requests and can also be run manually. The `ci` workflow uses `test-windows` for the portable tier
+and `msrv` for the minimum Rust version. `macos-grpc` checks the gRPC GUI and portable configuration. `test-linux` runs
 library/mock-server tests, native-loader fixtures, configuration tests, a gRPC GUI
 build without the converter, and GUI/OBJ conversion tests. Linux tests run without
 a window or audio device; GPU tests remain opt-in. The loader fixtures use small
 test libraries and do not require CUDA or TensorRT.
 
-Windows Server 2022 and Ubuntu 24.04 also run native build-only jobs on every PR.
+Windows Server 2022 and Ubuntu 24.04 also run `build-native-windows` and
+`build-native-linux` build-only jobs on every PR.
 They compile and link the library, server, GUI and test targets with native features,
 using CUDA 12.9.1 redistributable compiler/header components and the TensorRT 10.16
 public headers pinned to commit `d0faf303ba766f20cd9fd8c413a112fc2e5a397b` (10.16.0.72).

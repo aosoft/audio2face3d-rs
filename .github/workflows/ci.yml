@@ -1,4 +1,4 @@
-name: portable-ci
+name: ci
 
 on:
   pull_request:
@@ -31,7 +31,7 @@ jobs:
       - name: Check desktop gRPC on minimum supported Rust
         run: cargo check --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc
 
-  portable:
+  test-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +67,7 @@ jobs:
       - name: Test portable configuration
         run: cargo test --locked -p audio2face3d --no-default-features --features runtime-cli --test native_build_config
 
-  linux-portable:
+  test-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -101,14 +101,18 @@ jobs:
       - name: Test GUI and OBJ head conversion without CUDA or TensorRT
         run: cargo test --locked -p audio2face3d-gui --no-default-features --features standalone-app,grpc,mock,obj2morph
 
-  native-build:
-    name: native-build (${{ matrix.os }})
+  build-native:
+    name: build-native-${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, ubuntu-24.04]
+        include:
+          - os: windows-2022
+            platform: windows
+          - os: ubuntu-24.04
+            platform: linux
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
