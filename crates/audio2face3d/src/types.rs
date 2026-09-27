@@ -10,7 +10,7 @@ mod event;
 mod request;
 mod time;
 
-pub use animation::{CurveFrame, CurveLayout, EmotionLayout, LayoutId};
+pub use animation::{CURVE_NAMES, CurveFrame, CurveLayout, EmotionLayout, LayoutId};
 pub use audio::{AudioBlock, AudioFormat, InputChunk, PcmBuffer, SampleFormat};
 pub use emotion::{EmotionKeyframe, EmotionTrace, EmotionValues};
 pub use error::{Error, ErrorKind, Progress, RequestId, Result};

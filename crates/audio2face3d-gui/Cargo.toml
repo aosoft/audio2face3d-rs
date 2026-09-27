@@ -1,0 +1,95 @@
+[package]
+name = "audio2face3d-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Reusable Audio2Face-3D inspection, rendering and playback library"
+
+[package.metadata.docs.rs]
+default-features = false
+features = ["gltf-read", "obj2morph", "ui-egui", "render-wgpu", "grpc"]
+
+[features]
+default = ["standalone-app", "grpc", "obj2morph"]
+gltf-read = ["dep:gltf", "dep:serde_json"]
+gltf-write = ["dep:gltf-json", "dep:serde_json"]
+
+session = ["dep:audio2face3d", "dep:hound"]
+local = ["session", "audio2face3d/native"]
+grpc = ["session", "audio2face3d/client-grpc", "dep:tokio"]
+mock = ["session", "audio2face3d/mock"]
+render-wgpu = ["dep:wgpu", "dep:bytemuck", "dep:glam"]
+ui-egui = ["session", "dep:egui", "dep:chrono"]
+standalone-app = ["render-wgpu", "ui-egui", "session", "gltf-read", "dep:cpal", "dep:eframe", "dep:egui-wgpu", "dep:rfd", "dep:clap", "dep:toml", "dep:windows-sys", "audio2face3d/runtime-cli"]
+obj2morph = ["gltf-write", "dep:sha2", "dep:tempfile", "dep:toml"]
+capture = ["standalone-app", "dep:image"]
+
+[dependencies]
+sha2 = { workspace = true, optional = true }
+tempfile = { version = "3", optional = true }
+clap = { workspace = true, optional = true }
+toml = { version = "1.1", optional = true, default-features = false, features = ["parse", "std", "serde"] }
+serde.workspace = true
+thiserror.workspace = true
+serde_json = { workspace = true, optional = true }
+gltf = { version = "=1.4.1", default-features = false, features = ["utils", "names", "extras"], optional = true }
+gltf-json = { version = "=1.4.1", features = ["names", "extras"], optional = true }
+
+
+chrono = { version = "0.4.45", default-features = false, features = ["clock"], optional = true }
+audio2face3d = { workspace = true, optional = true }
+hound = { version = "=3.5.1", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "net"], optional = true }
+wgpu = { version = "24", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+glam = { version = "0.30", optional = true }
+egui = { version = "=0.31.1", optional = true }
+egui-wgpu = { version = "=0.31.1", default-features = false, optional = true }
+eframe = { version = "=0.31.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"], optional = true }
+cpal = { version = "=0.15.3", optional = true }
+rfd = { version = "0.15", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = ["Win32_System_Console"] }
+
+[[bin]]
+name = "audio2face3d-gui"
+required-features = ["standalone-app"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+toml = "1.1"
+serde_json.workspace = true
+pollster = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[example]]
+name = "capture_head"
+required-features = ["render-wgpu", "gltf-read"]
+
+[[example]]
+name = "head_atlas"
+required-features = ["render-wgpu", "gltf-read"]
+
+[[example]]
+name = "audio_probe"
+required-features = ["standalone-app"]
+
+[[example]]
+name = "audio_gui_probe"
+required-features = ["standalone-app", "ui-egui"]
+
+[[example]]
+name = "stream_probe"
+required-features = ["standalone-app"]
+
+[[example]]
+name = "infer_probe"
+required-features = ["session"]

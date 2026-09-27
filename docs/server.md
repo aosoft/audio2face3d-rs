@@ -7,7 +7,7 @@ Generate facial animation from audio through the ACE
 the workspace's [shared inference layer](../README.md) for Regression inference and the
 host BlendShape solver, returning 52 face curves together with audio.
 
-This crate provides both a server library and a CLI executable.
+This crate provides an embeddable server library and CLI executable. Defaults enable `native` and `cli`.
 A separate mock backend is available for development diagnostics.
 
 ## Build and run Regression inference
@@ -25,7 +25,7 @@ Run commands from the workspace root. Requirements:
 Optionally prepare a [shared platform configuration file](platform.md) for build and runtime SDK locations. Without a selected or discovered file, existing SDK environment variables and runtime search paths are used. The default `native` feature provides Regression inference. Enable `cli` to build the executable:
 
 ```powershell
-cargo build --release --locked -p audio2face3d-server --features cli
+cargo build --release --locked -p audio2face3d-server
 .\target\release\audio2face3d-server.exe --platform-config platform.toml --backend regression --model models/mark/model.json
 ```
 
@@ -225,9 +225,9 @@ audio or emotion and do not test lip synchronization or model quality.
 ```powershell
 cargo fmt --all --check
 cargo check --locked -p audio2face3d-server
-cargo test --locked -p audio2face3d-server --no-default-features --features mock
+cargo test --locked -p audio2face3d-server --no-default-features --features cli,mock
 cargo clippy --locked -p audio2face3d-server --no-default-features --features cli,mock --all-targets -- -D warnings
-cargo test --release --locked -p audio2face3d-server --features cli
+cargo test --release --locked -p audio2face3d-server
 ```
 
 The protocol tests include all 52 isolated curves, PCM/time preservation,
@@ -249,3 +249,10 @@ The NVIDIA protocol definitions are maintained in
 [protocol module](../crates/audio2face3d/proto). They retain their
 upstream notices and are covered by [LICENSE-APACHE](../crates/audio2face3d-server/LICENSE-APACHE).
 See the workspace license for the Rust implementation.
+
+## Library and executable features
+
+`audio2face3d-server` provides both `Server` and the executable. Defaults enable
+`native,cli`. To embed it without CLI dependencies, use `default-features = false`
+and select `native` or `mock` as appropriate. Use `--no-default-features --features
+cli,mock` for the diagnostic executable. There is no separate server-core package.

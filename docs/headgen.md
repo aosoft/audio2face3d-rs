@@ -1,0 +1,174 @@
+# OBJ head conversion
+
+`audio2face3d-gui obj2morph` converts matching OBJ files into GUI head models.
+The `obj2morph` feature is enabled by default. Conversion runs on the CPU without
+reading GUI/platform startup settings or initializing windows, audio devices or
+inference. No CUDA, TensorRT, Blender or Python is required. The tool does not fetch
+models. Users provide input data and decide how their converted models are used.
+
+## Reference input: ICT-FaceKit
+
+[ICT-FaceKit](https://github.com/USC-ICT/ICT-FaceKit) is a facial model dataset
+published by the USC Institute for Creative Technologies. Its `FaceXModel`
+directory contains a neutral head and expression OBJ files sharing the same
+vertex topology. This makes it a reference input for testing the converter.
+Other datasets can be used by supplying matching neutral/expression OBJ files
+and a TOML mapping to the GUI's channel names and head profile.
+
+This repository includes an [ICT-FaceKit conversion preset](../crates/audio2face3d-gui/presets/ict-facekit.toml),
+not the ICT model data or a converted head. Users obtain ICT-FaceKit separately
+and review its upstream license for their intended use and distribution.
+The tool does not download the dataset or install it as the GUI's default head.
+
+### Obtain and convert the reference model
+
+Clone the upstream repository into a separate data directory, for example:
+
+```powershell
+git clone https://github.com/USC-ICT/ICT-FaceKit.git C:/Data/ICT-FaceKit
+```
+
+`--input-root` must point to the checkout's **FaceXModel** directory, which contains
+`generic_neutral_mesh.obj` and the expression OBJ files. It must not point to the
+checkout root, `Blender`, or an individual OBJ file. Replace the example path below
+with your local checkout path.
+
+Run the following commands from the audio2face3d-rs repository root. Create the
+output directory first if necessary:
+
+```powershell
+New-Item -ItemType Directory -Force models/heads, temp | Out-Null
+```
+
+```powershell
+cargo run -p audio2face3d-gui -- obj2morph --inspect --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --report temp/ict-inspect.json
+cargo run -p audio2face3d-gui -- obj2morph --config crates/audio2face3d-gui/presets/ict-facekit.toml --input-root C:/Data/ICT-FaceKit/FaceXModel --output models/heads/ict-facekit.glb
+```
+
+Output directories must already exist. Convert also writes `ict-facekit.report.json`.
+`--report` overrides that path; `--force` explicitly permits replacing regular output
+files. Inputs, config and output paths cannot collide. Both outputs are staged and
+synced before either is replaced. Two-file atomicity is not guaranteed: a report
+commit failure identifies the already-committed GLB and its hash. Inspect performs
+all shape validation and exact GLB size measurement but writes no GLB.
+
+The recommended generated-head location is `models/heads/ict-facekit.glb`.
+To load it on every startup, set this in the repository-root `gui.toml` (as shown
+in `gui.example.toml`):
+
+```toml
+head = "models/heads/ict-facekit.glb"
+```
+
+This path is relative to `gui.toml`. The `models/` directory is ignored by Git;
+converted model data and its report are not committed.
+
+In the GUI, choose **Open head** and select `models/heads/ict-facekit.glb`, or pass
+`--head models/heads/ict-facekit.glb` when starting it. This GLB is the display head;
+it is separate from the **Model JSON** used for Audio2Face inference.
+Unsupported head channels do not remove inference values or timeline tracks.
+The bundled diagnostic mannequin is original geometry, not ICT data, and remains
+the fallback when no custom head is configured.
+See [ICT reference preset and visual review](#ict-reference-preset-and-visual-review)
+for channel mapping and [validation results](#ict-facekit-validation-and-explicit-pose-tolerance)
+for known limitations.
+
+## Input contract
+
+Use UTF-8/ASCII OBJ files, with `v x y z`, optional `vt`, `vn`, `o`, `g`, `s`,
+`usemtl`, `mtllib`, and triangle/quad `f` records. All four face-index syntaxes and
+negative indices are accepted. Unsupported instructions, nonfinite coordinates,
+homogeneous/color vertices, invalid references, self-intersections and degenerate
+retained triangles are errors. MTL and textures are never opened.
+
+Neutral and every expression must have identical vertex counts and the exact same
+ordered face vertex indices. This is checked before exclusions or triangulation.
+Coincident vertices remain distinct. UV/normal indices may differ. Matching topology
+cannot prove semantic correspondence; inspect the actual poses visually.
+
+All configured input paths use forward slashes relative to `--input-root`. Absolute
+paths, parent traversal and links outside that root are rejected. Only explicitly
+listed files are read, including on ICT datasets containing identity models.
+
+## Configuration
+
+See `crates/audio2face3d-gui/presets/ict-facekit.toml` for all required sections.
+Unknown fields, duplicate keys and unknown enum values are rejected. The keys in
+`targets` and `unsupported_channels` must partition the canonical 52 channel names.
+An output channel lists one or more unique expression files; their neutral-relative
+deltas are **summed**, not averaged. No hidden gains, retargeting or corrective shapes
+are applied. Every output channel must retain nonzero displacement somewhere.
+
+`transform` declares distinct signed up/forward axes, fitted height and target center.
+A right-handed axis map and one scale/translation are computed from retained Neutral
+bounds, then shared by every expression. Output uses +Y up, +Z forward.
+`geometry.split_by` is `material` or `object_group_material`. Exclusions name Neutral
+materials. Opaque RGBA colors come from `materials`, not MTL. Shared-vertex normals
+are calculated across materials before parts are split; hard edges require separate
+source vertices. Composite normals are recalculated from the summed pose.
+`expected` provides optional strict dataset counts. `reference` is descriptive
+provenance, not a license or permission determination.
+
+Input limits: 128 MiB/file, 2 GiB total, 1 MiB/line, 100,000 source vertices,
+600,000 triangulated indices and 104 expression files. Output limits: 64 MiB GLB
+and decoded geometry, 100,000 split vertices, 600,000 indices, 64 parts and 52 targets
+per part. GPU vec4 storage estimates are reported separately; the renderer checks
+device limits. The converter never silently reduces geometry or raises limits.
+
+## Library and diagnostics
+
+`Config::parse`, `inspect(&Config, &Path)` and `convert(&Config, &Path)` return typed
+errors. Convert returns `Conversion { model, report }`; the library writes no files.
+The executable owns output persistence and process exit codes: 0 success, 2 config/
+CLI, 3 input/topology/shape, 4 I/O/output/limits. Expected unsupported channels are
+not errors. Reports contain source/config hashes, relative paths, transform,
+material exclusions, channel displacement metrics, reversed-normal candidates,
+CPU/GPU size estimates and output hashes. Reversal warnings may be legitimate large
+rotations and require visual review. Same inputs/config/tool/platform produce the
+same GLB bytes; no timestamps, random identifiers or absolute paths are embedded.
+
+## ICT reference preset and visual review
+
+The preset maps 53 expression files to 51 channels; BrowInnerUp and CheekPuff sum
+left/right files. TongueOut is explicitly unsupported. Identity, pupil dilation,
+additional cheek shapes and textures are not imported. EyeBlend, EyeOcclusion,
+LacrimalFluid and EyeLashes are excluded because their intended rendering requires
+special shading. The preset's `reference.status` records its validation status.
+
+Use `head_atlas` for supported channels at 0 / 0.5 / 1 and a three-quarter view.
+Use `capture_head` for Neutral and combinations, for example:
+
+```powershell
+cargo run -p audio2face3d-gui --features render-wgpu,gltf-read --example head_atlas -- models/heads/ict-facekit.glb temp/ict-atlas
+cargo run -p audio2face3d-gui --features render-wgpu,gltf-read --example capture_head -- models/heads/ict-facekit.glb temp/ict-jaw.png JawOpen=0.7 MouthClose=0.3 yaw=0.6
+```
+
+Check eyelids, eyes, lips, oral cavity, teeth/tongue motion and left/right meanings.
+Conversion success is not a visual quality certification. Keep ICT source data,
+derived models, reports and screenshots outside versioned assets (for example in
+ignored `temp`). Normal CI uses only independent tiny fixtures; packaging explicitly
+copies the original fallback head, not conversion output.
+
+## ICT FaceKit validation and explicit pose tolerance
+
+The ICT preset was exercised on revision `da5f95a607f5e6b37755b38d3385d7f2853732e5`.
+All 53 expression inputs pass ordered topology matching and map to 51 channels.
+MouthStretchRight and MouthUpperUpRight contain two oral source faces (15776 and
+15781) whose adjacent vertices collapse in the posed geometry.
+
+`geometry.degenerate_pose_triangles` defaults to `"error"`. The ICT preset explicitly
+uses `"skip_normal_contribution"`, approved for this input: only zero-area **posed**
+triangles are omitted when accumulating normals. Vertex positions, morph deltas
+and triangle indices remain unchanged. Surrounding nondegenerate faces must still
+provide a usable normal at every retained vertex. Neutral degeneracy, overflow and
+undefined surrounding normals always remain errors. Reports record skipped triangle
+indices and original source face numbers per output channel.
+
+The reference conversion produces 24,953 split vertices, 48,836 triangles and eight
+parts, within the existing GLB/CPU/GPU limits. CPU/GPU pose checks and actual Local
+WAV playback were exercised. These are functional checks, not a quality guarantee.
+The preset remains a candidate: opaque outer sclera geometry obscures the iris,
+limiting gaze inspection; strong additive mouth/eyelid combinations need further
+artistic review. A separate custom-model repository could adapt eye geometry/material
+boundaries for opaque rendering and author combination corrections. This converter
+does not insert hidden corrective weights or silently modify source geometry.

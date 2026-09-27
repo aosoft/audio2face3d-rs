@@ -90,11 +90,20 @@ fn select_file(cwd: &Path, explicit: Option<PathBuf>, user: Option<PathBuf>) -> 
 
 impl PlatformArgs {
     pub fn resolve(&self) -> Result<NativeRuntimeConfig, NativeRuntimeError> {
+        self.resolve_with_config(None)
+    }
+    /// Use a host-selected file after --platform-config and before environment/default discovery.
+    /// Relative host paths, like command-line paths, are relative to the working directory.
+    pub fn resolve_with_config(
+        &self,
+        host_config: Option<&Path>,
+    ) -> Result<NativeRuntimeConfig, NativeRuntimeError> {
         let cwd = std::env::current_dir().map_err(|e| error(e.to_string()))?;
         let selected = select_file(
             &cwd,
             self.platform_config
                 .clone()
+                .or_else(|| host_config.map(Path::to_owned))
                 .or_else(|| std::env::var_os("AUDIO2FACE3D_PLATFORM_CONFIG").map(PathBuf::from)),
             crate::platform_config_file::user_config(),
         );
@@ -176,6 +185,12 @@ impl PlatformArgs {
 mod tests {
     use super::*;
     #[test]
+    fn runtime_accepts_unused_missing_build_tools_and_empty_config() {
+        let base = std::env::temp_dir();
+        assert!(parse("", &base).is_ok());
+        assert!(parse("[build-cuda.windows]\nvisual-studio-root='missing-vs'\nmsvc-toolset-version='14.42.34433'\n[build-cuda.linux]\ncuda-host-compiler='missing-g++'", &base).is_ok());
+    }
+    #[test]
     fn file_paths_and_cli_overrides_use_their_own_bases_and_replace_groups() {
         let cwd = std::env::current_dir().unwrap();
         let file_base = cwd.join("temp/config");
@@ -209,10 +224,10 @@ mod tests {
             "[runtime]\ncuda-library-dirs=[]",
             "[runtime]\ncuda-root='a'\ncuda-library-dirs=['b']",
             "[runtime]\nsearch-policy='latest'",
-            "[build]\ncuda-archs=['86', '89']",
-            "[build]\ncuda-arch=['86']",
-            "[build]\ncuda-arch='86,89'",
-            "[build]\ncuda-arch=false",
+            "[build-cuda]\ncuda-archs=['86', '89']",
+            "[build-cuda]\ncuda-arch=['86']",
+            "[build-cuda]\ncuda-arch='86,89'",
+            "[build-cuda]\ncuda-arch=false",
         ] {
             assert!(parse(text, &cwd).is_err(), "{text}");
         }
@@ -233,7 +248,7 @@ mod tests {
         );
         assert_eq!(config.search_policy(), NativeSearchPolicy::ExplicitOnly);
         let common = parse(
-            "cuda-root='sdk'\n[build]\ncuda-host-compiler='missing/compiler'",
+            "cuda-root='sdk'\n[build-cuda]\n[build-cuda.linux]\ncuda-host-compiler='missing/compiler'",
             &base,
         )
         .unwrap();

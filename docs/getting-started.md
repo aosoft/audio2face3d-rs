@@ -10,7 +10,7 @@ The packages are not yet published to crates.io. After configuring the SDK locat
 
 ```powershell
 cargo install --path crates/audio2face3d --locked --features cli,native
-cargo install --path crates/audio2face3d-server --locked --features cli
+cargo install --path crates/audio2face3d-server --locked
 ```
 
 For a portable diagnostic server, use `--no-default-features --features cli,mock` when installing `audio2face3d-server`. Cargo features are selected at build time. For server startup and library embedding, see the [server guide](server.md).

@@ -3,19 +3,21 @@ resolver = "2"
 members = [
     "crates/audio2face3d",
     "crates/audio2face3d-server",
+    "crates/audio2face3d-gui",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"
+license-file = "LICENSE"
 publish = ["crates-io"]
 repository = "https://github.com/aosoft/audio2face3d-rs"
 readme = "README.md"
 
 [workspace.dependencies]
-audio2face3d = { version = "0.1.0", path = "crates/audio2face3d", default-features = false }
+audio2face3d = { version = "0.2.0", path = "crates/audio2face3d", default-features = false }
 clap = { version = "4.5", features = ["derive"] }
 sha2 = "0.11"
 thiserror = "2.0"

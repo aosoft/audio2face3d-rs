@@ -11,11 +11,14 @@ embeddable gRPC server.
 | Package | Purpose |
 |---|---|
 | `audio2face3d` | Shared types, direct/remote client, inference engines, and optional CLI |
-| `audio2face3d-server` | Embeddable gRPC server and optional server executable |
+| `audio2face3d-server` | Embeddable gRPC server and executable |
+| `audio2face3d-gui` | Head models, inspection library and desktop executable |
 
 The base package has no default features. Select `native` for local CUDA/TensorRT
 inference, `client-grpc` for remote inference, or `mock` for diagnostics.
-Both executables require `cli`; the server enables `native` by default.
+The server defaults to `native,cli`; the GUI defaults to `standalone-app,grpc,obj2morph`.
+Library users can disable default features and select only the capabilities they need.
+Add `local` for GUI native inference; see the [GUI guide](docs/gui.md).
 See [packages and features](docs/features.md) for the complete breakdown.
 
 ## Getting started
@@ -31,7 +34,7 @@ Models and native SDKs are obtained separately.
 After preparing the SDKs and Mark model, start the native server:
 
 ```powershell
-cargo run -p audio2face3d-server --features cli -- --platform-config platform.toml --model models/mark/model.json
+cargo run -p audio2face3d-server -- --platform-config platform.toml --model models/mark/model.json
 ```
 
 ## Documentation
@@ -42,6 +45,7 @@ cargo run -p audio2face3d-server --features cli -- --platform-config platform.to
 | [Platform configuration](docs/platform.md) | Build/runtime path selection, diagnostics, version policy, loader lifetime |
 | [Packages and features](docs/features.md) | Package boundaries, feature selection, SDK module mapping |
 | [Client library](docs/library.md) | Configuration builders, direct/remote execution, authentication, shared context and logging |
+| [GUI inspection](docs/gui.md) | Desktop usage, streaming playback, head regeneration, packaging and host integration |
 | [Logging](docs/logging.md) | Lazy structured records, CLI JSONL output, tracing boundaries and shutdown |
 | [Low-level runtime APIs](docs/runtime-api.md) | Executor composition, callbacks, interactive execution, safety contracts |
 | [gRPC server](docs/server.md) | Server CLI, embedding, authentication, health and streaming contracts |

@@ -4,7 +4,8 @@ This project is an independently maintained Rust port of NVIDIA's MIT-licensed
 [Audio2Face-3D-SDK](https://github.com/NVIDIA/Audio2Face-3D-SDK). Its upstream
 source and reference revision is recorded in the
 [root README's License section](README.md#license). NVIDIA attribution and the
-MIT permission text are retained in the root and crate `LICENSE` files.
+MIT permission text are retained in the root `LICENSE`, shared through the
+workspace `license-file` setting and included in each Cargo source archive.
 The Rust port implements the pipelines without linking the original Audio2Face
 SDK libraries; CUDA and TensorRT remain native dependencies.
 
@@ -15,8 +16,8 @@ of Eigen 3.4's `JacobiSVD.h`, `RealSvd2x2.h`, `Jacobi.h`,
 `PacketMath.h`, as supplied with that SDK. This file, including its Rust
 modifications, is licensed under MPL-2.0 and retains the original attribution.
 
-The MPL text is in the root `LICENSE-MPL-2.0`. The library's `LICENSE` also
-contains it so the standalone Cargo source archive retains the full text.
+The MPL text is in the root `LICENSE-MPL-2.0` and the library package's
+`LICENSE-MPL-2.0`, so the standalone Cargo source archive retains the full text.
 The library package declares `MIT AND MPL-2.0 AND Apache-2.0`; independently written MIT
 files keep their MIT license. Source distributions retain the SVD source and
 its notices. Binary distributions must provide access to the corresponding
@@ -31,3 +32,15 @@ binary releases must also retain notices required by their other dependencies.
 The ACE protocol definitions under `crates/audio2face3d/proto` retain their
 upstream notices and use Apache-2.0. The license text is included in
 [the library package](crates/audio2face3d/LICENSE-APACHE).
+
+[ICT-FaceKit](https://github.com/USC-ICT/ICT-FaceKit), published by the USC
+Institute for Creative Technologies, is an external reference dataset for the
+GUI's OBJ head converter. This repository includes a
+[conversion preset](crates/audio2face3d-gui/presets/ict-facekit.toml), but does not
+include ICT-FaceKit model data or heads converted from that data. The bundled
+diagnostic head is original procedural geometry, not ICT-FaceKit data.
+
+Users obtain the dataset separately and should consult its upstream license
+and notices for their intended use and distribution of inputs and converted
+models. This project's MIT license does not license the external dataset.
+See the [head model conversion guide](docs/headgen.md) for setup and usage.

@@ -1,6 +1,8 @@
 //! Build-time SDK discovery using the shared platform.toml format.
 #[path = "src/platform_config_file.rs"]
 mod config_file;
+#[path = "build_msvc.rs"]
+mod msvc;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -11,6 +13,9 @@ pub struct BuildConfig {
     pub cuda_root: PathBuf,
     pub tensorrt_root: Option<PathBuf>,
     pub cuda_host_compiler: Option<PathBuf>,
+    pub visual_studio_root: Option<PathBuf>,
+    pub msvc_toolset_version: Option<String>,
+    pub compiler_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 }
 
 fn absolute(base: &Path, value: &str) -> PathBuf {
@@ -34,7 +39,7 @@ fn string(table: &toml::Table, name: &str) -> Result<Option<String>, String> {
 }
 pub fn parse_config(text: &str, file: &Path, tensorrt: bool) -> Result<BuildConfig, String> {
     let table =
-        config_file::parse(text, "build").map_err(|e| format!("{}: {e}", file.display()))?;
+        config_file::parse(text, "build-cuda").map_err(|e| format!("{}: {e}", file.display()))?;
     let base = file.parent().ok_or("configuration file has no parent")?;
     let cuda_root = absolute(
         base,
@@ -47,7 +52,24 @@ pub fn parse_config(text: &str, file: &Path, tensorrt: bool) -> Result<BuildConf
     Ok(BuildConfig {
         cuda_root,
         tensorrt_root,
-        cuda_host_compiler: string(&table, "cuda-host-compiler")?.map(|p| absolute(base, &p)),
+        cuda_host_compiler: if cfg!(target_os = "linux") {
+            string(table["linux"].as_table().unwrap(), "cuda-host-compiler")?
+                .map(|p| absolute(base, &p))
+        } else {
+            None
+        },
+        visual_studio_root: if cfg!(windows) {
+            string(table["windows"].as_table().unwrap(), "visual-studio-root")?
+                .map(|p| absolute(base, &p))
+        } else {
+            None
+        },
+        msvc_toolset_version: if cfg!(windows) {
+            string(table["windows"].as_table().unwrap(), "msvc-toolset-version")?
+        } else {
+            None
+        },
+        compiler_env: Vec::new(),
     })
 }
 
@@ -176,10 +198,17 @@ pub fn resolve(tensorrt: bool) -> Result<BuildConfig, String> {
     validate(BuildConfig {
         cuda_root,
         tensorrt_root,
-        cuda_host_compiler: env::var_os("AUDIO2FACE3D_CUDA_HOST_COMPILER").map(PathBuf::from),
+        cuda_host_compiler: if cfg!(target_os = "linux") {
+            env::var_os("AUDIO2FACE3D_CUDA_HOST_COMPILER").map(PathBuf::from)
+        } else {
+            None
+        },
+        visual_studio_root: None,
+        msvc_toolset_version: None,
+        compiler_env: Vec::new(),
     })
 }
-fn validate(config: BuildConfig) -> Result<BuildConfig, String> {
+fn validate(mut config: BuildConfig) -> Result<BuildConfig, String> {
     for (root, marker) in [
         (Some(&config.cuda_root), "include/cuda.h"),
         (config.tensorrt_root.as_ref(), "include/NvInfer.h"),
@@ -193,6 +222,14 @@ fn validate(config: BuildConfig) -> Result<BuildConfig, String> {
             }
             println!("cargo:rerun-if-changed={}", root.join(marker).display());
         }
+    }
+    if let (Some(root), Some(version)) = (&config.visual_studio_root, &config.msvc_toolset_version)
+    {
+        let host = env::var("HOST").map_err(|e| e.to_string())?;
+        let target = env::var("TARGET").map_err(|e| e.to_string())?;
+        let (compiler, environment) = msvc::resolve(root, version, &host, &target)?;
+        config.cuda_host_compiler = Some(compiler);
+        config.compiler_env = environment;
     }
     if let Some(host) = &config.cuda_host_compiler
         && !host.is_file()

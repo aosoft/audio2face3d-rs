@@ -81,6 +81,7 @@ fn check_existing(file: &LibraryFile) -> Result<(), NativeRuntimeError> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn loaded_paths() -> Result<Vec<PathBuf>, NativeRuntimeError> {
     unsafe extern "C" fn visit(
         info: *mut libc::dl_phdr_info,
@@ -102,4 +103,14 @@ pub(super) fn loaded_paths() -> Result<Vec<PathBuf>, NativeRuntimeError> {
         libc::dl_iterate_phdr(Some(visit), (&mut paths as *mut Vec<PathBuf>).cast());
     }
     Ok(paths)
+}
+
+// Configuration and gRPC clients also compile this Unix module on macOS.
+// Native SDK validation must not silently skip dependency conflict detection.
+#[cfg(not(target_os = "linux"))]
+pub(super) fn loaded_paths() -> Result<Vec<PathBuf>, NativeRuntimeError> {
+    Err(NativeRuntimeError::new(
+        NativeRuntimeErrorKind::InitializationFailed,
+        "native SDK library validation is supported only on Windows and Linux",
+    ))
 }

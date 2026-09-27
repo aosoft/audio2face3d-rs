@@ -5,13 +5,35 @@ use toml::{Table, Value};
 /// Validate the whole document, then return the selected section with common roots inherited.
 pub fn parse(text: &str, phase: &str) -> Result<Table, String> {
     let mut common = text.parse::<Table>().map_err(|e| e.to_string())?;
-    let mut build = section(&mut common, "build")?;
+    if common.contains_key("build") {
+        return Err(
+            "[build] has been replaced by [build-cuda] and [build-cuda.windows]/[build-cuda.linux]"
+                .into(),
+        );
+    }
+    let mut build = section(&mut common, "build-cuda")?;
+    let windows = section(&mut build, "windows")?;
+    let linux = section(&mut build, "linux")?;
+    validate(&windows, &["visual-studio-root", "msvc-toolset-version"])?;
+    validate(&linux, &["cuda-host-compiler"])?;
+    if windows.contains_key("visual-studio-root") != windows.contains_key("msvc-toolset-version") {
+        return Err(
+            "build-cuda.windows requires both visual-studio-root and msvc-toolset-version".into(),
+        );
+    }
+    if let Some(version) = windows.get("msvc-toolset-version").and_then(Value::as_str)
+        && (version.split('.').count() != 3
+            || version
+                .split('.')
+                .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())))
+    {
+        return Err(
+            "msvc-toolset-version must be an exact three-part version, e.g. 14.42.34433".into(),
+        );
+    }
     let mut runtime = section(&mut common, "runtime")?;
     validate(&common, &["cuda-root", "tensorrt-root"])?;
-    validate(
-        &build,
-        &["cuda-root", "tensorrt-root", "cuda-host-compiler"],
-    )?;
+    validate(&build, &["cuda-root", "tensorrt-root"])?;
     validate(
         &runtime,
         &[
@@ -38,7 +60,11 @@ pub fn parse(text: &str, phase: &str) -> Result<Table, String> {
         }
     }
     match phase {
-        "build" => Ok(build),
+        "build-cuda" => {
+            build.insert("windows".into(), Value::Table(windows));
+            build.insert("linux".into(), Value::Table(linux));
+            Ok(build)
+        }
         "runtime" => Ok(runtime),
         _ => Err(format!("unknown platform configuration section: {phase}")),
     }

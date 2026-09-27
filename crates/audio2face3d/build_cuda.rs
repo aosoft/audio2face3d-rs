@@ -2,8 +2,6 @@
 mod build_cuda_arch;
 
 use std::env;
-use std::fs;
-use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -28,7 +26,7 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     );
 
     println!("cargo:rerun-if-changed={}", nvcc.display());
-    let supported = Command::new(&nvcc)
+    let supported = cuda_command(config, &nvcc)
         .arg("--list-gpu-arch")
         .output()
         .unwrap_or_else(|error| panic!("failed to query {}: {error}", nvcc.display()));
@@ -42,19 +40,11 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     println!("cargo:rustc-env=AUDIO2FACE3D_KERNEL_COMPUTE_CAPABILITY={compute}");
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
         .join("regression_postprocess.ptx");
-    let host_compiler = config
-        .cuda_host_compiler
-        .clone()
-        .unwrap_or_else(cuda_host_compiler);
-    let host_compiler_dir = host_compiler
-        .parent()
-        .expect("host compiler has a parent directory");
-    let mut command = Command::new(&nvcc);
+    let mut command = cuda_command(config, &nvcc);
     let status = command
         .arg("--ptx")
         .arg("--std=c++17")
         .arg("--allow-unsupported-compiler")
-        .arg(format!("--compiler-bindir={}", host_compiler_dir.display()))
         .arg(format!("--gpu-architecture=compute_{compute}"))
         .arg("cuda/regression_postprocess.cu")
         .arg("--output-file")
@@ -68,11 +58,10 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     );
     let jaw_output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
         .join("regression_jaw.ptx");
-    let status = Command::new(&nvcc)
+    let status = cuda_command(config, &nvcc)
         .arg("--ptx")
         .arg("--std=c++17")
         .arg("--allow-unsupported-compiler")
-        .arg(format!("--compiler-bindir={}", host_compiler_dir.display()))
         .arg(format!("--gpu-architecture=compute_{compute}"))
         .arg("cuda/regression_jaw.cu")
         .arg("--output-file")
@@ -86,11 +75,10 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     );
     let blendshape_output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
         .join("blendshape_solver.ptx");
-    let status = Command::new(&nvcc)
+    let status = cuda_command(config, &nvcc)
         .arg("--ptx")
         .arg("--std=c++17")
         .arg("--allow-unsupported-compiler")
-        .arg(format!("--compiler-bindir={}", host_compiler_dir.display()))
         .arg(format!("--gpu-architecture=compute_{compute}"))
         .arg("cuda/blendshape_solver.cu")
         .arg("--output-file")
@@ -104,11 +92,10 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     );
     let emotion_output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"))
         .join("emotion_postprocess.ptx");
-    let status = Command::new(&nvcc)
+    let status = cuda_command(config, &nvcc)
         .arg("--ptx")
         .arg("--std=c++17")
         .arg("--allow-unsupported-compiler")
-        .arg(format!("--compiler-bindir={}", host_compiler_dir.display()))
         .arg(format!("--gpu-architecture=compute_{compute}"))
         .arg("cuda/emotion_postprocess.cu")
         .arg("--output-file")
@@ -122,53 +109,11 @@ pub(crate) fn build(config: &crate::build_native::BuildConfig) {
     );
 }
 
-fn cuda_host_compiler() -> PathBuf {
-    if cfg!(windows)
-        && let Some(path) = visual_studio_2022_compiler()
-    {
-        return path;
+fn cuda_command(config: &crate::build_native::BuildConfig, nvcc: &std::path::Path) -> Command {
+    let mut command = Command::new(nvcc);
+    command.envs(config.compiler_env.iter().cloned());
+    if let Some(compiler) = &config.cuda_host_compiler {
+        command.arg("--compiler-bindir").arg(compiler);
     }
-    cc::Build::new().cpp(true).get_compiler().path().to_owned()
-}
-
-fn visual_studio_2022_compiler() -> Option<PathBuf> {
-    let program_files = env::var_os("ProgramFiles(x86)")?;
-    let vswhere = PathBuf::from(program_files)
-        .join("Microsoft Visual Studio")
-        .join("Installer")
-        .join("vswhere.exe");
-    let output = Command::new(vswhere)
-        .args([
-            "-latest",
-            "-products",
-            "*",
-            "-version",
-            "[17.0,18.0)",
-            "-requires",
-            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-            "-property",
-            "installationPath",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let installation = Path::new(std::str::from_utf8(&output.stdout).ok()?.trim());
-    let tools = installation.join("VC").join("Tools").join("MSVC");
-    let mut versions = fs::read_dir(tools)
-        .ok()?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .collect::<Vec<_>>();
-    versions.sort();
-    versions
-        .pop()
-        .map(|version| {
-            version
-                .join("bin")
-                .join("Hostx64")
-                .join("x64")
-                .join("cl.exe")
-        })
-        .filter(|compiler| compiler.is_file())
+    command
 }

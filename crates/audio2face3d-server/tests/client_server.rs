@@ -363,7 +363,10 @@ fn server_requires_runtime_and_runs_on_explicit_runtime_from_standard_executor()
 #[test]
 fn stopping_runtime_completes_pending_handles() {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let server = rt.block_on(Fixture::start(Mode::Hold));
+    // Keep the peer alive: stopping both runtimes together can close the response
+    // stream before the client worker is cancelled.
+    let server_rt = tokio::runtime::Runtime::new().unwrap();
+    let server = server_rt.block_on(Fixture::start(Mode::Hold));
     let config = ServerConfig::builder(&server.url)
         .optional_runtime(Some(rt.handle().clone()))
         .build()
@@ -384,13 +387,17 @@ fn stopping_runtime_completes_pending_handles() {
     .unwrap();
     wait(input.finish()).unwrap();
     drop(rt);
-    assert!(matches!(
-        wait(output.recv()).unwrap_err().kind(),
-        ErrorKind::RuntimeUnavailable | ErrorKind::Transport
-    ));
+    let error = wait(output.recv()).unwrap_err();
+    assert!(
+        matches!(
+            error.kind(),
+            ErrorKind::RuntimeUnavailable | ErrorKind::Transport
+        ),
+        "unexpected shutdown error: {error:?}"
+    );
     assert!(wait(control.closed()).is_err());
     wait(client.shutdown()).unwrap();
-    drop(server);
+    server_rt.block_on(server.close());
 }
 #[tokio::test]
 async fn deadline_closes_rpc_with_no_response() {

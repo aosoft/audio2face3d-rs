@@ -2,7 +2,7 @@
 
 [Project overview](../README.md) · [Getting started](getting-started.md)
 
-Use one `platform.toml` for native builds and both executables. SDK environment variables and PATH edits are optional. Keys use kebab-case; Rust fields and methods keep snake_case. There is no schema-version field.
+Use one `platform.toml` for native builds and the inference, server and GUI executables. SDK environment variables and PATH edits are optional. Keys use kebab-case; Rust fields and methods keep snake_case. There is no schema-version field.
 
 ## One file for build and runtime
 
@@ -12,9 +12,13 @@ Create `platform.toml` at this repository's root (ignored by Git):
 cuda-root = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9'
 tensorrt-root = 'C:\SDK\TensorRT-10.16.1.11'
 
-[build]
-# Optional: select an installed compatible host compiler.
-# cuda-host-compiler = 'C:\...\bin\Hostx64\x64\cl.exe'
+[build-cuda.windows]
+visual-studio-root = 'C:\Program Files\Microsoft Visual Studio\18\Community'
+msvc-toolset-version = '14.42.34433'
+
+# Optional on Linux; ignored by Windows builds.
+[build-cuda.linux]
+cuda-host-compiler = '/usr/bin/g++-13'
 
 [runtime]
 search-policy = 'explicit'
@@ -25,7 +29,9 @@ The common roots apply to both phases. Both sections are optional. Each phase ca
 | Location | Accepted keys | Purpose |
 | --- | --- | --- |
 | Top level | `cuda-root`, `tensorrt-root` | Shared SDK locations |
-| `[build]` | `cuda-root`, `tensorrt-root`, `cuda-host-compiler` | Build-only overrides and compiler options |
+| `[build-cuda]` | `cuda-root`, `tensorrt-root` | CUDA/native build-only SDK overrides |
+| `[build-cuda.windows]` | `visual-studio-root`, `msvc-toolset-version` | Explicit MSVC environment; both fields required together |
+| `[build-cuda.linux]` | `cuda-host-compiler` | CUDA host C++ compiler executable |
 | `[runtime]` | `cuda-root`, `tensorrt-root`, `cuda-library-dirs`, `tensorrt-library-dirs`, `search-policy` | Runtime-only overrides and library discovery |
 
 All file-relative paths are relative to the configuration file. Unknown keys, wrong types and empty path lists are errors, including in the other phase's section. The whole file is validated before it is used. Actual SDK files are checked only by the phase that uses them; for example, running a distributed executable does not require a build host compiler to exist.
@@ -46,9 +52,15 @@ A runtime library-directory list replaces that SDK's common root. A root and lib
 
 ## File selection
 
+The GUI can also reference this file through `platform-config` in its GUI TOML.
+That reference takes precedence over the environment variable but not over
+`--platform-config`; its path is relative to the GUI TOML. SDK paths inside the
+referenced file remain relative to the platform file itself. See [GUI configuration](gui.md#gui-configuration).
+Copy [`platform.example.toml`](../platform.example.toml) as a starting point.
+
 Only one file is read; files are not merged. Missing explicitly selected files and invalid selected files fail without falling back.
 
-| Priority | Native build | CLI runtime |
+| Priority | Native build | Executable runtime |
 | --- | --- | --- |
 | 1 | `AUDIO2FACE3D_PLATFORM_CONFIG` | `--platform-config <FILE>` |
 | 2 | This source workspace's `platform.toml` | `AUDIO2FACE3D_PLATFORM_CONFIG` |
@@ -62,7 +74,7 @@ User configuration is `%LOCALAPPDATA%\audio2face3d\platform.toml` on Windows, or
 
 The file is optional. If no file is selected or found and no SDK flags are supplied, the existing environment-based discovery remains active:
 
-- Native builds use `CUDA_PATH`, `TENSORRT_ROOT_DIR` and `AUDIO2FACE3D_CUDA_HOST_COMPILER`; missing SDK roots use the first installed SDK in path-name order. The usual compiler environment is still required. PATH alone does not select build SDK roots.
+- Native builds use `CUDA_PATH`, `TENSORRT_ROOT_DIR` and, on Linux only, `AUDIO2FACE3D_CUDA_HOST_COMPILER`; missing SDK roots use the first installed SDK in path-name order. The usual compiler environment is still required. PATH alone does not select build SDK roots.
 - Executables use the default `discover` policy: `CUDA_PATH` and `TENSORRT_ROOT_DIR` select SDK roots; otherwise `PATH` (Windows) or `LD_LIBRARY_PATH` (Linux) is searched in order, followed by installed SDK directories. Environment-selected roots take precedence over those search paths.
 
 Omitting `--platform-config` does not disable automatic file selection: a workspace/working-directory or user `platform.toml` still takes precedence over legacy SDK variables. An empty runtime configuration also uses discovery, but a selected build configuration must supply the required SDK roots; missing build fields are not filled from environment variables. Invalid files or invalid explicit SDK locations remain errors.
@@ -71,13 +83,21 @@ When an SDK location is not explicitly configured, discovery accepts the first m
 
 ## Build and install
 
-Native builds need CUDA headers and nvcc, TensorRT headers, and a compatible host C++ compiler. On Windows use an MSVC developer shell. The validated CUDA 12.9 build uses MSVC 14.42; its compiler environment's headers must match the chosen host compiler.
+Native builds need CUDA headers and nvcc, TensorRT headers, and a compatible host C++ compiler. On Windows, specifying `[build-cuda.windows]` initializes the selected Visual Studio or Build Tools environment automatically for this crate's CUDA compiler and TensorRT C++ shim. The exact three-part MSVC toolset version must exist; there is no fallback to another version. The validated CUDA 12.9 build uses MSVC 14.42.34433.
+
+The build invokes that installation's `vcvarsall.bat` in an isolated child process, verifies the selected toolset and header/library paths, and passes the resulting environment to `nvcc`, `cl.exe` and `lib.exe`. Cargo HOST/TARGET determine the host/target architecture. Windows SDK selection uses vcvarsall's default. This does not modify the parent shell, other crates, or Rust's final linker environment. When these settings are omitted, nvcc and cc use their usual compiler discovery; a compatible development environment is then the caller's responsibility.
+
+On Linux, `cuda-host-compiler` is a C++ compiler file path (not a PATH command name or directory), passed to nvcc only. If omitted, nvcc selects its default. The normal C++ shim compiler remains controlled by cc's usual configuration. No environment setup script runs on Linux.
+
+Old `[build]` settings are rejected with migration guidance: move SDK overrides to `[build-cuda]`, Linux compiler selection to `[build-cuda.linux]`, and replace Windows compiler paths with the two `[build-cuda.windows]` fields.
+
+The entire `build-cuda` section and SDK roots may be omitted for gRPC-only builds, including `grpc` on macOS. With CUDA features disabled, the build never discovers SDKs or initializes MSVC. Runtime parsing validates TOML syntax but does not check unused SDK/compiler paths. Both OS sections may coexist; only the native build host's section is applied. CUDA cross-OS builds are not configured by selecting the other OS section.
 
 From this checkout, the root `platform.toml` is used automatically:
 
 ```powershell
 cargo build --release --locked -p audio2face3d --features cli,native
-cargo build --release --locked -p audio2face3d-server --features cli
+cargo build --release --locked -p audio2face3d-server
 ```
 
 To explicitly select the same file for build, installation and execution:
@@ -85,7 +105,7 @@ To explicitly select the same file for build, installation and execution:
 ```powershell
 $env:AUDIO2FACE3D_PLATFORM_CONFIG = (Resolve-Path ./platform.toml).Path
 cargo install --path crates/audio2face3d --locked --features cli,native
-cargo install --path crates/audio2face3d-server --locked --features cli
+cargo install --path crates/audio2face3d-server --locked
 ```
 
 Portable builds need no SDK configuration. File changes trigger the native build script again. Header versions are embedded for runtime comparison. The C++ shim is a static archive inside the Rust artifact; there is no project-specific DLL to deploy and no ordinary NVIDIA DLL imports. NVIDIA SDK binaries remain separate runtime dependencies.
@@ -97,6 +117,58 @@ The build queries the selected `nvcc --list-gpu-arch` and uses the lowest generi
 The four kernels compile at `compute_50`, the lowest target supported by the validated CUDA 12.9 toolchain. A compiler that no longer supports that target selects its next supported generic target. The driver compiles the generated PTX for the execution GPU. See [NVIDIA's PTX compilation documentation](https://docs.nvidia.com/cuda/archive/12.9.1/cuda-compiler-driver-nvcc/index.html#just-in-time-compilation).
 
 This target covers the project's post-processing kernels. Supported GPUs for complete inference also depend on CUDA libraries, TensorRT and the model engine.
+
+## Deploying a prebuilt application
+
+Normal local inference does **not** invoke `nvcc`. The build compiles this project's
+CUDA kernels to PTX and embeds that PTX in the executable/library. At runtime,
+the NVIDIA driver loads and JIT-compiles it for the GPU; this is not a call to
+the CUDA Toolkit compiler. The build machine's generated PTX files and SDK paths
+are not needed at the deployment location.
+
+| Dependency | Build with local inference | Run prebuilt local inference | gRPC-only client |
+| --- | --- | --- | --- |
+| CUDA Toolkit compiler (`nvcc`) and SDK headers | Required | Not required | Not required |
+| TensorRT headers | Required | Not required | Not required |
+| C++ compiler / Visual Studio / Build Tools | Required | Not required | No CUDA-specific toolchain required |
+| NVIDIA GPU and compatible driver | Not needed just to compile | Required | Not required on the client |
+| CUDA Runtime, cuBLAS, cuBLASLt, cuRAND | Runtime dependencies of the result | Required, including transitive dependencies | Not required on the client |
+| TensorRT runtime libraries | Runtime dependencies of the result | Required, including transitive dependencies | Not required on the client |
+| Model data and compatible TensorRT engine | Not needed just to compile | Required | Required on the server, not the client |
+
+`cudart` alone is insufficient. Deploy the required CUDA and TensorRT shared
+libraries and their dependencies; a full CUDA Toolkit installation is not required
+for inference. The NVIDIA driver is installed on the destination system separately.
+The application still needs the ordinary runtime prerequisites for its OS/build
+(for example, the MSVC runtime when dynamically linked, and GUI graphics/audio support).
+
+A deployment `platform.toml` can contain only runtime settings:
+
+```toml
+[runtime]
+cuda-library-dirs = ["runtime/cuda"]
+tensorrt-library-dirs = ["runtime/tensorrt"]
+search-policy = "explicit"
+```
+
+These directories are relative to this TOML file, so the application, configuration
+and runtime directories can be moved together. `[build-cuda]` and SDK root settings
+are unnecessary in this deployment configuration. Runtime loading does not validate
+build compiler/header paths. Configure the model, WAV and head paths separately
+(for the GUI, in `gui.toml`) and move their referenced files as needed. Run the
+prebuilt executable directly; `cargo run` also performs a build and therefore still
+requires the build dependencies when compilation is needed.
+
+Use runtime versions compatible with the binary; see [Version policy](#version-policy).
+A serialized TensorRT engine must also be compatible with the destination GPU and
+TensorRT environment; copying an engine between machines does not guarantee that
+it can be loaded. If engine regeneration is needed, the engine-generation workflow
+requires `trtexec` and its dependencies. This is separate from normal inference.
+Some engine-generation metadata probes query `nvcc --version`; an unavailable probe
+is recorded as unavailable and does not make `nvcc` an inference dependency.
+
+The gRPC-only GUI (`grpc`) needs no local CUDA/TensorRT installation
+or `build-cuda` settings. GPU inference dependencies belong to the server in that case.
 
 ## CLI options
 
@@ -118,7 +190,7 @@ audio2face3d --platform-config platform.toml run regression models/mark/model.js
 audio2face3d-server --platform-config platform.toml --model models/mark/model.json
 
 # From this checkout: Cargo and the executable both find the root platform.toml.
-cargo run -p audio2face3d-server --features cli -- --model models/mark/model.json
+cargo run -p audio2face3d-server -- --model models/mark/model.json
 ```
 
 Options after Cargo's `--` affect the running executable only. They cannot change a build that already happened. Select a custom build file through `AUDIO2FACE3D_PLATFORM_CONFIG`; `--platform-config` can independently choose another runtime file with the same format.
