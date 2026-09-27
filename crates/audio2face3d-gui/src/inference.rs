@@ -42,6 +42,8 @@ pub struct Request {
     pub device: usize,
     /// Stream paced incremental Output events when true; otherwise publish one Ready clip.
     pub pace_input: bool,
+    /// Streaming startup/rebuffer target in milliseconds (10..=10000).
+    pub stream_buffer_ms: u32,
     #[cfg(feature = "emotion")]
     pub emotion: crate::emotion::Settings,
 }
@@ -66,13 +68,23 @@ impl Default for Request {
             runtime: Default::default(),
             device: 0,
             pace_input: false,
+            stream_buffer_ms: 100,
             #[cfg(feature = "emotion")]
             emotion: Default::default(),
         }
     }
 }
 impl Request {
+    pub fn validate_stream_buffer(&self) -> Result<()> {
+        if !(10..=10000).contains(&self.stream_buffer_ms) {
+            return Err(Error(
+                "stream-buffer-ms must be between 10 and 10000".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<()> {
+        self.validate_stream_buffer()?;
         if self.mode == Mode::Disabled {
             return Err(Error(
                 "No inference backend is enabled; use Manual controls.".into(),

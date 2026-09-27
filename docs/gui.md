@@ -196,6 +196,15 @@ reset failures discard the affected model even if Stop was also pressed. Keeping
 local model loaded retains its CPU/GPU memory between requests. If model files
 are replaced in place, restart the app to load the new contents.
 
+With Play while inferring ON, the adjacent **Buffer** field sets the startup and
+underrun-recovery target in milliseconds (10–10000, default 100). More buffering
+adds startup/recovery delay but tolerates longer gaps in incoming results. A
+completed clip or final tail can play even when shorter than the target. Set
+`stream-buffer-ms = 500` under `[inference]` in `gui.toml`, or override it with
+`--stream-buffer-ms 500`. Controls are locked during inference/playback; this
+setting is unused when Play while inferring is OFF. It does not change the audio
+device buffer, input chunk size, or model cache key.
+
 With Play while inferring OFF, the worker collects the bounded clip without sending
 per-frame results through the UI queue. Only successful completion publishes one
 `Event::Ready` clip and starts playback; cancellation or failure discards the

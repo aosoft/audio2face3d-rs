@@ -66,6 +66,9 @@ pub struct Args {
     /// Pace input and play audio/curves while inference is running.
     #[arg(long, num_args = 0..=1, default_missing_value = "true", require_equals = true)]
     play_while_inferring: Option<bool>,
+    /// Streaming startup/rebuffer target in milliseconds (10..=10000; default 100).
+    #[arg(long)]
+    stream_buffer_ms: Option<u32>,
 }
 
 #[cfg(feature = "obj2morph")]
@@ -95,6 +98,7 @@ struct InferenceConfig {
     mode: Option<Backend>,
     wav: Option<PathBuf>,
     play_while_inferring: bool,
+    stream_buffer_ms: Option<u32>,
     auto_start: bool,
 }
 
@@ -198,6 +202,10 @@ impl Args {
                 .unwrap_or_else(|| "http://127.0.0.1:52000".into()),
             api_key: self.api_key.or(config.grpc.api_key).unwrap_or_default(),
             device: self.device.or(config.local.device).unwrap_or_default(),
+            stream_buffer_ms: self
+                .stream_buffer_ms
+                .or(config.inference.stream_buffer_ms)
+                .unwrap_or(100),
             pace_input: self
                 .play_while_inferring
                 .unwrap_or(config.inference.play_while_inferring),
@@ -211,6 +219,7 @@ impl Args {
             }
             request.emotion.validate()?;
         }
+        request.validate_stream_buffer()?;
         let infer = self.infer.unwrap_or(config.inference.auto_start);
         if let Some(mode) = self.mode.or(config.inference.mode) {
             request.mode = match mode {
@@ -239,6 +248,40 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stream_buffer_defaults_config_cli_precedence_and_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("gui.exe");
+        let resolve = |args: &[&str]| {
+            Args::try_parse_from(args)
+                .unwrap()
+                .resolve_at(dir.path(), &exe)
+        };
+        assert_eq!(resolve(&["gui"]).unwrap().request.stream_buffer_ms, 100);
+        std::fs::write(
+            dir.path().join("gui.toml"),
+            "[inference]\nstream-buffer-ms=500",
+        )
+        .unwrap();
+        assert_eq!(resolve(&["gui"]).unwrap().request.stream_buffer_ms, 500);
+        assert_eq!(
+            resolve(&["gui", "--stream-buffer-ms", "750"])
+                .unwrap()
+                .request
+                .stream_buffer_ms,
+            750
+        );
+        for invalid in ["0", "9", "10001"] {
+            assert!(resolve(&["gui", "--stream-buffer-ms", invalid]).is_err());
+        }
+        std::fs::write(
+            dir.path().join("gui.toml"),
+            "[inference]\nstream-buffer-ms=0",
+        )
+        .unwrap();
+        assert!(resolve(&["gui"]).is_err());
+    }
+
     #[test]
     fn emotion_configuration_feature_gate() {
         let dir = tempfile::tempdir().unwrap();

@@ -12,6 +12,7 @@
 mode = "grpc" # Use "local" with a local-enabled build.
 # wav = "audio/sample.wav"
 play-while-inferring = false
+stream-buffer-ms = 100 # Startup/rebuffer target; 10..10000 ms, streaming only.
 auto-start = false
 
 [local]

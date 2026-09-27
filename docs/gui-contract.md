@@ -134,7 +134,8 @@ results labelled failed, never auto-play them as successful clips. Bound worker
 queues independently. Logs: 2,048 queued, 10,000 displayed; nonblocking enqueue,
 drop newest on saturation and expose a dropped count. Host owns logger lifetime.
 
-Streaming playback requires an initial/rebuffer threshold of 100 ms of contiguous audio AND curves
+Streaming playback uses a configurable initial/rebuffer threshold (10–10000 ms,
+default 100 ms) of contiguous audio AND curves
 (including interpolation lookahead). Freeze media clock on underrun, output
 silence until ready, then resume; never shift original result timestamps.
 Normally completed short clips may play below threshold. Failed streams require

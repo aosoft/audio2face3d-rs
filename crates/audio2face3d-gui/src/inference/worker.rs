@@ -346,6 +346,7 @@ mod tests {
         let original = Key::new(&request).unwrap();
         request.wav = "other.wav".into();
         request.pace_input = true;
+        request.stream_buffer_ms = 500;
         request.endpoint = "unused".into();
         assert!(original == Key::new(&request).unwrap());
         request.model = "another.json".into();

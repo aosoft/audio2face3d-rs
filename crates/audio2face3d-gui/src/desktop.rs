@@ -155,12 +155,13 @@ impl DesktopApp {
             Ok(job) => {
                 self.transport.invalidate();
                 self.audio.stop();
-                self.audio
-                    .player
-                    .lock()
-                    .unwrap()
-                    .replace(crate::core::Clip::running());
-                self.audio.player.lock().unwrap().streaming = self.request.pace_input;
+                {
+                    let mut player = self.audio.player.lock().unwrap();
+                    player.replace(crate::core::Clip::running());
+                    player.streaming = self.request.pace_input;
+                    player.stream_buffer =
+                        std::time::Duration::from_millis(self.request.stream_buffer_ms.into());
+                }
                 self.stream_started = false;
                 self.job = Some(job);
                 self.next_job += 1;
@@ -224,7 +225,7 @@ impl DesktopApp {
             player.streaming
                 && !self.stream_started
                 && !self.user_cancelled
-                && (player.clip.ready_until() >= 0.1
+                && (player.clip.ready_until() >= player.stream_buffer.as_secs_f64()
                     || (player.clip.session == crate::core::SessionState::Completed
                         && player.clip.ready_until() > 0.))
                 && !matches!(
@@ -556,10 +557,24 @@ impl eframe::App for DesktopApp {
                                     self.request.wav = path;
                                 }
                             });
-                            ui.checkbox(
-                                &mut self.request.pace_input,
-                                "Play while inferring (paced input, 100 ms buffer)",
-                            );
+                            ui.horizontal(|ui| {
+                                ui.checkbox(
+                                    &mut self.request.pace_input,
+                                    "Play while inferring (paced input)",
+                                );
+                                ui.add_enabled_ui(self.request.pace_input, |ui| {
+                                    ui.label("Buffer");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.request.stream_buffer_ms)
+                                            .range(10..=10000)
+                                            .speed(10)
+                                            .suffix(" ms"),
+                                    )
+                                    .on_hover_text(
+                                        "Buffered media needed to start or resume playback",
+                                    );
+                                });
+                            });
                             ui.add_space(ui.spacing().interact_size.y);
                             ui.horizontal(|ui| {
                                 ui.label("Mode");
