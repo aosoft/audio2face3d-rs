@@ -13,7 +13,8 @@ default-features = false
 features = ["mock"]
 
 [features]
-default = ["native", "cli"]
+default = ["native", "cli", "model-management"]
+model-management = ["audio2face3d/model-management"]
 native = ["audio2face3d/native"]
 mock = ["audio2face3d/mock"]
 cli = ["audio2face3d/cli-logging", "dep:tracing", "audio2face3d/runtime-cli", "dep:subtle", "dep:clap", "tokio/signal"]

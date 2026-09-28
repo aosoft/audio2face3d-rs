@@ -1,5 +1,5 @@
-use crate::cli::library::sha256;
-use audio2face3d::tensorrt::{EngineBuildRequest, EngineBuilder, TrtBuildInfo, TrtBuildInfoError};
+use super::sha256;
+use crate::tensorrt::{EngineBuildRequest, EngineBuilder, TrtBuildInfo, TrtBuildInfoError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(test)]
@@ -102,12 +102,12 @@ pub struct ModelEngineBuildRequest {
 impl ModelEngineBuildRequest {
     pub fn execute(&self) -> Result<EngineBuildReceipt, ModelEngineFailure> {
         let source_plan = BuildPlan::load(self)?;
-        let scope = audio2face3d::logging::integration::LogScope::capture();
+        let scope = crate::logging::integration::LogScope::capture();
         let command = scope
             .context()
             .native_runtime()
             .tool_command(
-                audio2face3d::runtime::tools::NativeTool::Trtexec,
+                crate::runtime::tools::NativeTool::Trtexec,
                 Some(&self.trtexec),
             )
             .map_err(|error| ModelEngineFailure::ExecutableNotFound(error.to_string()))?;
@@ -659,7 +659,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), ModelEngineFail
 
 fn trtexec_version(executable: &Path) -> String {
     let output = native_command_text(
-        audio2face3d::runtime::tools::NativeTool::Trtexec,
+        crate::runtime::tools::NativeTool::Trtexec,
         Some(executable),
         &[OsStr::new("--help")],
     );
@@ -675,17 +675,17 @@ fn trtexec_version(executable: &Path) -> String {
 
 fn cuda_toolkit_version() -> String {
     summarize_command_output(native_command_text(
-        audio2face3d::runtime::tools::NativeTool::Nvcc,
+        crate::runtime::tools::NativeTool::Nvcc,
         None,
         &[OsStr::new("--version")],
     ))
 }
 fn native_command_text(
-    tool: audio2face3d::runtime::tools::NativeTool,
+    tool: crate::runtime::tools::NativeTool,
     executable: Option<&Path>,
     arguments: &[&OsStr],
 ) -> String {
-    let scope = audio2face3d::logging::integration::LogScope::capture();
+    let scope = crate::logging::integration::LogScope::capture();
     match scope
         .context()
         .native_runtime()
@@ -926,7 +926,7 @@ pub enum ModelEngineFailure {
     #[error(transparent)]
     TrtInfo(#[from] TrtBuildInfoError),
     #[error(transparent)]
-    Build(#[from] audio2face3d::tensorrt::EngineError),
+    Build(#[from] crate::tensorrt::EngineError),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -1119,7 +1119,7 @@ mod tests {
                     attempts.push(plan.max_batch_size.unwrap());
                     if plan.max_batch_size == Some(32) {
                         return Err(ModelEngineFailure::Build(
-                            audio2face3d::tensorrt::EngineError::TrtFailed {
+                            crate::tensorrt::EngineError::TrtFailed {
                                 code: 1,
                                 output: "Device memory is insufficient to use tactic".into(),
                             },
@@ -1160,7 +1160,7 @@ mod tests {
             |_plan, _build| {
                 attempts += 1;
                 Err(ModelEngineFailure::Build(
-                    audio2face3d::tensorrt::EngineError::TrtFailed {
+                    crate::tensorrt::EngineError::TrtFailed {
                         code: 1,
                         output: "Device memory is insufficient to use tactic".into(),
                     },
@@ -1185,7 +1185,7 @@ mod tests {
             |_plan, _build| {
                 attempts += 1;
                 Err(ModelEngineFailure::Build(
-                    audio2face3d::tensorrt::EngineError::TrtFailed {
+                    crate::tensorrt::EngineError::TrtFailed {
                         code: 1,
                         output: "ONNX parser failed: unsupported operator".into(),
                     },

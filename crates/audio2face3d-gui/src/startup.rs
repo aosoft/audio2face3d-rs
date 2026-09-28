@@ -21,14 +21,14 @@ enum Backend {
 #[command(
     name = "audio2face3d-gui",
     version,
-    args_conflicts_with_subcommands = true
+    subcommand_precedence_over_arg = true
 )]
 pub struct Args {
-    #[cfg(feature = "obj2morph")]
+    #[cfg(any(feature = "obj2morph", feature = "model-management"))]
     #[command(subcommand)]
     pub command: Option<Command>,
     #[command(flatten)]
-    platform: PlatformArgs,
+    pub platform: PlatformArgs,
     /// GUI settings; searches the working directory, then the executable directory.
     #[arg(long, value_name = "TOML")]
     config: Option<PathBuf>,
@@ -71,10 +71,14 @@ pub struct Args {
     stream_buffer_ms: Option<u32>,
 }
 
-#[cfg(feature = "obj2morph")]
+#[cfg(any(feature = "obj2morph", feature = "model-management"))]
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
+    #[cfg(feature = "model-management")]
+    /// Download models and generate TensorRT engines (no window).
+    Model(audio2face3d::model_management::cli::Arguments),
     /// Convert neutral and expression OBJ files to a GUI head GLB (no window).
+    #[cfg(feature = "obj2morph")]
     Obj2morph(crate::obj2morph::cli::Arguments),
 }
 
@@ -154,12 +158,34 @@ impl Config {
 }
 
 impl Args {
+    /// Subcommands accept platform options, but not window or inference inputs.
+    #[cfg(any(feature = "obj2morph", feature = "model-management"))]
+    pub fn validate_subcommand(&self) -> Result<()> {
+        let gui_input = self.config.is_some()
+            || self.positional_head.is_some()
+            || self.head.is_some()
+            || self.mode.is_some()
+            || self.model.is_some()
+            || self.wav.is_some()
+            || self.endpoint.is_some()
+            || self.api_key.is_some()
+            || self.device.is_some()
+            || self.infer.is_some()
+            || self.play_while_inferring.is_some()
+            || self.stream_buffer_ms.is_some();
+        #[cfg(feature = "emotion")]
+        let gui_input = gui_input || self.emotion_model.is_some();
+        if gui_input {
+            return Err(Error("GUI options cannot be combined with a subcommand; use its --help for model options".into()));
+        }
+        Ok(())
+    }
     /// CLI values override GUI settings; embedded hosts pass Options directly.
     pub fn resolve(self) -> Result<Options> {
-        #[cfg(feature = "obj2morph")]
+        #[cfg(any(feature = "obj2morph", feature = "model-management"))]
         if self.command.is_some() {
             return Err(Error(
-                "Dispatch the conversion subcommand before resolving GUI settings".into(),
+                "Dispatch the subcommand before resolving GUI settings".into(),
             ));
         }
         let exe = std::env::current_exe().map_err(|e| Error(e.to_string()))?;

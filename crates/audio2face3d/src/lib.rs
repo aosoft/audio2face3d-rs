@@ -11,7 +11,8 @@ pub mod audio2face;
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub mod audio2x;
 #[cfg(any(
@@ -19,7 +20,8 @@ pub mod audio2x;
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 mod benchmark;
 #[cfg(any(
@@ -27,7 +29,8 @@ mod benchmark;
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub mod common;
 #[cfg(any(
@@ -35,7 +38,8 @@ pub mod common;
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub mod cuda;
 #[cfg(feature = "emotion")]
@@ -45,7 +49,8 @@ mod emotion;
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 mod model;
 pub mod runtime;
@@ -54,7 +59,8 @@ pub mod runtime;
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub mod tensorrt;
 
@@ -64,7 +70,8 @@ pub mod tensorrt;
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub use benchmark::RawNetworkBenchmark;
 #[cfg(any(
@@ -72,7 +79,8 @@ pub use benchmark::RawNetworkBenchmark;
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub use benchmark::{BenchmarkPhase, BenchmarkReport, BenchmarkRunner, Percentiles};
 #[cfg(any(
@@ -80,7 +88,8 @@ pub use benchmark::{BenchmarkPhase, BenchmarkReport, BenchmarkRunner, Percentile
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub use common::{Error, Result};
 #[cfg(any(
@@ -88,7 +97,8 @@ pub use common::{Error, Result};
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub use model::{Model, ModelKind, ModelParameters};
 #[cfg(any(
@@ -96,7 +106,8 @@ pub use model::{Model, ModelKind, ModelParameters};
     feature = "emotion",
     feature = "cuda",
     feature = "tensorrt",
-    feature = "cli"
+    feature = "cli",
+    feature = "model-management"
 ))]
 pub use runtime::RuntimeDiscovery;
 
@@ -116,3 +127,6 @@ mod platform_config_file;
 
 #[cfg(feature = "cli-logging")]
 pub mod cli_logging;
+
+#[cfg(feature = "model-management")]
+pub mod model_management;

@@ -11,6 +11,9 @@ fn default_backend() -> &'static str {
 #[derive(Parser)]
 #[command(version, about = "Audio2Face-3D controller gRPC server")]
 pub struct Args {
+    #[cfg(feature = "model-management")]
+    #[command(subcommand)]
+    pub command: Option<Command>,
     #[command(flatten)]
     pub logging: super::logging::LogArgs,
     #[command(flatten)]
@@ -114,4 +117,11 @@ impl std::fmt::Debug for Args {
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .finish_non_exhaustive()
     }
+}
+
+#[cfg(feature = "model-management")]
+#[derive(Debug, clap::Subcommand)]
+pub enum Command {
+    /// Download models and generate TensorRT engines without starting the server.
+    Model(audio2face3d::model_management::cli::Arguments),
 }

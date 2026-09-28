@@ -1,7 +1,7 @@
 # audio2face3d-gui
 
 Head models, playback, inference and UI library with a desktop executable.
-By default, the application supports gRPC inference only (`standalone-app,grpc,obj2morph,emotion`). From the repository root:
+By default, the application supports gRPC inference only (`standalone-app,grpc,obj2morph,emotion,model-management`). From the repository root:
 
 ```sh
 cargo run -p audio2face3d-gui
@@ -32,3 +32,6 @@ For a GUI without conversion, use `--no-default-features --features standalone-a
 See the [head conversion guide](../../docs/headgen.md).
 
 Emotion controls are enabled by default. Local emotion inference is optional: select an Audio2Emotion model to enable it. See the [GUI guide](../../docs/gui.md#emotion) for configuration and feature selection.
+
+The default `model-management` feature adds the **Models** download/conversion panel
+and shared `model` CLI commands. See [model management](../../docs/gui.md#downloading-and-preparing-inference-models).

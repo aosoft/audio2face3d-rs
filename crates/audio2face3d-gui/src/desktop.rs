@@ -9,6 +9,8 @@ pub struct Options {
 use crate::render::{Camera, HeadRenderer, RenderTarget};
 use audio2face3d::logging::{LogLevel, LogRecord, Logger};
 use std::{collections::BTreeMap, path::Path};
+#[cfg(feature = "model-management")]
+mod models;
 mod transport;
 use transport::{Action, Transport};
 
@@ -37,6 +39,8 @@ pub struct DesktopApp {
     user_cancelled: bool,
     stream_started: bool,
     transport: Transport,
+    #[cfg(feature = "model-management")]
+    models: models::Panel,
     #[cfg(feature = "capture")]
     frames: u32,
 }
@@ -74,6 +78,8 @@ impl DesktopApp {
             user_cancelled: false,
             stream_started: false,
             transport: Transport::default(),
+            #[cfg(feature = "model-management")]
+            models: Default::default(),
             #[cfg(feature = "capture")]
             frames: 0,
         };
@@ -145,6 +151,12 @@ impl DesktopApp {
         }
     }
     fn start_inference(&mut self) {
+        #[cfg(feature = "model-management")]
+        if self.models.busy() {
+            self.message =
+                "Wait for the model operation to finish before starting inference".into();
+            return;
+        }
         if self.job.is_some() {
             return;
         }
@@ -355,9 +367,26 @@ impl eframe::App for DesktopApp {
             .transport
             .action(self.request.pace_input, self.job.is_some(), playback_state)
             .editable();
+        #[cfg(feature = "model-management")]
+        {
+            let previous = self.request.clone();
+            self.models.show(
+                ctx,
+                &mut self.request,
+                settings_editable,
+                self.logger.clone(),
+            );
+            if transport::inputs_changed(&previous, &self.request) {
+                self.transport.invalidate();
+            }
+        }
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Audio2Face-3D");
+                #[cfg(feature = "model-management")]
+                if ui.button("Models").clicked() {
+                    self.models.open = true;
+                }
                 if ui
                     .add_enabled(
                         settings_editable && crate::inference::inference_available(),

@@ -61,7 +61,23 @@ Bash/sh:
 export HF_TOKEN='...'
 ```
 
-Then list and download models:
+Both application executables include the same model commands by default:
+
+```sh
+audio2face3d-server model list
+audio2face3d-server model download mark
+audio2face3d-server --platform-config platform.toml model prepare mark
+audio2face3d-gui model download mark
+audio2face3d-gui --platform-config platform.toml model engine mark --precision fp16
+```
+
+These commands exit after the operation, without opening a GUI window or
+starting a gRPC listener. `model engine-onnx` also accepts arbitrary ONNX files.
+The GUI **Models** panel provides preset download, engine generation, and combined
+preparation. See [feature selection](features.md#optional-model-management) to
+build either application without these operations.
+
+The base CLI remains available. List and download models:
 
 ```sh
 cargo run -p audio2face3d --features cli -- model list
