@@ -263,3 +263,22 @@ See the workspace license for the Rust implementation.
 `native,cli`. To embed it without CLI dependencies, use `default-features = false`
 and select `native` or `mock` as appropriate. Use `--no-default-features --features
 cli,mock` for the diagnostic executable. There is no separate server-core package.
+
+## Model preparation from the server executable
+
+The default `model-management` feature exposes the shared model CLI before server
+startup. These commands do not validate an inference backend, authenticate clients,
+load CUDA, or bind a listener:
+
+```sh
+audio2face3d-server model list
+audio2face3d-server model download mark
+audio2face3d-server --platform-config platform.toml model engine mark
+audio2face3d-server --platform-config platform.toml model prepare mark --precision fp16
+```
+
+`download-revision` and `engine-onnx` are also available. Arguments, verification,
+replacement rules, `HF_TOKEN`, and TensorRT requirements match the
+[base model CLI](getting-started.md#explicit-model-acquisition).
+To omit model management, use
+`cargo build -p audio2face3d-server --no-default-features --features cli,native`.

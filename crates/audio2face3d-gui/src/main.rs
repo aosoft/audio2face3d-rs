@@ -7,7 +7,7 @@ fn main() -> std::process::ExitCode {
     let console = attach_parent_console();
     let conversion_command = std::env::args_os()
         .nth(1)
-        .is_some_and(|arg| arg == "obj2morph");
+        .is_some_and(|arg| arg == "obj2morph" || arg == "model");
     let args = match audio2face3d_gui::startup::Args::try_parse() {
         Ok(args) => args,
         Err(error) => {
@@ -18,17 +18,46 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(error.exit_code() as u8);
         }
     };
-    #[cfg(feature = "obj2morph")]
+    #[cfg(any(feature = "obj2morph", feature = "model-management"))]
+    if args.command.is_some()
+        && let Err(error) = args.validate_subcommand()
+    {
+        eprintln!("{error}");
+        return std::process::ExitCode::from(2);
+    }
+    #[cfg(any(feature = "obj2morph", feature = "model-management"))]
     let mut args = args;
-    #[cfg(feature = "obj2morph")]
-    if let Some(audio2face3d_gui::startup::Command::Obj2morph(input)) = args.command.take() {
-        return match audio2face3d_gui::obj2morph::cli::run(input) {
-            Ok(()) => std::process::ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::ExitCode::from(error.exit_code() as u8)
+    #[cfg(any(feature = "obj2morph", feature = "model-management"))]
+    if let Some(command) = args.command.take() {
+        match command {
+            #[cfg(feature = "model-management")]
+            audio2face3d_gui::startup::Command::Model(input) => {
+                let result = (|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                    let context = audio2face3d::Audio2Face3DContext::builder()
+                        .native_runtime(args.platform.resolve()?)
+                        .build();
+                    audio2face3d::logging::integration::LogScope::new(context)
+                        .in_scope(|| input.run())
+                })();
+                return match result {
+                    Ok(()) => std::process::ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::ExitCode::FAILURE
+                    }
+                };
             }
-        };
+            #[cfg(feature = "obj2morph")]
+            audio2face3d_gui::startup::Command::Obj2morph(input) => {
+                return match audio2face3d_gui::obj2morph::cli::run(input) {
+                    Ok(()) => std::process::ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::ExitCode::from(error.exit_code() as u8)
+                    }
+                };
+            }
+        }
     }
     let options = match args.resolve() {
         Ok(options) => options,

@@ -18,9 +18,9 @@ GUI crate's optional `obj2morph` module and subcommand.
 | `audio2face3d` | default (`[]`) | Shared types and client control |
 | `audio2face3d` | `mock` / `native` / `client-grpc` | Diagnostic / native / remote inference |
 | `audio2face3d` | `cli` | Base package executable |
-| `audio2face3d-server` | default (`native,cli`) | Full native server executable |
+| `audio2face3d-server` | default (`native,cli,model-management`) | Full native server executable |
 | `audio2face3d-server` | `mock` | Diagnostic backend; disable defaults and add `cli` to run it |
-| `audio2face3d-gui` | default (`standalone-app,grpc,obj2morph,emotion`) | Standard GUI with remote inference |
+| `audio2face3d-gui` | default (`standalone-app,grpc,obj2morph,emotion,model-management`) | Standard GUI with remote inference |
 | `audio2face3d-gui` | `obj2morph` | OBJ head conversion; included by default |
 | `audio2face3d-gui` | `local` | Native inference |
 | `audio2face3d-gui` | `gltf-read` / `gltf-write` | GLB I/O; disable defaults for model-only use |
@@ -30,6 +30,27 @@ Library consumers disable defaults and select only required features. Server CLI
 dependencies are gated by `cli`; GUI startup/window/audio device dependencies by
 `standalone-app`. Features are additive: model-only builds must not also enable the
 default GUI feature set through another dependency in the same build graph.
+
+## Optional model management
+
+`model-management` is enabled by default in both application packages. It adds
+`model list`, `download`, `download-revision`, `engine`, `engine-onnx`, and
+`prepare` to the server CLI and GUI executable, plus the GUI **Models** panel.
+The shared implementation is `audio2face3d::model_management`; the base
+`audio2face3d` CLI also uses it. Downloading requires no native feature or GPU.
+Engine generation invokes a separately installed `trtexec` using platform settings.
+
+Cargo features are additive. To omit this functionality, disable defaults and
+select the application and backend features explicitly:
+
+```sh
+cargo build -p audio2face3d-server --no-default-features --features cli,native
+cargo build -p audio2face3d-gui --no-default-features --features standalone-app,grpc,obj2morph,emotion
+```
+
+Add `model-management` to either command to re-enable it. Library consumers can
+leave it off; neither `cli` on the server nor `standalone-app` on the GUI forces
+it on. The full base CLI enables it for compatibility with its existing commands.
 
 ## Lower-level features
 

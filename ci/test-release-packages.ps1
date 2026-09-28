@@ -37,8 +37,8 @@ foreach ($package in $packages) {
     if ("crates-io" -notin $package.publish) {
         throw "package $($package.name) must allow publishing to crates-io"
     }
-    if ($package.version -ne "0.2.0") {
-        throw "package $($package.name) has version $($package.version), expected 0.2.0"
+    if ($package.version -ne "0.3.0") {
+        throw "package $($package.name) has version $($package.version), expected 0.3.0"
     }
 }
 $cli = $packages | Where-Object name -eq "audio2face3d-server"
@@ -53,8 +53,8 @@ if (-not $packagedLicense.Contains($mplText)) {
 }
 foreach ($consumer in @($cli, ($packages | Where-Object name -eq "audio2face3d-gui"))) {
     $libraryDependency = $consumer.dependencies | Where-Object { $_.name -eq "audio2face3d" -and $null -eq $_.kind }
-    if ($null -eq $libraryDependency -or $libraryDependency.req -notin @("^0.2.0", "0.2.0")) {
-        throw "$($consumer.name) must depend on audio2face3d 0.2.0"
+    if ($null -eq $libraryDependency -or $libraryDependency.req -notin @("^0.3.0", "0.3.0")) {
+        throw "$($consumer.name) must depend on audio2face3d 0.3.0"
     }
 }
 

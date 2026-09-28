@@ -28,7 +28,8 @@ client-grpc = ["dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "
 grpc-server = ["dep:prost", "dep:prost-types", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
 runtime-cli = [ "dep:clap", "dep:toml", "dep:libloading", "dep:windows-sys", "dep:libc"]
 cli-logging = ["dep:chrono", "dep:tracing", "dep:tracing-subscriber", "dep:serde", "dep:serde_json", "dep:clap"]
-cli = ["cli-logging", "runtime-cli", "dep:clap", "dep:hf-hub", "dep:sha2", "dep:thiserror", "dep:serde", "dep:serde_json", "dep:zip"]
+cli = ["cli-logging", "model-management"]
+model-management = ["runtime-cli", "dep:clap", "dep:hf-hub", "dep:sha2", "dep:thiserror", "dep:serde", "dep:serde_json", "dep:zip"]
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"], optional = true }
 toml = { version = "1.1", optional = true, default-features = false, features = ["parse", "std", "serde"] }

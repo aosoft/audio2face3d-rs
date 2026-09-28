@@ -13,7 +13,8 @@ default-features = false
 features = ["gltf-read", "obj2morph", "ui-egui", "render-wgpu", "grpc"]
 
 [features]
-default = ["standalone-app", "grpc", "obj2morph", "emotion"]
+default = ["standalone-app", "grpc", "obj2morph", "emotion", "model-management"]
+model-management = ["dep:audio2face3d", "audio2face3d/model-management"]
 gltf-read = ["dep:gltf", "dep:serde_json"]
 gltf-write = ["dep:gltf-json", "dep:serde_json"]
 

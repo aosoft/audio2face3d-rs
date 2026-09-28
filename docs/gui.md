@@ -339,3 +339,37 @@ cargo run -p audio2face3d-gui --no-default-features --features standalone-app,gr
 Such builds reject `[emotion]` configuration and `--emotion-model` instead of
 silently ignoring them. Remove that section when sharing a configuration with
 an emotion-disabled build. Received emotion traces are ignored in that build.
+
+## Downloading and preparing inference models
+
+The default `model-management` feature adds **Models** to the toolbar. Select a
+preset, models directory, token environment variable name, precision, GPU device,
+and optional maximum batch size (0 selects automatic sizing). **Download** checks
+or acquires the snapshot; **Generate engine** converts an installed snapshot;
+**Download + generate** performs both. Accept the repository terms on Hugging Face
+and set `HF_TOKEN` (or the selected variable) before launching the application.
+
+Operations run on a worker thread. The panel displays the current phase and any
+error, and keeps the application open until the operation finishes. The existing
+snapshot and engine are verified and reused; select the replacement checkbox only
+to explicitly replace them. Conversion uses the application's resolved platform
+configuration and separately installed TensorRT `trtexec`. No CUDA build is needed
+for download or for launching this external converter.
+
+After conversion, **Use for local inference** selects a supported regression
+model when `local` is compiled, or the emotion model when both `local` and
+`emotion` are compiled. The selected GPU device is carried into local inference.
+Diffusion can be prepared but is not supported by the GUI inference backend.
+Remote inference continues to use the server's models; preparation here writes to
+the local computer. The display head GLB remains a separate asset.
+
+The executable also supports `model list`, `download`, `download-revision`,
+`engine`, `engine-onnx`, and `prepare` without opening a window or reading
+`gui.toml`. For example:
+
+```sh
+audio2face3d-gui --platform-config platform.toml model prepare mark models
+```
+
+To omit the commands, toolbar panel, and download dependencies, build with
+`--no-default-features --features standalone-app,grpc,obj2morph,emotion`.

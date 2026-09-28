@@ -21,6 +21,20 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         // Clap can echo argument values. Never print a parse error carrying secrets.
         Err(_) => return Err("invalid command line arguments; use --help".into()),
     };
+    #[cfg(feature = "model-management")]
+    if let Some(args::Command::Model(command)) = args.command.take() {
+        let logging = logging::Logging::start(&args.logging, env!("CARGO_PKG_NAME"))?;
+        let context = audio2face3d::Audio2Face3DContext::builder()
+            .logger(logging.logger.clone())
+            .native_runtime(args.runtime.resolve()?)
+            .build();
+        let outcome = tokio::task::spawn_blocking(move || {
+            audio2face3d::logging::integration::LogScope::new(context).in_scope(|| command.run())
+        })
+        .await?;
+        logging.finish()?;
+        return outcome;
+    }
     if let Some(path) = &args.export_descriptor {
         std::fs::write(path, DESCRIPTOR)?;
         return Ok(());

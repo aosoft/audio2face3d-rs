@@ -68,6 +68,12 @@ function Require-Environment {
 
 switch ($Tier) {
     "portable" {
+        foreach ($modelFeatures in @("cli,mock", "cli,mock,model-management")) {
+            Invoke-Checked @("cargo", "test", "-p", "audio2face3d-server", "--no-default-features", "--features", $modelFeatures, "--test", "model_cli")
+        }
+        foreach ($modelFeatures in @("standalone-app,grpc", "standalone-app,grpc,model-management")) {
+            Invoke-Checked @("cargo", "test", "-p", "audio2face3d-gui", "--no-default-features", "--features", $modelFeatures, "--test", "model_cli")
+        }
         Invoke-Checked @("cargo", "fmt", "--all", "--", "--check")
         Invoke-Checked @("cargo", "check", "--workspace", "--no-default-features", "--features", "audio2face3d/cli,audio2face3d/mock,audio2face3d/client-grpc,audio2face3d-server/cli,audio2face3d-server/mock")
         Invoke-Checked @("cargo", "check", "-p", "audio2face3d", "--no-default-features")
