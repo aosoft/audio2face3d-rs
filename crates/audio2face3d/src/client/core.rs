@@ -1,6 +1,7 @@
+use crate::client::state::{Effects, State};
 use crate::client::{Limits, notify::Notify, types::*};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     sync::{Arc, Mutex, OnceLock, Weak},
     thread::{self, Thread},
     time::Instant,
@@ -157,41 +158,12 @@ impl<T> Buffered<T> {
         self.lease.bytes
     }
 }
-pub(crate) enum Outcome {
-    Running,
-    Success,
-    Failed(Error),
-}
-pub(crate) struct State {
-    pub input: VecDeque<Buffered<InputChunk>>,
-    pub pending_input: Option<Buffered<InputChunk>>,
-    pub input_bytes: usize,
-    pub output: VecDeque<Buffered<OutputEvent>>,
-    pub pending_output: Option<Buffered<OutputEvent>>,
-    pub output_bytes: usize,
-    pub input_finished: bool,
-    pub input_eof: bool,
-    pub outcome: Outcome,
-    pub closed: Option<Result<()>>,
-    pub terminal_seen: bool,
-    retired: bool,
-    pub progress: Progress,
-    pub processing_finished: bool,
-}
-impl State {
-    pub fn error(&self) -> Option<Error> {
-        match &self.outcome {
-            Outcome::Failed(e) => Some(e.clone()),
-            _ => None,
-        }
-    }
-}
 pub(crate) struct Request {
     pub id: RequestId,
     pub core: Arc<Core>,
     pub format: AudioFormat,
     pub deadline: Option<Instant>,
-    pub state: Mutex<State>,
+    pub(super) state: Mutex<State>,
     pub notify: Notify,
 }
 impl Request {
@@ -234,22 +206,7 @@ impl Request {
             format,
             deadline,
             notify: Notify::default(),
-            state: Mutex::new(State {
-                input: VecDeque::new(),
-                pending_input: None,
-                input_bytes: 0,
-                output: VecDeque::new(),
-                pending_output: None,
-                output_bytes: 0,
-                input_finished: false,
-                input_eof: false,
-                outcome: Outcome::Running,
-                closed: None,
-                terminal_seen: false,
-                retired: false,
-                progress: Progress::default(),
-                processing_finished: false,
-            }),
+            state: Mutex::new(State::default()),
         });
         global.bytes += bytes;
         global.requests.insert(id.0, Arc::downgrade(&request));
@@ -262,75 +219,56 @@ impl Request {
     }
     pub fn fail(&self, error: Error) {
         let error = compact_error(error);
-        let discarded = {
+        let effects = {
             let mut state = self.state.lock().unwrap();
-            if state.error().is_some() || state.terminal_seen {
-                return;
-            }
-            state.outcome =
-                Outcome::Failed(error.with_request(self.id).with_progress(state.progress));
-            state.input_bytes = 0;
-            state.output_bytes = 0;
-            (
-                std::mem::take(&mut state.input),
-                state.pending_input.take(),
-                std::mem::take(&mut state.output),
-                state.pending_output.take(),
-            )
+            state.fail(error, self.id)
         };
-        drop(discarded);
-        self.changed();
-        self.core.poke();
+        self.apply(effects);
     }
     pub fn closed(&self, result: Result<()>) {
-        if let Err(error) = result {
-            self.fail(error);
-        } else {
-            let complete = {
-                let state = self.state.lock().unwrap();
-                state.input_finished && state.input_eof && state.pending_output.is_none()
-            };
-            if !complete {
-                self.fail(Error::new(
-                    ErrorKind::IncompleteResponse,
-                    "backend ended before input/output handoff completed",
-                ));
-            }
-        }
-        {
-            let mut state = self.state.lock().unwrap();
-            if state.closed.is_some() {
-                return;
-            }
-            state.closed = Some(state.error().map_or(Ok(()), Err));
-            if state.error().is_none() {
-                state.outcome = Outcome::Success;
-            }
-        }
-        self.changed();
+        let effects = self
+            .state
+            .lock()
+            .unwrap()
+            .complete_cleanup(result.map_err(compact_error), self.id);
+        self.apply(effects);
     }
     pub fn changed(&self) {
-        let retire = {
-            let mut state = self.state.lock().unwrap();
-            let ready = state.closed.is_some() && (state.error().is_some() || state.terminal_seen);
-            if ready && !state.retired {
-                state.retired = true;
-                true
-            } else {
-                false
-            }
-        };
+        let effects = self.state.lock().unwrap().changed();
+        self.apply(effects);
+    }
+    fn apply(&self, effects: Effects) {
+        let Effects {
+            discarded_input,
+            pending_input,
+            discarded_output,
+            pending_output,
+            retire,
+            notify,
+            poke,
+        } = effects;
+        drop((
+            discarded_input,
+            pending_input,
+            discarded_output,
+            pending_output,
+        ));
         if retire {
             self.core.state.lock().unwrap().requests.remove(&self.id.0);
             self.core.notify.wake();
             self.core.poke();
         }
-        self.notify.wake();
+        if notify {
+            self.notify.wake();
+        }
+        if poke {
+            self.core.poke();
+        }
     }
     pub fn context(&self, error: Error) -> Error {
         error
             .with_request(self.id)
-            .with_progress(self.state.lock().unwrap().progress)
+            .with_progress(self.state.lock().unwrap().progress())
     }
 }
 

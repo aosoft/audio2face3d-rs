@@ -1,7 +1,7 @@
 //! Private adapter boundary. A driver dispatches without blocking and owns cleanup.
 //! Keep WorkerGuard until native/RPC resources and accepted input leases are released.
 use crate::client::{
-    core::{Buffered, Core, Lease, Outcome, Request},
+    core::{Buffered, Core, Lease, Request},
     memory,
     notify::Subscription,
     types::*,
@@ -160,23 +160,11 @@ impl Reader {
     }
     pub fn poll_recv(&self, _cx: &mut Context<'_>) -> Poll<Result<Option<InputPacket>>> {
         let request = &self.request;
-        let mut state = request.state.lock().unwrap();
-        if let Some(error) = state.error() {
-            return Poll::Ready(Err(error));
-        }
-        if let Some(item) = state.input.pop_front() {
-            state.input_bytes -= item.bytes();
-            drop(state);
+        let result = request.state.lock().unwrap().receive_input();
+        if matches!(result, Poll::Ready(Ok(_))) {
             request.changed();
-            return Poll::Ready(Ok(Some(InputPacket(item))));
         }
-        if state.input_finished {
-            state.input_eof = true;
-            drop(state);
-            request.changed();
-            return Poll::Ready(Ok(None));
-        }
-        Poll::Pending
+        result.map(|result| result.map(|item| item.map(InputPacket)))
     }
 }
 pub(crate) struct Writer {
@@ -205,39 +193,13 @@ impl Writer {
             ));
         }
         let lease = self.request.core.reserve(bytes)?;
-        let item = Buffered {
+        let mut item = Some(Buffered {
             value: event,
             lease,
-        };
-        let mut state = self.request.state.lock().unwrap();
-        if let Some(error) = state.error() {
-            return Err(error);
-        }
-        if !matches!(state.outcome, Outcome::Running) {
-            return Err(Error::new(
-                ErrorKind::Protocol,
-                "output after backend completion",
-            ));
-        }
-        if matches!(item.value, OutputEvent::ProcessingFinished) {
-            if state.processing_finished {
-                return Err(Error::new(
-                    ErrorKind::Protocol,
-                    "duplicate processing-finished event",
-                ));
-            }
-            state.processing_finished = true;
-        }
-        match &item.value {
-            OutputEvent::Audio(a) => {
-                state.progress.received_audio_bytes += a.pcm().as_bytes().len() as u64
-            }
-            OutputEvent::Curves(_) => state.progress.received_curve_frames += 1,
-            _ => {}
-        }
-        assert!(state.pending_output.is_none());
-        state.pending_output = Some(item);
-        Ok(())
+        });
+        let result = self.request.state.lock().unwrap().stage_output(&mut item);
+        drop(item); // Release a rejected lease after the temporary lock guard.
+        result
     }
 }
 pub(crate) struct Emit<'a> {
@@ -254,29 +216,17 @@ impl Future for Emit<'_> {
             return Poll::Ready(Err(error));
         }
         let request = self.writer.request.clone();
-        let mut state = request.state.lock().unwrap();
-        if let Some(error) = state.error() {
-            self.staged = false;
-            return Poll::Ready(Err(error));
+        let result = request
+            .state
+            .lock()
+            .unwrap()
+            .accept_output(&request.core.limits);
+        if result.is_pending() {
+            return result;
         }
-        let bytes = state
-            .pending_output
-            .as_ref()
-            .expect("emit polled after completion")
-            .bytes();
-        let limits = &request.core.limits;
-        if state.output.len() >= limits.output_queue_items
-            || bytes > limits.output_queue_bytes - state.output_bytes
-        {
-            return Poll::Pending;
-        }
-        let item = state.pending_output.take().unwrap();
-        state.output_bytes += bytes;
-        state.output.push_back(item);
-        drop(state);
         self.staged = false;
         request.changed();
-        Poll::Ready(Ok(()))
+        result
     }
 }
 impl Drop for Emit<'_> {

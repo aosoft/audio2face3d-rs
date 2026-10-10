@@ -149,7 +149,7 @@ async fn send(
     }
 }
 
-pub async fn run(
+pub async fn run_streaming(
     input: &mut Streaming<controller::AudioStream>,
     backend: &mut Backend,
     tx: &mpsc::Sender<controller::AnimationDataStream>,
@@ -200,35 +200,37 @@ pub async fn run(
             observation.output_batches = observation.output_batches.saturating_add(1);
         }
         if finished {
-            observation.stage = "cleanup";
-            backend
-                .close()
-                .await
-                .inspect_err(|_| observation.cleanup_failed = true)?;
-            observation.stage = "output";
-            send(
-                tx,
-                Output::Event(controller::Event {
-                    event_type: 0,
-                    metadata: None,
-                }),
-                config,
-                shutdown,
-            )
-            .await?;
-            send(
-                tx,
-                Output::Status(status::Status {
-                    code: 0,
-                    message: backend.success_message().into(),
-                }),
-                config,
-                shutdown,
-            )
-            .await?;
             return Ok(());
         }
     }
+}
+
+pub(crate) async fn send_success(
+    tx: &mpsc::Sender<controller::AnimationDataStream>,
+    message: &str,
+    config: &Config,
+    shutdown: &CancellationToken,
+) -> Result<(), Status> {
+    send(
+        tx,
+        Output::Event(controller::Event {
+            event_type: 0,
+            metadata: None,
+        }),
+        config,
+        shutdown,
+    )
+    .await?;
+    send(
+        tx,
+        Output::Status(status::Status {
+            code: 0,
+            message: message.into(),
+        }),
+        config,
+        shutdown,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -25,6 +25,7 @@ mod handle;
 mod memory;
 mod notify;
 mod session;
+mod state;
 
 pub use crate::types;
 pub use handle::{Client, Limits, LimitsBuilder, Shutdown};
