@@ -14,8 +14,8 @@ mod session;
 
 #[cfg(feature = "tensorrt")]
 pub use session::{
-    BindingBuffer, DeviceBindings, EngineEnvironment, InferenceFence, RuntimeTensorShape,
-    TensorRtLogMessage, TensorRtSession,
+    DeviceBindings, EngineEnvironment, InferenceFence, InputBinding, OutputBinding,
+    RuntimeTensorShape, TensorElement, TensorRtLogMessage, TensorRtSession,
 };
 
 mod engine;

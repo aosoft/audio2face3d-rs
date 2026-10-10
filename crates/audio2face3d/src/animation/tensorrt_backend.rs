@@ -67,14 +67,15 @@ impl TensorRtRegressionBackend {
         let batch = inputs.len();
         let contract = RegressionBufferContract::new(&self.contract, batch)?;
         let mut input = RegressionInferenceInputBuffers::allocate(&self.device, &contract)?;
-        let output = RegressionInferenceOutputBuffers::allocate(&self.device, &contract)?;
+        let mut output = RegressionInferenceOutputBuffers::allocate(&self.device, &contract)?;
         input.copy_frames(inputs, &self.stream)?;
-        let bindings = contract.device_bindings(&input, &output)?;
+        let mut bindings = contract.device_bindings(&input, &mut output)?;
         self.session
-            .enqueue(0, &bindings, &self.stream)
+            .enqueue(0, &mut bindings, &self.stream)
             .map_err(inference_error)?
             .synchronize()
             .map_err(inference_error)?;
+        drop(bindings);
         Ok(output)
     }
 }

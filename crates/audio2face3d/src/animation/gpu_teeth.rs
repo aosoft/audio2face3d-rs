@@ -1,5 +1,6 @@
 use crate::animation::{JawParameters, TensorBatchInfo};
 use crate::common::{Error, Result, checked_u32};
+use crate::cuda::completion::CompletionGuard;
 use crate::cuda::{
     CudaEvent, CudaModule, CudaStream, DeviceBuffer, DeviceId, DeviceView, GpuDevice,
     ensure_same_device, regression_jaw_ptx,
@@ -183,7 +184,7 @@ impl GpuMultiTrackTeethAnimator {
     /// a track inactive.
     pub fn set_active_tracks(&mut self, _active_tracks: Option<&[u64]>) {}
 
-    /// Enqueues every configured track on `stream` without host synchronization.
+    /// Executes every configured track on `stream` and completes before returning.
     ///
     /// Both tensors must have exactly `stride * track_count` elements. Within
     /// each row, `offset + size` must not exceed `stride`. Input size must equal
@@ -214,6 +215,8 @@ impl GpuMultiTrackTeethAnimator {
 
         let point_count = checked_u32(self.jaw_pose_size / 3, "teeth_point_count")?;
         let function = self.module.function("audio2face_regression_jaw")?;
+        let event = stream.create_event()?;
+        let completion = CompletionGuard::new(|| stream.synchronize());
         for track in 0..self.track_count() {
             let input_element = track
                 .checked_mul(input.info.stride)
@@ -247,8 +250,8 @@ impl GpuMultiTrackTeethAnimator {
                 function.launch_raw((1, 1, 1), (32, 1, 1), 0, stream, &mut kernel_parameters)?;
             }
         }
-        let event = stream.create_event()?;
         event.record(stream)?;
+        completion.finish();
         Ok(GpuMultiTrackTeethFence {
             event,
             output: output.buffer.view(),

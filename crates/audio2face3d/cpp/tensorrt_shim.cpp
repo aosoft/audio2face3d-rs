@@ -15,6 +15,13 @@
 #include <vector>
 
 namespace {
+// Keep the tags decoded by the Rust metadata boundary tied to the SDK ABI.
+static_assert(static_cast<int32_t>(nvinfer1::DataType::kFLOAT) == 0);
+static_assert(static_cast<int32_t>(nvinfer1::DataType::kHALF) == 1);
+static_assert(static_cast<int32_t>(nvinfer1::DataType::kBOOL) == 4);
+static_assert(static_cast<int32_t>(nvinfer1::DataType::kINT64) == 8);
+static_assert(static_cast<int32_t>(nvinfer1::TensorLocation::kDEVICE) == 0);
+
 struct NativeApi {
     decltype(&::cudaSetDevice) p_cudaSetDevice{};
     decltype(&::cudaGetDevice) p_cudaGetDevice{};
@@ -353,6 +360,13 @@ extern "C" int32_t trt_shim_tensor_info_at(const trt_shim_handle* h, int32_t ind
         if (!h || !h->engine || !info || index < 0 || index >= h->engine->getNbIOTensors()) throw std::runtime_error("invalid argument");
         const char* name = h->engine->getIOTensorName(index);
         info->io_mode = static_cast<int32_t>(h->engine->getTensorIOMode(name));
+        // Rust device bindings calculate dense, scalar tensor storage. Packed
+        // formats require padded/vectorized extents and a separate contract.
+        for (int32_t profile = 0; profile < h->engine->getNbOptimizationProfiles(); ++profile) {
+            if (h->engine->getTensorFormat(name, profile) != nvinfer1::TensorFormat::kLINEAR) {
+                throw std::runtime_error("non-linear tensor storage is unsupported by device bindings");
+            }
+        }
         info->data_type = static_cast<int32_t>(h->engine->getTensorDataType(name));
         info->location = static_cast<int32_t>(h->engine->getTensorLocation(name));
         copy_dims(h->engine->getTensorShape(name), dims, capacity, rank);

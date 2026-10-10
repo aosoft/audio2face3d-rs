@@ -2,6 +2,7 @@
 
 use crate::animation::{BlendshapeData, CpuBlendshapeSolver};
 use crate::common::{BlendshapeConfig, Error, Result};
+use crate::cuda::completion::CompletionGuard;
 use crate::cuda::{
     CublasHandle, CublasTranspose, CudaEvent, CudaModule, CudaStream, DeviceBuffer, DeviceView,
     GpuDevice, blendshape_solver_ptx, ensure_same_device,
@@ -259,11 +260,9 @@ impl GpuBlendshapeSolver {
 
     /// Enqueues the complete device solver without a host round trip.
     ///
-    /// All work uses `stream`. The returned fence borrows the solver, target,
-    /// output, and stream until [`GpuBlendshapeSolveFence::synchronize`] has
-    /// observed completion. Device work that consumes [`GpuBlendshapeSolveFence::output`]
-    /// may be enqueued on [`GpuBlendshapeSolveFence::stream`] before host
-    /// synchronization; direct host access must wait for completion.
+    /// All work uses `stream` and completes before returning. The historical
+    /// `solve_async` name and fence are retained as migration conveniences;
+    /// forgetting the fence cannot leave work accessing released borrows.
     pub fn solve_async<'a>(
         &'a mut self,
         target: &'a DeviceBuffer<f32>,
@@ -323,6 +322,8 @@ impl GpuBlendshapeSolver {
         let mut coordinate_count = checked_u32(self.coordinate_count, "coordinate count")?;
         let mut active_count = checked_u32(self.active_count, "active count")?;
         let mut pose_count = checked_u32(self.pose_count, "pose count")?;
+        let event = stream.create_event()?;
+        let completion = CompletionGuard::new(|| stream.synchronize());
 
         let mut target_delta = self.target_delta.view().as_raw();
         let mut target_pointer = target.as_raw();
@@ -433,8 +434,8 @@ impl GpuBlendshapeSolver {
                 &mut apply_params,
             )?;
         }
-        let event = stream.create_event()?;
         event.record(stream)?;
+        completion.finish();
         Ok(GpuBlendshapeSolveFence {
             event,
             output: output.view(),

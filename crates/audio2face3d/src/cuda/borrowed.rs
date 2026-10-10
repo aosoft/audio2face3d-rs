@@ -17,7 +17,7 @@
 //! native resource, so safe code cannot retain a dangling handle.
 
 use crate::common::{Error, Result};
-use crate::cuda::DeviceId;
+use crate::cuda::{DeviceElement, DeviceId};
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -35,24 +35,23 @@ use std::mem::size_of;
 ///
 /// This type is `Send` when `T: Send` and `Sync` when `T: Sync`.
 #[derive(Debug, Clone, Copy)]
-pub struct DeviceView<'a, T> {
+pub struct DeviceView<'a, T: DeviceElement> {
     pointer: u64,
     len: usize,
     device: DeviceId,
     _owner: PhantomData<&'a T>,
 }
 
-impl<'a, T> DeviceView<'a, T> {
+impl<'a, T: DeviceElement> DeviceView<'a, T> {
     /// Creates a borrowed view from SDK-validated raw parts.
     ///
     /// # Safety
     ///
     /// `pointer` must name storage for `len` consecutive `T` values on `device`,
-    /// and that allocation must remain valid for `'a`. This constructor does
-    /// not assert that the allocation has been initialized; operations that
-    /// read through the view must separately guarantee initialization and
-    /// CUDA ordering. Only crate internals that retain the corresponding owner
-    /// may call this.
+    /// suitably aligned, initialized storage, and that allocation must remain
+    /// valid for `'a`. The caller must prevent conflicting writes for this
+    /// lifetime and establish CUDA ordering before reading the values. Only
+    /// crate internals that retain the corresponding owner may call this.
     pub(crate) const unsafe fn from_raw_parts(pointer: u64, len: usize, device: DeviceId) -> Self {
         Self {
             pointer,
@@ -106,8 +105,8 @@ impl<'a, T> DeviceView<'a, T> {
             .checked_add(byte_offset as u64)
             .ok_or_else(|| Error::InvalidSchema("device view pointer overflow".into()))?;
         // SAFETY: this is a checked subrange of the original borrowed view, so
-        // it inherits the storage extent, device, and lifetime. Initialization
-        // requirements remain the responsibility of an eventual read.
+        // it inherits the initialization, storage extent, device, lifetime,
+        // and absence of conflicting writes.
         Ok(unsafe { DeviceView::from_raw_parts(pointer, len, self.device) })
     }
 }
@@ -115,10 +114,67 @@ impl<'a, T> DeviceView<'a, T> {
 // SAFETY: the descriptor does not own or free the allocation. Its lifetime is
 // tied to the owner borrow, and raw-pointer use is restricted to explicit CUDA
 // operations. Moving/sharing it therefore has the same bounds as `T`.
-unsafe impl<T: Send> Send for DeviceView<'_, T> {}
+unsafe impl<T: DeviceElement> Send for DeviceView<'_, T> {}
 // SAFETY: sharing the read-only descriptor is valid when the referenced
 // element type itself can be shared between threads.
-unsafe impl<T: Sync> Sync for DeviceView<'_, T> {}
+unsafe impl<T: DeviceElement> Sync for DeviceView<'_, T> {}
+
+/// An exclusive, initialized view of a CUDA allocation.
+///
+/// This descriptor is neither `Copy` nor `Clone`. Its mutable owner borrow
+/// excludes reads and other writes until the operation using it completes.
+#[derive(Debug)]
+pub struct DeviceViewMut<'a, T: DeviceElement> {
+    pointer: u64,
+    len: usize,
+    device: DeviceId,
+    _owner: PhantomData<&'a mut T>,
+}
+
+impl<'a, T: DeviceElement> DeviceViewMut<'a, T> {
+    /// # Safety
+    ///
+    /// The extent, alignment, initialization, and lifetime requirements of
+    /// `DeviceView::from_raw_parts` apply. The caller additionally supplies
+    /// exclusive access to this range for `'a`, including native submissions.
+    pub(crate) const unsafe fn from_raw_parts(pointer: u64, len: usize, device: DeviceId) -> Self {
+        Self {
+            pointer,
+            len,
+            device,
+            _owner: PhantomData,
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub const fn device_id(&self) -> DeviceId {
+        self.device
+    }
+
+    /// Returns the pointer without granting safe raw-memory access.
+    pub const fn as_raw(&self) -> u64 {
+        self.pointer
+    }
+
+    pub fn as_view(&self) -> DeviceView<'_, T> {
+        // SAFETY: this shared reborrow cannot outlive the exclusive descriptor.
+        unsafe { DeviceView::from_raw_parts(self.as_raw(), self.len(), self.device_id()) }
+    }
+
+    pub fn slice(self, offset: usize, len: usize) -> Result<Self> {
+        let view = self.as_view().slice(offset, len)?;
+        // SAFETY: consuming the original descriptor transfers its exclusive
+        // borrow to a bounds-checked subrange without duplicating it.
+        Ok(unsafe { Self::from_raw_parts(view.as_raw(), view.len(), view.device_id()) })
+    }
+}
 
 /// A callback-scoped reference to a CUDA stream.
 ///

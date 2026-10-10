@@ -1,7 +1,7 @@
 use crate::common::{BindingSchema, Dimension, ElementType, Error, IoMode, Result};
 use crate::cuda::{CudaStream, DeviceBuffer, GpuDevice};
 use crate::emotion::{ClassifierBackend, ClassifierContract};
-use crate::tensorrt::{BindingBuffer, DeviceBindings, TensorRtSession};
+use crate::tensorrt::{DeviceBindings, InputBinding, OutputBinding, TensorRtSession};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -133,7 +133,7 @@ impl TensorRtClassifierBackend {
             .checked_mul(self.contract.emotion_length)
             .ok_or_else(|| invalid("classifier output allocation overflow"))?;
         let mut audio = self.device.allocate::<f32>(audio_elements)?;
-        let output = self.device.allocate::<f32>(output_elements)?;
+        let mut output = self.device.allocate::<f32>(output_elements)?;
         let host = inputs
             .iter()
             .flat_map(|values| values.iter().copied())
@@ -141,16 +141,10 @@ impl TensorRtClassifierBackend {
         audio.copy_from(&host, &self.stream)?;
         let mut bindings = DeviceBindings::new();
         bindings
-            .insert(
-                "input_values",
-                BindingBuffer::from_view(audio.view(), ElementType::F32),
-            )
+            .insert_input("input_values", InputBinding::from_view(audio.view()))
             .map_err(inference_error)?;
         bindings
-            .insert(
-                "output",
-                BindingBuffer::from_view(output.view(), ElementType::F32),
-            )
+            .insert_output("output", OutputBinding::from_view(output.view_mut()))
             .map_err(inference_error)?;
         bindings
             .set_input_shape(
@@ -163,10 +157,11 @@ impl TensorRtClassifierBackend {
             )
             .map_err(inference_error)?;
         self.session
-            .enqueue(0, &bindings, &self.stream)
+            .enqueue(0, &mut bindings, &self.stream)
             .map_err(inference_error)?
             .synchronize()
             .map_err(inference_error)?;
+        drop(bindings);
         Ok(output)
     }
 }

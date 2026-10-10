@@ -1,6 +1,7 @@
 #![cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
 
 use crate::common::{Error, Result};
+use crate::cuda::completion::CompletionGuard;
 use crate::cuda::{
     CudaEvent, CudaModule, CudaStream, DeviceBuffer, DeviceView, GpuDevice,
     emotion_postprocess_ptx, ensure_same_device,
@@ -152,6 +153,7 @@ impl GpuEmotionPostProcessor {
         let mut track_count = u32::try_from(self.track_count)
             .map_err(|_| invalid("GPU emotion track count exceeds CUDA index range"))?;
         let mut arguments = params![state, state_stride, track_count];
+        let completion = CompletionGuard::new(|| stream.synchronize());
         // SAFETY: the ABI matches the kernel and state has track_count strides.
         unsafe {
             function.launch_raw(
@@ -162,7 +164,8 @@ impl GpuEmotionPostProcessor {
                 &mut arguments,
             )?;
         }
-        stream.synchronize()
+        completion.finish();
+        Ok(())
     }
 
     #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
@@ -178,10 +181,12 @@ impl GpuEmotionPostProcessor {
         let mut state_stride = self.state_stride as u64;
         let mut track_count = 1_u32;
         let mut arguments = params![state, state_stride, track_count];
+        let completion = CompletionGuard::new(|| stream.synchronize());
         // SAFETY: the pointer is restricted to one validated state row and the
         // kernel is launched for exactly one logical track.
         unsafe { function.launch_raw((1, 1, 1), (1, 1, 1), 0, stream, &mut arguments)? };
-        stream.synchronize()
+        completion.finish();
+        Ok(())
     }
 
     /// Enqueues post-processing. Input rows are packed in `active_tracks`
@@ -240,6 +245,8 @@ impl GpuEmotionPostProcessor {
             active_bits[word] |= bit;
         }
         let set = self.module.function("emotion_postprocess_set")?;
+        let event = stream.create_event()?;
+        let completion = CompletionGuard::new(|| stream.synchronize());
         for (word, value) in active_bits.into_iter().enumerate() {
             let mut active_pointer = self.active.view().as_raw();
             let mut active_word = u32::try_from(word)
@@ -295,8 +302,8 @@ impl GpuEmotionPostProcessor {
         // SAFETY: all kernel arguments point to validated, same-device allocations;
         // the returned fence retains exclusive state/output access through completion.
         unsafe { function.launch_raw(grid, block, 0, stream, &mut arguments)? };
-        let event = stream.create_event()?;
         event.record(stream)?;
+        completion.finish();
         Ok(GpuEmotionPostProcessFence {
             event,
             #[cfg(test)]
@@ -329,7 +336,7 @@ impl GpuEmotionPostProcessFence<'_> {
     }
 }
 
-fn upload<T: Copy>(
+fn upload<T: crate::cuda::DeviceElement>(
     device: &Arc<GpuDevice>,
     stream: &CudaStream,
     values: &[T],

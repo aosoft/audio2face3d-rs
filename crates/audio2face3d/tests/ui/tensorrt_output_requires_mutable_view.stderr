@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/ui/tensorrt_output_requires_mutable_view.rs:5:44
+  |
+5 |     let _output = OutputBinding::from_view(buffer.view());
+  |                   ------------------------ ^^^^^^^^^^^^^ expected `DeviceViewMut<'_, _>`, found `DeviceView<'_, f32>`
+  |                   |
+  |                   arguments to this function are incorrect
+  |
+  = note: expected struct `DeviceViewMut<'_, _>`
+             found struct `DeviceView<'_, f32>`
+note: associated function defined here
+ --> src/tensorrt/session.rs
+  |
+  |     pub fn from_view<T: TensorElement>(view: DeviceViewMut<'a, T>) -> Self {
+  |            ^^^^^^^^^
