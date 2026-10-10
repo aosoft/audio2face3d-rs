@@ -305,6 +305,9 @@ fn diagnostic_cli_rejects_invalid_inputs() {
     for args in [
         vec!["test", "--mock-curve", "NotACurve"],
         vec!["test", "--mock-value", "0.5"],
+        vec!["test", "--model", "unused.json"],
+        vec!["test", "--emotion-model", "unused.json"],
+        vec!["test", "--device", "1"],
         vec!["test", "--mock-curve", "JawOpen", "--mock-value", "NaN"],
         vec!["test", "--mock-curve", "JawOpen", "--mock-value", "1.1"],
     ] {
@@ -406,6 +409,15 @@ async fn diagnostic_jaw_baseline_preserves_selected_curve_and_audio() {
 fn diagnostic_jaw_baseline_rejects_ambiguous_or_invalid_settings() {
     for args in [
         vec!["test", "--mock-jaw-open", "0.5"],
+        vec![
+            "test",
+            "--mock-curve",
+            "JawOpen",
+            "--mock-value",
+            "0.2",
+            "--mock-jaw-open",
+            "0.8",
+        ],
         vec![
             "test",
             "--mock-curve",

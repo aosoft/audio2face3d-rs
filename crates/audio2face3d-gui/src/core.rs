@@ -1,5 +1,23 @@
 //! Owned media data and peak-preserving timeline queries, independent of UI/audio.
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+mod audio_track;
+pub(crate) use audio_track::AudioBlock;
+pub use audio_track::{AudioTrack, MAX_AUDIO_BLOCKS};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ClipId(u64);
+
+fn next_clip_id() -> ClipId {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    ClipId(
+        NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .expect("clip identity exhausted"),
+    )
+}
 
 pub const SAMPLE_RATE: u32 = 16_000;
 pub const MAX_SECONDS: f64 = 600.;
@@ -28,11 +46,12 @@ pub struct CurveSample {
 pub struct Clip {
     pub names: Vec<String>,
     pub frames: Vec<CurveSample>,
-    pub audio: Vec<f32>,
+    pub audio: AudioTrack,
     #[cfg(feature = "emotion")]
     pub emotions: Vec<audio2face3d::types::EmotionKeyframe>,
     pub session: SessionState,
     pub revision: u64,
+    id: ClipId,
     curve_end: f64,
     curve_gap: bool,
     retained: usize,
@@ -42,11 +61,12 @@ impl Default for Clip {
         Self {
             names: vec![],
             frames: vec![],
-            audio: vec![],
+            audio: AudioTrack::default(),
             #[cfg(feature = "emotion")]
             emotions: vec![],
             session: SessionState::Idle,
             revision: 0,
+            id: next_clip_id(),
             curve_end: 0.,
             curve_gap: false,
             retained: 0,
@@ -54,6 +74,24 @@ impl Default for Clip {
     }
 }
 impl Clip {
+    pub fn id(&self) -> ClipId {
+        self.id
+    }
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+    pub fn frames(&self) -> &[CurveSample] {
+        &self.frames
+    }
+    pub fn session(&self) -> &SessionState {
+        &self.session
+    }
+    pub fn set_session(&mut self, value: SessionState) {
+        if self.session != value {
+            self.session = value;
+            self.revision += 1;
+        }
+    }
     #[cfg(feature = "emotion")]
     pub fn push_emotions(
         &mut self,
@@ -118,6 +156,16 @@ impl Clip {
         }
     }
     pub fn push_audio(&mut self, start: u64, samples: &[f32]) -> Result<()> {
+        let bytes = self.validate_audio(start, samples)?;
+        self.store_audio(samples.to_vec().into_boxed_slice(), bytes);
+        Ok(())
+    }
+    pub fn push_audio_owned(&mut self, start: u64, samples: Vec<f32>) -> Result<()> {
+        let bytes = self.validate_audio(start, &samples)?;
+        self.store_audio(samples.into_boxed_slice(), bytes);
+        Ok(())
+    }
+    fn validate_audio(&self, start: u64, samples: &[f32]) -> Result<usize> {
         if start != self.audio.len() as u64
             || self.audio.len().saturating_add(samples.len())
                 > SAMPLE_RATE as usize * MAX_SECONDS as usize
@@ -125,11 +173,19 @@ impl Clip {
         {
             return Err(Error("invalid, noncontiguous, or over-limit audio".into()));
         }
-        self.check_budget(samples.len() * 4)?;
-        self.retained += samples.len() * 4;
-        self.audio.extend_from_slice(samples);
+        if !samples.is_empty() && self.audio.block_count() >= MAX_AUDIO_BLOCKS {
+            return Err(Error(
+                "audio block limit exceeded; partial result retained".into(),
+            ));
+        }
+        let bytes = AudioTrack::block_cost(samples.len());
+        self.check_budget(bytes)?;
+        Ok(bytes)
+    }
+    fn store_audio(&mut self, samples: Box<[f32]>, bytes: usize) {
+        self.retained += bytes;
+        self.audio.push(samples);
         self.revision += 1;
-        Ok(())
     }
     pub fn push_frame(&mut self, time: f64, values: Vec<f32>) -> Result<()> {
         if !time.is_finite()

@@ -276,7 +276,7 @@ pub fn apply_event(clip: &mut Clip, event: OutputEvent) -> Result<()> {
                 .chunks_exact(2)
                 .map(|v| i16::from_le_bytes([v[0], v[1]]) as f32 / 32768.)
                 .collect();
-            clip.push_audio(audio.position().0, &values)?;
+            clip.push_audio_owned(audio.position().0, values)?;
         }
         OutputEvent::Curves(frame) => {
             if clip.names != frame.layout().names() {
@@ -288,9 +288,9 @@ pub fn apply_event(clip: &mut Clip, event: OutputEvent) -> Result<()> {
         #[cfg(feature = "emotion")]
         OutputEvent::Emotion(trace) => clip.push_emotions(trace.smoothed)?,
         OutputEvent::Completed(_) => {
-            clip.session = SessionState::Completed;
+            clip.set_session(SessionState::Completed);
             if clip.ready_until() + 1e-6 < clip.duration() {
-                clip.session = SessionState::Failed("incomplete curve coverage".into());
+                clip.set_session(SessionState::Failed("incomplete curve coverage".into()));
                 return Err(Error("incomplete curve coverage".into()));
             }
         }

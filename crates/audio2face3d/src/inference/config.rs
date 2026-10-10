@@ -6,7 +6,7 @@ pub enum BackendKind {
     Mock,
     Regression,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MockPattern {
     #[default]
     JawOpenPulse,
@@ -50,25 +50,76 @@ impl Config {
 }
 impl Config {
     pub fn validate(&self) -> Result<()> {
-        if self.device > i32::MAX as usize || self.max_audio_seconds == 0 {
-            return Err(Error::invalid(
-                "invalid device ordinal or audio duration limit",
-            ));
+        if self.device > i32::MAX as usize {
+            return Err(Error::invalid("device ordinal exceeds i32 range"));
         }
-        if self.backend == BackendKind::Regression && self.model.is_none() {
-            return Err(Error::invalid("model is required for Regression"));
+        if self.max_audio_seconds == 0 {
+            return Err(Error::invalid("audio duration limit must be positive"));
         }
         if let Some(curve) = &self.mock_curve
             && !crate::inference::animation::CURVE_NAMES.contains(&curve.as_str())
         {
             return Err(Error::invalid("unknown mock curve"));
         }
+        if (self.mock_value.is_some() || self.mock_jaw_open.is_some()) && self.mock_curve.is_none()
+        {
+            return Err(Error::invalid("mock weights require mock-curve"));
+        }
         for value in [self.mock_value, self.mock_jaw_open].into_iter().flatten() {
             if !value.is_finite() || !(0.0..=1.0).contains(&value) {
                 return Err(Error::invalid("mock weights must be finite and in 0..1"));
             }
         }
+        if self.backend != BackendKind::Mock
+            && (self.mock_curve.is_some()
+                || self.mock_value.is_some()
+                || self.mock_jaw_open.is_some())
+        {
+            return Err(Error::invalid(
+                "mock-curve/mock-value require the mock backend",
+            ));
+        }
+        if self.mock_curve.as_deref() == Some("JawOpen") && self.mock_jaw_open.is_some() {
+            return Err(Error::invalid(
+                "mock-jaw-open requires a selected curve other than JawOpen",
+            ));
+        }
+        if self.backend == BackendKind::Mock
+            && (self.model.is_some() || self.emotion_model.is_some() || self.device != 0)
+        {
+            return Err(Error::invalid(
+                "model/device settings require the regression backend",
+            ));
+        }
+        if self.backend == BackendKind::Regression && self.model.is_none() {
+            return Err(Error::invalid("model is required for regression backend"));
+        }
         Ok(())
+    }
+}
+
+impl std::str::FromStr for BackendKind {
+    type Err = String;
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "mock" => Ok(Self::Mock),
+            "regression" => Ok(Self::Regression),
+            _ => Err("unknown BackendKind".into()),
+        }
+    }
+}
+
+impl std::str::FromStr for MockPattern {
+    type Err = String;
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "jaw-open-pulse" => Ok(Self::JawOpenPulse),
+            "eye-blink-left" => Ok(Self::EyeBlinkLeft),
+            "eye-blink-right" => Ok(Self::EyeBlinkRight),
+            "mouth-smile-left" => Ok(Self::MouthSmileLeft),
+            "mouth-smile-right" => Ok(Self::MouthSmileRight),
+            _ => Err("unknown MockPattern".into()),
+        }
     }
 }
 /// Current Regression/mock profile: PCM16 mono, converted to 16 kHz before inference.

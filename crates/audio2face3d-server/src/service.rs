@@ -40,9 +40,9 @@ impl<A: Authenticator> Service<A> {
             scope: LogScope::capture(),
             metrics,
             admission: Admission::new(
-                config.max_streams,
-                config.request_queue_capacity,
-                std::time::Duration::from_millis(config.request_queue_timeout_ms),
+                config.max_streams(),
+                config.request_queue_capacity(),
+                std::time::Duration::from_millis(config.request_queue_timeout_ms()),
             )?,
             config,
             shutdown,
@@ -121,7 +121,7 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                         };
                         validate_header(header.audio_header.as_ref())?;
                         let factory = self.factory.clone();
-                        let (tx, rx) = mpsc::channel(self.config.output_queue_capacity);
+                        let (tx, rx) = mpsc::channel(self.config.output_queue_capacity());
                         let (terminal_tx, terminal_rx) = oneshot::channel();
                         let config = self.config.clone();
                         let stream_cancel = self.shutdown.child_token();

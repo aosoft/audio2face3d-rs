@@ -211,6 +211,7 @@ pub fn channel_values_for_names(
 
 #[derive(Default)]
 pub struct Timeline {
+    clip_id: Option<crate::core::ClipId>,
     revision: u64,
     width: usize,
     cache: BTreeMap<usize, Vec<Option<[f32; 2]>>>,
@@ -224,6 +225,17 @@ pub struct Timeline {
     view_drag_offset: Option<f64>,
 }
 impl Timeline {
+    /// Controller-owned graph data; stale clocks are never mixed with another clip.
+    pub fn show_clock(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip: &crate::core::Clip,
+        clock: &crate::playback::PlaybackClockSnapshot,
+        selected: &std::collections::BTreeSet<usize>,
+    ) -> Option<f64> {
+        let snapshot = clock.with_clip(clip).ok()?;
+        self.show(ui, clip, &snapshot, selected)
+    }
     /// Recenter only when the requested playhead lies outside the visible range.
     pub fn reveal_position(&mut self, time: f64, duration: f64) {
         let duration = duration.max(1e-6);
@@ -308,7 +320,7 @@ impl Timeline {
         )
     }
 
-    /// Copy graph data while locked, then release the player before drawing widgets.
+    /// Legacy owned-Clip path. Standard Desktop uses controller-owned data via `show`.
     pub fn show_player(
         &mut self,
         ui: &mut egui::Ui,
@@ -347,8 +359,13 @@ impl Timeline {
         width: usize,
         range: [f64; 2],
     ) -> Vec<String> {
-        if self.revision != clip.revision || self.width != width || self.range != range {
+        if self.clip_id != Some(clip.id())
+            || self.revision != clip.revision
+            || self.width != width
+            || self.range != range
+        {
             self.cache.clear();
+            self.clip_id = Some(clip.id());
             self.revision = clip.revision;
             self.width = width;
             self.range = range;

@@ -15,6 +15,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(feature = "standalone-app")]
 pub mod audio;
 #[cfg(feature = "session")]
+pub mod controller;
+#[cfg(feature = "session")]
 pub mod core;
 #[cfg(feature = "standalone-app")]
 pub mod desktop;
