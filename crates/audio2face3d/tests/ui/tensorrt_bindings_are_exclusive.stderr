@@ -1,0 +1,9 @@
+error[E0499]: cannot borrow `*bindings` as mutable more than once at a time
+ --> tests/ui/tensorrt_bindings_are_exclusive.rs:6:42
+  |
+5 |     let pending = first.enqueue(0, bindings, stream).unwrap();
+  |                                    -------- first mutable borrow occurs here
+6 |     let _conflicting = second.enqueue(0, bindings, stream).unwrap();
+  |                                          ^^^^^^^^ second mutable borrow occurs here
+7 |     pending.synchronize().unwrap();
+  |     ------- first borrow later used here

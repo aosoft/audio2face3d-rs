@@ -1,5 +1,8 @@
 use crate::common::{Binding, BindingSchema, Dimension, ElementType, IoMode, Shape};
-use crate::cuda::{CudaEvent, CudaStream, DeviceId, DeviceView, GpuDevice};
+use crate::cuda::completion::CompletionGuard;
+use crate::cuda::{
+    CudaEvent, CudaStream, DeviceElement, DeviceId, DeviceView, DeviceViewMut, GpuDevice,
+};
 use crate::tensorrt::{InferenceError, ffi};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -19,23 +22,100 @@ fn native_error(operation: &'static str, buffer: &[c_char]) -> InferenceError {
     InferenceError::Native { operation, message }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct BindingBuffer<'a> {
+/// A CUDA numeric type with an unambiguous TensorRT element representation.
+pub trait TensorElement: DeviceElement {
+    const ELEMENT_TYPE: ElementType;
+}
+impl TensorElement for f32 {
+    const ELEMENT_TYPE: ElementType = ElementType::F32;
+}
+
+#[derive(Debug)]
+struct BindingBuffer<'a> {
     ptr: u64,
     bytes: usize,
     device: DeviceId,
     element_type: ElementType,
-    _owner: PhantomData<&'a ()>,
+    mode: IoMode,
+    _owner: PhantomData<&'a mut ()>,
 }
 impl<'a> BindingBuffer<'a> {
-    pub fn from_view<T>(view: DeviceView<'a, T>, element_type: ElementType) -> Self {
+    fn from_parts<T: DeviceElement>(
+        ptr: u64,
+        len: usize,
+        device: DeviceId,
+        element_type: ElementType,
+        mode: IoMode,
+    ) -> Self {
         Self {
-            ptr: view.as_raw(),
-            bytes: view.len().saturating_mul(size_of::<T>()),
-            device: view.device_id(),
+            ptr,
+            bytes: len * size_of::<T>(),
+            device,
             element_type,
+            mode,
             _owner: PhantomData,
         }
+    }
+}
+
+/// A read-only, initialized input tensor borrowed from its device owner.
+#[derive(Debug)]
+pub struct InputBinding<'a>(BindingBuffer<'a>);
+impl<'a> InputBinding<'a> {
+    pub fn from_view<T: TensorElement>(view: DeviceView<'a, T>) -> Self {
+        Self(BindingBuffer::from_parts::<T>(
+            view.as_raw(),
+            view.len(),
+            view.device_id(),
+            T::ELEMENT_TYPE,
+            IoMode::Input,
+        ))
+    }
+
+    /// Binds an encoded tensor with a representation not exposed as a Rust type.
+    ///
+    /// # Safety
+    ///
+    /// Bytes must encode valid native `element_type` values, including valid
+    /// boolean representations. Storage must be initialized, suitably aligned,
+    /// and free of conflicting writes for the borrow. Enqueue still validates
+    /// the declared dtype, alignment, and complete tensor byte count.
+    pub unsafe fn from_bytes(view: DeviceView<'a, u8>, element_type: ElementType) -> Self {
+        Self(BindingBuffer::from_parts::<u8>(
+            view.as_raw(),
+            view.len(),
+            view.device_id(),
+            element_type,
+            IoMode::Input,
+        ))
+    }
+}
+
+/// An exclusive output tensor. It cannot be cloned or created from a shared view.
+#[derive(Debug)]
+pub struct OutputBinding<'a>(BindingBuffer<'a>);
+impl<'a> OutputBinding<'a> {
+    pub fn from_view<T: TensorElement>(view: DeviceViewMut<'a, T>) -> Self {
+        Self(BindingBuffer::from_parts::<T>(
+            view.as_raw(),
+            view.len(),
+            view.device_id(),
+            T::ELEMENT_TYPE,
+            IoMode::Output,
+        ))
+    }
+
+    /// Uses exclusive byte storage for an encoded native output tensor.
+    /// Every bit pattern written by TensorRT remains a valid Rust `u8` value.
+    /// Enqueue validates dtype, alignment, and the exact byte count.
+    pub fn from_bytes(view: DeviceViewMut<'a, u8>, element_type: ElementType) -> Self {
+        Self(BindingBuffer::from_parts::<u8>(
+            view.as_raw(),
+            view.len(),
+            view.device_id(),
+            element_type,
+            IoMode::Output,
+        ))
     }
 }
 
@@ -48,7 +128,21 @@ impl<'a> DeviceBindings<'a> {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn insert(
+    pub fn insert_input(
+        &mut self,
+        name: impl Into<String>,
+        buffer: InputBinding<'a>,
+    ) -> Result<(), InferenceError> {
+        self.insert(name, buffer.0)
+    }
+    pub fn insert_output(
+        &mut self,
+        name: impl Into<String>,
+        buffer: OutputBinding<'a>,
+    ) -> Result<(), InferenceError> {
+        self.insert(name, buffer.0)
+    }
+    fn insert(
         &mut self,
         name: impl Into<String>,
         buffer: BindingBuffer<'a>,
@@ -216,6 +310,7 @@ impl TensorRtSession {
         self.validate_profile_stream(profile, stream)?;
         let device = Arc::clone(&self.device);
         let _context = device.make_current().map_err(InferenceError::Cuda)?;
+        let _completion = CompletionGuard::new(|| stream.synchronize());
         // SAFETY: session and stream are live and belong to the validated device.
         call("set_profile", |e, n| unsafe {
             ffi::trt_shim_set_profile(self.handle.as_ptr(), profile as i32, stream.as_raw(), e, n)
@@ -309,24 +404,27 @@ impl TensorRtSession {
         Ok(())
     }
 
-    /// Queues inference without a host synchronization. The returned fence
-    /// keeps the mutable session, stream, and every binding buffer borrowed.
+    /// Runs inference to completion before returning its completed fence.
+    ///
+    /// Bindings are exclusive for submission. Forgetting a fence cannot release
+    /// borrowed resources while native inference still accesses them. Failure
+    /// to establish completion aborts instead of returning live native borrows.
     pub fn enqueue<'s, 'b>(
         &'s mut self,
         profile: usize,
-        bindings: &'b DeviceBindings<'b>,
+        bindings: &'b mut DeviceBindings<'_>,
         stream: &'b CudaStream,
     ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
         let _scope = self.scope.activate();
         self.enqueue_with_postprocess(profile, bindings, stream, |_| Ok(()))
     }
 
-    /// Queues inference and then `postprocess` on the same CUDA stream before
-    /// recording the completion event held by the returned fence.
+    /// Runs inference and `postprocess` on the same stream, then completes all
+    /// native work before returning. Error and unwind paths drain the stream.
     pub fn enqueue_with_postprocess<'s, 'b>(
         &'s mut self,
         profile: usize,
-        bindings: &'b DeviceBindings<'b>,
+        bindings: &'b mut DeviceBindings<'_>,
         stream: &'b CudaStream,
         postprocess: impl FnOnce(&CudaStream) -> Result<(), InferenceError>,
     ) -> Result<InferenceFence<'s, 'b>, InferenceError> {
@@ -341,6 +439,8 @@ impl TensorRtSession {
                 )));
             }
         }
+        let event = stream.create_event().map_err(InferenceError::Cuda)?;
+        let completion = CompletionGuard::new(|| stream.synchronize());
         // SAFETY: session and stream are live and belong to the validated device.
         call("set_profile", |e, n| unsafe {
             ffi::trt_shim_set_profile(self.handle.as_ptr(), profile as i32, stream.as_raw(), e, n)
@@ -368,12 +468,20 @@ impl TensorRtSession {
                     binding.name
                 )));
             }
+            if buffer.mode != binding.mode {
+                return Err(InferenceError::InvalidBinding(format!(
+                    "input/output access mismatch for {}",
+                    binding.name
+                )));
+            }
             let name = CString::new(binding.name.as_str())
                 .map_err(|_| InferenceError::InvalidBinding(binding.name.clone()))?;
             let width = binding.element_type.byte_width().ok_or_else(|| {
                 InferenceError::InvalidBinding(format!("unsupported dtype for {}", binding.name))
             })?;
-            if buffer.bytes % width != 0 {
+            // TensorRT's setTensorAddress requires at least 256-byte alignment,
+            // independently of the Rust element's natural alignment.
+            if buffer.bytes % width != 0 || !buffer.ptr.is_multiple_of(256) {
                 return Err(InferenceError::InvalidBinding(format!(
                     "unaligned buffer for {}",
                     binding.name
@@ -425,8 +533,8 @@ impl TensorRtSession {
             ffi::trt_shim_enqueue(self.handle.as_ptr(), stream.as_raw(), e, n)
         })?;
         postprocess(stream)?;
-        let event = stream.create_event().map_err(InferenceError::Cuda)?;
         event.record(stream).map_err(InferenceError::Cuda)?;
+        completion.finish();
         Ok(InferenceFence {
             event,
             _session: PhantomData,
@@ -445,7 +553,7 @@ impl Drop for TensorRtSession {
 pub struct InferenceFence<'s, 'b> {
     event: CudaEvent,
     _session: PhantomData<&'s mut TensorRtSession>,
-    _bindings: PhantomData<&'b DeviceBindings<'b>>,
+    _bindings: PhantomData<&'b mut ()>,
 }
 impl InferenceFence<'_, '_> {
     pub fn synchronize(&self) -> Result<(), InferenceError> {
@@ -740,11 +848,18 @@ fn read_metadata(
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // TensorLocation::kDEVICE is 0 in the pinned native ABI. Host tensors
+        // require a different owning binding contract, never a CUDA pointer.
+        if info.location != 0 {
+            return Err(InferenceError::InvalidBinding(format!(
+                "host tensor {name} is unsupported by device bindings"
+            )));
+        }
         let element_type = match info.data_type {
             0 => ElementType::F32,
             1 => ElementType::F16,
-            4 => ElementType::I64,
-            5 => ElementType::Bool,
+            8 => ElementType::I64,
+            4 => ElementType::Bool,
             _ => ElementType::Raw,
         };
         bindings.push(Binding {
@@ -829,7 +944,7 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let buffers = specs
+        let mut buffers = specs
             .iter()
             .map(|spec| device.allocate::<u8>(spec.4).unwrap())
             .collect::<Vec<_>>();
@@ -842,18 +957,26 @@ mod tests {
         let output_pointer = buffers[output_index].view().as_raw();
         let output_bytes = specs[output_index].4;
         let mut bindings = DeviceBindings::new();
-        for (spec, buffer) in specs.iter().zip(&buffers) {
-            bindings
-                .insert(&spec.0, BindingBuffer::from_view(buffer.view(), spec.2))
-                .unwrap();
+        for (spec, buffer) in specs.iter().zip(&mut buffers) {
             if spec.1 == IoMode::Input {
+                // SAFETY: zero-initialized byte storage encodes valid values
+                // for the native numeric/boolean dtype declared by the model.
+                let input = unsafe { InputBinding::from_bytes(buffer.view(), spec.2) };
+                bindings.insert_input(&spec.0, input).unwrap();
                 bindings
                     .set_input_shape(&spec.0, spec.3.iter().map(|v| *v as i64).collect())
+                    .unwrap();
+            } else {
+                bindings
+                    .insert_output(
+                        &spec.0,
+                        OutputBinding::from_bytes(buffer.view_mut(), spec.2),
+                    )
                     .unwrap();
             }
         }
         session
-            .enqueue_with_postprocess(0, &bindings, &stream, |same_stream| {
+            .enqueue_with_postprocess(0, &mut bindings, &stream, |same_stream| {
                 // SAFETY: this output allocation belongs to the same device and
                 // is kept alive through the completion fence below.
                 unsafe { same_stream.memset_device_zero(output_pointer, output_bytes) }
@@ -862,10 +985,128 @@ mod tests {
             .unwrap()
             .synchronize()
             .unwrap();
+        let error = session.enqueue_with_postprocess(0, &mut bindings, &stream, |same_stream| {
+            // SAFETY: bindings retain exclusive ownership of this output range.
+            unsafe { same_stream.memset_device_zero(output_pointer, output_bytes) }
+                .map_err(InferenceError::Cuda)?;
+            Err(InferenceError::InvalidBinding(
+                "injected postprocess failure".into(),
+            ))
+        });
+        assert!(error.is_err());
+        drop(error);
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = session.enqueue_with_postprocess(0, &mut bindings, &stream, |same_stream| {
+                // SAFETY: the exclusive output binding remains borrowed during unwind.
+                unsafe { same_stream.memset_device_zero(output_pointer, output_bytes) }
+                    .map_err(InferenceError::Cuda)?;
+                panic!("injected postprocess panic");
+            });
+        }));
+        assert!(unwind.is_err());
         drop(bindings);
         let mut output = vec![1_u8; output_bytes];
-        buffers[output_index].copy_to(&mut output, &stream).unwrap();
+        let consumer = device.create_stream().unwrap();
+        buffers[output_index]
+            .copy_to(&mut output, &consumer)
+            .unwrap();
         assert!(output.iter().all(|value| *value == 0));
+    }
+
+    #[test]
+    fn rejects_read_only_outputs_and_unaligned_tensors_when_configured() {
+        let Some(path) = std::env::var_os("AUDIO2FACE3D_TEST_ENGINE") else {
+            eprintln!("skipped: AUDIO2FACE3D_TEST_ENGINE is not configured");
+            return;
+        };
+        let device = GpuDevice::new(0).unwrap();
+        let stream = device.create_stream().unwrap();
+        let mut session = TensorRtSession::load(Arc::clone(&device), Path::new(&path)).unwrap();
+        let specs = session
+            .metadata()
+            .bindings()
+            .iter()
+            .map(|binding| {
+                let shape = binding
+                    .shape
+                    .dimensions()
+                    .iter()
+                    .map(|dimension| match dimension {
+                        Dimension::Fixed(value) => *value,
+                        Dimension::Batch => 1,
+                        Dimension::Dynamic { min, .. } => *min,
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    binding.name.clone(),
+                    binding.mode,
+                    binding.element_type,
+                    shape,
+                )
+            })
+            .collect::<Vec<_>>();
+        if specs.iter().any(|spec| spec.2 != ElementType::F32) {
+            eprintln!("skipped: invalid typed-binding test requires an F32 engine");
+            return;
+        }
+        let first_input = specs
+            .iter()
+            .position(|spec| spec.1 == IoMode::Input)
+            .unwrap();
+        for unaligned in [false, true] {
+            let mut buffers = specs
+                .iter()
+                .enumerate()
+                .map(|(index, spec)| {
+                    let extra = usize::from(unaligned && index == first_input);
+                    device
+                        .allocate::<f32>(spec.3.iter().product::<usize>() + extra)
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            let mut bindings = DeviceBindings::new();
+            for (index, (spec, buffer)) in specs.iter().zip(&mut buffers).enumerate() {
+                if spec.1 == IoMode::Input {
+                    let view = if unaligned && index == first_input {
+                        buffer.view().slice(1, buffer.len() - 1).unwrap()
+                    } else {
+                        buffer.view()
+                    };
+                    bindings
+                        .insert_input(&spec.0, InputBinding::from_view(view))
+                        .unwrap();
+                    bindings
+                        .set_input_shape(
+                            &spec.0,
+                            spec.3.iter().map(|value| *value as i64).collect(),
+                        )
+                        .unwrap();
+                } else if unaligned {
+                    bindings
+                        .insert_output(&spec.0, OutputBinding::from_view(buffer.view_mut()))
+                        .unwrap();
+                } else {
+                    // A shared input descriptor must never permit a native write,
+                    // even when inserted under the name of an output tensor.
+                    bindings
+                        .insert_input(&spec.0, InputBinding::from_view(buffer.view()))
+                        .unwrap();
+                }
+            }
+            let error = session
+                .enqueue(0, &mut bindings, &stream)
+                .err()
+                .expect("invalid binding was accepted");
+            let expected = if unaligned {
+                "unaligned buffer"
+            } else {
+                "input/output access mismatch"
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
@@ -911,20 +1152,34 @@ mod tests {
                     .unwrap();
                 let bytes = shape.dimensions.iter().product::<usize>()
                     * binding.element_type.byte_width().unwrap();
-                (binding.name.clone(), binding.element_type, bytes)
+                (
+                    binding.name.clone(),
+                    binding.element_type,
+                    bytes,
+                    binding.mode,
+                )
             })
             .collect::<Vec<_>>();
-        let buffers = specs
+        let mut buffers = specs
             .iter()
             .map(|spec| device.allocate::<u8>(spec.2).unwrap())
             .collect::<Vec<_>>();
-        for (spec, buffer) in specs.iter().zip(&buffers) {
-            bindings
-                .insert(&spec.0, BindingBuffer::from_view(buffer.view(), spec.1))
-                .unwrap();
+        for (spec, buffer) in specs.iter().zip(&mut buffers) {
+            if spec.3 == IoMode::Input {
+                // SAFETY: initialized zero bytes are valid native values.
+                let input = unsafe { InputBinding::from_bytes(buffer.view(), spec.1) };
+                bindings.insert_input(&spec.0, input).unwrap();
+            } else {
+                bindings
+                    .insert_output(
+                        &spec.0,
+                        OutputBinding::from_bytes(buffer.view_mut(), spec.1),
+                    )
+                    .unwrap();
+            }
         }
         session
-            .enqueue(0, &bindings, &stream)
+            .enqueue(0, &mut bindings, &stream)
             .unwrap()
             .synchronize()
             .unwrap();

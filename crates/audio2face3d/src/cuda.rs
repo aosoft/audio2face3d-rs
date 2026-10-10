@@ -13,8 +13,8 @@
 //! - `GpuDevice`, `CudaStream`, `CudaEvent`, `CudaModule`, and `CudaFunction`:
 //!   `Send + Sync`; each native entry point installs and restores its current
 //!   context and destruction is ordered by ownership.
-//! - `DeviceBuffer<T>` and [`DeviceView`]: `Send` when `T: Send`, and `Sync`
-//!   when `T: Sync`.
+//! - `DeviceBuffer<T>`, [`DeviceView`], and [`DeviceViewMut`]: `Send + Sync`
+//!   for the audited [`DeviceElement`] types.
 //! - [`CudaStreamRef`]: `Send + Sync` while its callback-scoped lifetime is
 //!   retained.
 //! - `CublasHandle`: at least `Send`; `Sync` only with fixed configuration and
@@ -28,6 +28,10 @@
 //! the polling thread and are not retained across an `.await` boundary.
 
 mod borrowed;
+mod element;
+
+#[cfg(any(feature = "cuda", test))]
+pub(crate) mod completion;
 
 #[cfg(feature = "cuda")]
 mod accumulator;
@@ -39,7 +43,8 @@ mod native;
 #[cfg(feature = "cuda")]
 pub use accumulator::{DeviceAudioAccumulatorExt, DeviceFloatAccumulatorExt};
 
-pub use borrowed::{CudaStreamRef, DeviceView};
+pub use borrowed::{CudaStreamRef, DeviceView, DeviceViewMut};
+pub use element::DeviceElement;
 
 #[cfg(feature = "cuda")]
 pub(crate) use native::copy_device_view_to_host;

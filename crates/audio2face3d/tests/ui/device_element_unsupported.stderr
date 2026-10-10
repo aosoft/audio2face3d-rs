@@ -1,0 +1,106 @@
+error[E0277]: the trait bound `std::string::String: DeviceElement` is not satisfied
+ --> tests/ui/device_element_unsupported.rs:7:23
+  |
+7 |     require_element::<String>();
+  |                       ^^^^^^ the trait `DeviceElement` is not implemented for `std::string::String`
+  |
+  = help: the following other types implement trait `DeviceElement`:
+            f32
+            i32
+            u32
+            u64
+            u8
+note: required by a bound in `require_element`
+ --> tests/ui/device_element_unsupported.rs:4:23
+  |
+4 | fn require_element<T: DeviceElement>() {}
+  |                       ^^^^^^^^^^^^^ required by this bound in `require_element`
+
+error[E0277]: the trait bound `bool: DeviceElement` is not satisfied
+ --> tests/ui/device_element_unsupported.rs:8:23
+  |
+8 |     require_element::<bool>();
+  |                       ^^^^ the trait `DeviceElement` is not implemented for `bool`
+  |
+  = help: the following other types implement trait `DeviceElement`:
+            f32
+            i32
+            u32
+            u64
+            u8
+note: required by a bound in `require_element`
+ --> tests/ui/device_element_unsupported.rs:4:23
+  |
+4 | fn require_element<T: DeviceElement>() {}
+  |                       ^^^^^^^^^^^^^ required by this bound in `require_element`
+
+error[E0277]: the trait bound `NonZero<u32>: DeviceElement` is not satisfied
+ --> tests/ui/device_element_unsupported.rs:9:23
+  |
+9 |     require_element::<NonZeroU32>();
+  |                       ^^^^^^^^^^ the trait `DeviceElement` is not implemented for `NonZero<u32>`
+  |
+  = help: the following other types implement trait `DeviceElement`:
+            f32
+            i32
+            u32
+            u64
+            u8
+note: required by a bound in `require_element`
+ --> tests/ui/device_element_unsupported.rs:4:23
+  |
+4 | fn require_element<T: DeviceElement>() {}
+  |                       ^^^^^^^^^^^^^ required by this bound in `require_element`
+
+error[E0277]: the trait bound `&'static u32: DeviceElement` is not satisfied
+  --> tests/ui/device_element_unsupported.rs:10:23
+   |
+10 |     require_element::<&'static u32>();
+   |                       ^^^^^^^^^^^^ the trait `DeviceElement` is not implemented for `&'static u32`
+   |
+note: required by a bound in `require_element`
+  --> tests/ui/device_element_unsupported.rs:4:23
+   |
+ 4 | fn require_element<T: DeviceElement>() {}
+   |                       ^^^^^^^^^^^^^ required by this bound in `require_element`
+help: consider removing the leading `&`-reference
+   |
+10 -     require_element::<&'static u32>();
+10 +     require_element::<u32>();
+   |
+
+error[E0277]: the trait bound `std::string::String: DeviceElement` is not satisfied
+  --> tests/ui/device_element_unsupported.rs:11:12
+   |
+11 |     let _: Option<DeviceView<'static, String>> = None;
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `DeviceElement` is not implemented for `std::string::String`
+   |
+   = help: the following other types implement trait `DeviceElement`:
+             f32
+             i32
+             u32
+             u64
+             u8
+note: required by a bound in `DeviceView`
+  --> src/cuda/borrowed.rs
+   |
+   | pub struct DeviceView<'a, T: DeviceElement> {
+   |                              ^^^^^^^^^^^^^ required by this bound in `DeviceView`
+
+error[E0277]: the trait bound `std::string::String: DeviceElement` is not satisfied
+  --> tests/ui/device_element_unsupported.rs:11:50
+   |
+11 |     let _: Option<DeviceView<'static, String>> = None;
+   |                                                  ^^^^ the trait `DeviceElement` is not implemented for `std::string::String`
+   |
+   = help: the following other types implement trait `DeviceElement`:
+             f32
+             i32
+             u32
+             u64
+             u8
+note: required by a bound in `DeviceView`
+  --> src/cuda/borrowed.rs
+   |
+   | pub struct DeviceView<'a, T: DeviceElement> {
+   |                              ^^^^^^^^^^^^^ required by this bound in `DeviceView`

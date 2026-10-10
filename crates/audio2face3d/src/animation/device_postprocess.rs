@@ -5,6 +5,7 @@ use crate::animation::{
     TongueAnimatorParams,
 };
 use crate::common::{Error, Result};
+use crate::cuda::completion::CompletionGuard;
 use crate::cuda::{
     CudaEvent, CudaModule, CudaStream, DeviceBuffer, DeviceView, GpuDevice, ensure_same_device,
     regression_jaw_ptx, regression_postprocess_ptx,
@@ -354,8 +355,10 @@ impl GpuRegressionPostprocessor {
             self.eyes_live_time.view().as_raw(),
             track as u64,
         ];
+        let completion = CompletionGuard::new(|| stream.synchronize());
         launch(&function, self.skin_pose_size.max(1), stream, &mut args)?;
-        stream.synchronize()
+        completion.finish();
+        Ok(())
     }
 
     /// Enqueues skin, tongue, jaw and eyes kernels on one stream.
@@ -422,8 +425,10 @@ impl GpuRegressionPostprocessor {
             }
             self.active_staging[track / 64] |= 1_u64 << (track % 64);
         }
-        // SAFETY: the returned fence borrows self, retaining both staging and
-        // device storage until all queued work has completed.
+        let event = stream.create_event()?;
+        let completion = CompletionGuard::new(|| stream.synchronize());
+        // SAFETY: completion keeps both staging and device storage borrowed
+        // on success, submission errors, and unwind paths.
         unsafe {
             self.active_tracks
                 .copy_from_async(&self.active_staging, stream)?;
@@ -463,8 +468,8 @@ impl GpuRegressionPostprocessor {
             eyes_offset,
             stream,
         )?;
-        let event = stream.create_event()?;
         event.record(stream)?;
+        completion.finish();
         Ok(GpuRegressionPostprocessFence {
             event,
             _resources: PhantomData,
@@ -666,18 +671,20 @@ fn make_face_mask(pose: &[f32], params: SkinAnimatorParams) -> Result<Vec<f32>> 
         })
         .collect())
 }
-fn zeroed<T>(device: &Arc<GpuDevice>, stream: &CudaStream, len: usize) -> Result<DeviceBuffer<T>> {
+fn zeroed<T: crate::cuda::DeviceElement>(
+    device: &Arc<GpuDevice>,
+    stream: &CudaStream,
+    len: usize,
+) -> Result<DeviceBuffer<T>> {
     let mut buffer = device.allocate(len)?;
     zero_buffer(&mut buffer, stream)?;
     Ok(buffer)
 }
-fn zero_buffer<T>(buffer: &mut DeviceBuffer<T>, stream: &CudaStream) -> Result<()> {
-    // SAFETY: `buffer` owns the complete writable allocation and synchronization
-    // below keeps it alive until the memset has completed.
-    unsafe {
-        stream.memset_device_zero(buffer.view().as_raw(), buffer.len() * size_of::<T>())?;
-    }
-    stream.synchronize()
+fn zero_buffer<T: crate::cuda::DeviceElement>(
+    buffer: &mut DeviceBuffer<T>,
+    stream: &CudaStream,
+) -> Result<()> {
+    buffer.memset_zero(stream)
 }
 fn validate_output(
     buffer: &DeviceBuffer<f32>,

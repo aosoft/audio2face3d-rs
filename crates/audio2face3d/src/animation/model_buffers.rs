@@ -948,13 +948,13 @@ impl RegressionBufferContract {
     pub fn device_bindings<'a>(
         &self,
         input: &'a RegressionInferenceInputBuffers,
-        output: &'a RegressionInferenceOutputBuffers,
+        output: &'a mut RegressionInferenceOutputBuffers,
     ) -> Result<crate::tensorrt::DeviceBindings<'a>> {
         ensure_counts(self.count(), [input.count(), output.count()])?;
         let mut bindings = crate::tensorrt::DeviceBindings::new();
         insert_binding(&mut bindings, "emotion", input.emotion_tensor())?;
         insert_binding(&mut bindings, "input", input.input_tensor())?;
-        insert_binding(&mut bindings, "result", output.result_tensor())?;
+        insert_output_binding(&mut bindings, "result", output.result.view_mut())?;
         set_input_shapes(&mut bindings, &self.bindings)?;
         Ok(bindings)
     }
@@ -965,18 +965,18 @@ impl DiffusionBufferContract {
     pub fn device_bindings<'a>(
         &self,
         input: &'a DiffusionInferenceInputBuffers,
-        state: &'a DiffusionInferenceStateBuffers,
-        output: &'a DiffusionInferenceOutputBuffers,
+        state: &'a mut DiffusionInferenceStateBuffers,
+        output: &'a mut DiffusionInferenceOutputBuffers,
     ) -> Result<crate::tensorrt::DeviceBindings<'a>> {
         ensure_counts(self.count(), [input.count(), state.count(), output.count()])?;
         let mut bindings = crate::tensorrt::DeviceBindings::new();
         insert_binding(&mut bindings, "emotion", input.emotion_tensor())?;
         insert_binding(&mut bindings, "identity", input.identity_tensor())?;
-        insert_binding(&mut bindings, "input_latents", state.input_tensor())?;
+        insert_binding(&mut bindings, "input_latents", state.input.view())?;
         insert_binding(&mut bindings, "noise", input.noise_tensor())?;
         insert_binding(&mut bindings, "window", input.window_tensor())?;
-        insert_binding(&mut bindings, "output_latents", state.output_tensor())?;
-        insert_binding(&mut bindings, "prediction", output.result_tensor())?;
+        insert_output_binding(&mut bindings, "output_latents", state.output.view_mut())?;
+        insert_output_binding(&mut bindings, "prediction", output.prediction.view_mut())?;
         set_input_shapes(&mut bindings, &self.bindings)?;
         Ok(bindings)
     }
@@ -989,10 +989,18 @@ fn insert_binding<'a>(
     view: DeviceView<'a, f32>,
 ) -> Result<()> {
     bindings
-        .insert(
-            name,
-            crate::tensorrt::BindingBuffer::from_view(view, ElementType::F32),
-        )
+        .insert_input(name, crate::tensorrt::InputBinding::from_view(view))
+        .map_err(|error| invalid(format!("unable to create {name} binding: {error}")))
+}
+
+#[cfg(all(feature = "cuda", feature = "tensorrt"))]
+fn insert_output_binding<'a>(
+    bindings: &mut crate::tensorrt::DeviceBindings<'a>,
+    name: &str,
+    view: crate::cuda::DeviceViewMut<'a, f32>,
+) -> Result<()> {
+    bindings
+        .insert_output(name, crate::tensorrt::OutputBinding::from_view(view))
         .map_err(|error| invalid(format!("unable to create {name} binding: {error}")))
 }
 
@@ -1048,7 +1056,7 @@ fn copy_frame_field(
 }
 
 #[cfg(feature = "cuda")]
-fn checked_track_view<T>(
+fn checked_track_view<T: crate::cuda::DeviceElement>(
     buffer: &DeviceBuffer<T>,
     index: usize,
     count: usize,

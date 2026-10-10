@@ -1,0 +1,9 @@
+error[E0502]: cannot borrow `*buffer` as immutable because it is also borrowed as mutable
+ --> tests/ui/device_view_mut_is_exclusive.rs:5:17
+  |
+4 |     let output = buffer.view_mut();
+  |                  ------ mutable borrow occurs here
+5 |     let input = buffer.view();
+  |                 ^^^^^^ immutable borrow occurs here
+6 |     println!("{} {}", output.len(), input.len());
+  |                       ------ mutable borrow later used here

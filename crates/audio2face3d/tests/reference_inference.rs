@@ -1,9 +1,9 @@
 #![cfg(feature = "animation")]
 #![cfg(feature = "tensorrt")]
 
-use audio2face3d::common::{Dimension, ElementType, IoMode, Shape};
+use audio2face3d::common::{Dimension, IoMode, Shape};
 use audio2face3d::cuda::GpuDevice;
-use audio2face3d::tensorrt::{BindingBuffer, DeviceBindings, TensorRtSession};
+use audio2face3d::tensorrt::{DeviceBindings, InputBinding, OutputBinding, TensorRtSession};
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
@@ -83,7 +83,6 @@ fn reference_input_shape(shape: &Shape, element_count: usize) -> Vec<i64> {
 struct ReferenceTensorSpec {
     name: String,
     mode: IoMode,
-    element_type: ElementType,
     shape: Shape,
     len: usize,
 }
@@ -109,7 +108,6 @@ fn cpp_fixture_matches_rust_tensor_rt_engine() {
         .map(|binding| ReferenceTensorSpec {
             name: binding.name.clone(),
             mode: binding.mode,
-            element_type: binding.element_type,
             shape: binding.shape.clone(),
             len: expected
                 .get(&binding.name)
@@ -128,21 +126,22 @@ fn cpp_fixture_matches_rust_tensor_rt_engine() {
     }
 
     let mut bindings = DeviceBindings::new();
-    for (spec, buffer) in specs.iter().zip(&buffers) {
-        bindings
-            .insert(
-                &spec.name,
-                BindingBuffer::from_view(buffer.view(), spec.element_type),
-            )
-            .unwrap();
+    for (spec, buffer) in specs.iter().zip(&mut buffers) {
         if spec.mode == IoMode::Input {
             bindings
+                .insert_input(&spec.name, InputBinding::from_view(buffer.view()))
+                .unwrap();
+            bindings
                 .set_input_shape(&spec.name, reference_input_shape(&spec.shape, spec.len))
+                .unwrap();
+        } else {
+            bindings
+                .insert_output(&spec.name, OutputBinding::from_view(buffer.view_mut()))
                 .unwrap();
         }
     }
     session
-        .enqueue(0, &bindings, &stream)
+        .enqueue(0, &mut bindings, &stream)
         .unwrap()
         .synchronize()
         .unwrap();

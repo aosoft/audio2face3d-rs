@@ -121,15 +121,16 @@ impl TensorRtDiffusionBackend {
         let contract = DiffusionBufferContract::new(&self.contract, batch)?;
         let mut input = DiffusionInferenceInputBuffers::allocate(&self.device, &contract)?;
         let mut state = DiffusionInferenceStateBuffers::allocate(&self.device, &contract)?;
-        let output = DiffusionInferenceOutputBuffers::allocate(&self.device, &contract)?;
+        let mut output = DiffusionInferenceOutputBuffers::allocate(&self.device, &contract)?;
         input.copy_frames(&frames, &self.stream)?;
         state.copy_track_inputs(&frames, &self.stream)?;
-        let bindings = contract.device_bindings(&input, &state, &output)?;
+        let mut bindings = contract.device_bindings(&input, &mut state, &mut output)?;
         self.session
-            .enqueue(0, &bindings, &self.stream)
+            .enqueue(0, &mut bindings, &self.stream)
             .map_err(inference_error)?
             .synchronize()
             .map_err(inference_error)?;
+        drop(bindings);
 
         let state_output = state.copy_output_tracks_to_host(&self.stream)?;
         Ok(DiffusionDeviceBatch {
