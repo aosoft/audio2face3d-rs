@@ -200,6 +200,17 @@ impl DiffusionGeometryInteractiveExecutor {
     pub(crate) fn load_sync(
         parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         if !parameters.input_strength.is_finite() {
             return Err(crate::Error::InvalidArgument {
                 field: "input_strength",
@@ -240,7 +251,7 @@ impl DiffusionGeometryInteractiveExecutor {
             &parameters.common.emotions,
             &contract,
         )?;
-        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = GpuDevice::create(parameters.common.device_ordinal, context, scope.clone())?;
         let mut backend = TensorRtDiffusionBackend::load(
             Arc::clone(&device),
             model.engine_path(),
@@ -277,7 +288,7 @@ impl DiffusionGeometryInteractiveExecutor {
         let eyes = device.allocate(6)?;
         let core_interrupt = execution.interrupt_handle();
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             execution,
             contract,
             audio,
@@ -768,6 +779,17 @@ impl DiffusionGeometryExecutor {
     pub(crate) fn load_sync(
         parameters: DiffusionGeometryExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: DiffusionGeometryExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         let model = Model::load(&parameters.model_path)?;
         if model.kind() != ModelKind::Diffusion {
             return Err(crate::Error::InvalidSchema(
@@ -805,7 +827,7 @@ impl DiffusionGeometryExecutor {
         let contract = DiffusionContract::new(model_parameters, audio)?;
         let sample_rate = contract.sample_rate;
         let owned_contract = contract.clone();
-        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = GpuDevice::create(parameters.common.device_ordinal, context, scope.clone())?;
         let mut backend = TensorRtDiffusionBackend::load(
             Arc::clone(&device),
             model.engine_path(),
@@ -849,7 +871,7 @@ impl DiffusionGeometryExecutor {
         let emotion_output = device.allocate(owned_contract.emotion_size)?;
         let result_stream = device.create_stream()?;
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             execution,
             backend,
             postprocessors,
@@ -1234,8 +1256,13 @@ impl DiffusionGeometryExecutorFactory {
         parameters: DiffusionGeometryExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                DiffusionGeometryExecutor::load_in_context(parameters, context, worker_scope)
+            })
+        })))
     }
 }
 
@@ -1245,8 +1272,17 @@ impl DiffusionGeometryInteractiveExecutorFactory {
         parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryInteractiveExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                DiffusionGeometryInteractiveExecutor::load_in_context(
+                    parameters,
+                    context,
+                    worker_scope,
+                )
+            })
+        })))
     }
 }
 

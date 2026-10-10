@@ -71,6 +71,7 @@ impl Stage {
         names: &[String],
         defaults: &[f32],
         output: Arc<EmotionAccumulator>,
+        context: &crate::Audio2Face3DContext,
     ) -> Result<Self, Error> {
         if names.iter().map(String::as_str).collect::<Vec<_>>() != NAMES {
             return Err(invalid("unsupported model emotion ordering"));
@@ -198,7 +199,7 @@ impl Stage {
                     .collect::<Result<Vec<_>, _>>()?,
             };
             Some(
-                wait(ClassifierEmotionExecutorFactory::load(
+                wait(ClassifierEmotionExecutorFactory::load_with_context(
                     ClassifierEmotionExecutorCreationParameters {
                         model_path: config.emotion_model.clone().unwrap(),
                         common: EmotionExecutorCreationParameters {
@@ -215,6 +216,7 @@ impl Stage {
                         post_process_params: params,
                         preferred_emotions: vec![preferred.clone()],
                     },
+                    context.clone(),
                 ))
                 .map_err(internal)?,
             )
@@ -463,6 +465,7 @@ mod tests {
             &names,
             &[0.0; 10],
             output.clone(),
+            &crate::Audio2Face3DContext::default(),
         )
         .unwrap();
         let key = |time, value| {

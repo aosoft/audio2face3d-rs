@@ -148,7 +148,23 @@ impl EmotionExecutorBundleFactory {
         parameters: EmotionExecutorBundleCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> ExecutorFuture<'static, EmotionExecutorBundle> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone());
+        Box::pin(scope.wrap_future(async move {
+            match parameters {
+                #[cfg(feature = "tensorrt")]
+                EmotionExecutorBundleCreationParameters::Classifier(parameters) => {
+                    ClassifierEmotionExecutorFactory::load_with_context(parameters, context)
+                        .await
+                        .map(Box::new)
+                        .map(EmotionExecutorBundle::Classifier)
+                }
+                EmotionExecutorBundleCreationParameters::PostProcess(parameters) => {
+                    PostProcessEmotionExecutorFactory::load_with_context(parameters, context)
+                        .await
+                        .map(Box::new)
+                        .map(EmotionExecutorBundle::PostProcess)
+                }
+            }
+        }))
     }
 }

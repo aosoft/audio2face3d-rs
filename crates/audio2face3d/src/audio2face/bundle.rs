@@ -423,8 +423,27 @@ impl InteractiveGeometryExecutorBundleFactory {
         parameters: InteractiveGeometryBundleCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> ExecutorFuture<'static, InteractiveGeometryExecutorBundle> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone());
+        Box::pin(scope.wrap_future(async move {
+            match parameters {
+                InteractiveGeometryBundleCreationParameters::Regression(parameters) => {
+                    RegressionGeometryInteractiveExecutorFactory::load_with_context(
+                        parameters, context,
+                    )
+                    .await
+                    .map(Box::new)
+                    .map(InteractiveGeometryExecutorBundle::Regression)
+                }
+                InteractiveGeometryBundleCreationParameters::Diffusion(parameters) => {
+                    DiffusionGeometryInteractiveExecutorFactory::load_with_context(
+                        parameters, context,
+                    )
+                    .await
+                    .map(Box::new)
+                    .map(InteractiveGeometryExecutorBundle::Diffusion)
+                }
+            }
+        }))
     }
 }
 
@@ -434,7 +453,20 @@ impl GeometryExecutorBundleFactory {
         parameters: GeometryExecutorBundleCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> ExecutorFuture<'static, GeometryExecutorBundle> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone());
+        Box::pin(scope.wrap_future(async move {
+            match parameters {
+                GeometryExecutorBundleCreationParameters::Regression(parameters) => {
+                    RegressionGeometryExecutorFactory::load_with_context(parameters, context)
+                        .await
+                        .map(GeometryExecutorBundle::Regression)
+                }
+                GeometryExecutorBundleCreationParameters::Diffusion(parameters) => {
+                    DiffusionGeometryExecutorFactory::load_with_context(parameters, context)
+                        .await
+                        .map(GeometryExecutorBundle::Diffusion)
+                }
+            }
+        }))
     }
 }

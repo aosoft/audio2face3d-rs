@@ -42,7 +42,11 @@ pub struct Runtime {
     emotion: super::emotion::Stage,
 }
 
-fn load_sync(config: &Config, header: &RequestOptions) -> Result<Runtime, Error> {
+fn load_sync(
+    config: &Config,
+    header: &RequestOptions,
+    context: &crate::Audio2Face3DContext,
+) -> Result<Runtime, Error> {
     let loaded_at = std::time::Instant::now();
     let path = config
         .model
@@ -69,8 +73,7 @@ fn load_sync(config: &Config, header: &RequestOptions) -> Result<Runtime, Error>
         return Err(internal("missing geometry configuration"));
     };
     // This runs on the existing inference control worker, before any native engine is created.
-    crate::logging::integration::LogScope::capture()
-        .context()
+    context
         .initialize_native()
         .map_err(|error| Error::new(ErrorKind::RuntimeUnavailable, error.to_string()))?;
     let mut geometry_config = geometry_config.clone();
@@ -85,27 +88,31 @@ fn load_sync(config: &Config, header: &RequestOptions) -> Result<Runtime, Error>
         &parameters.explicit_emotions,
         &parameters.default_emotion,
         emotions.clone(),
+        context,
     )?;
-    let bundle = wait(RegressionGeometryExecutorFactory::load_with_config(
-        RegressionGeometryExecutorCreationParameters {
-            model_path: path.clone(),
-            common: GeometryExecutorCreationParameters {
-                tracks: vec![GeometryTrackResources { audio, emotions }],
-                device_ordinal: i32::try_from(config.device).map_err(|_| {
-                    Error::new(ErrorKind::InvalidInput, "device ordinal is out of range")
-                })?,
-                execution_option: GeometryExecutionOption::SKIN,
+    let bundle = wait(
+        RegressionGeometryExecutorFactory::load_with_config_and_context(
+            RegressionGeometryExecutorCreationParameters {
+                model_path: path.clone(),
+                common: GeometryExecutorCreationParameters {
+                    tracks: vec![GeometryTrackResources { audio, emotions }],
+                    device_ordinal: i32::try_from(config.device).map_err(|_| {
+                        Error::new(ErrorKind::InvalidInput, "device ordinal is out of range")
+                    })?,
+                    execution_option: GeometryExecutionOption::SKIN,
+                },
+                input_strength: geometry_config.input_strength,
+                frame_rate: FrameRate::new(30, 1).map_err(internal)?,
+                source_emotion_shot: geometry_config.source_shot.clone(),
+                source_emotion_frame: geometry_config
+                    .source_frame
+                    .and_then(|v| usize::try_from(v).ok())
+                    .unwrap_or(0),
             },
-            input_strength: geometry_config.input_strength,
-            frame_rate: FrameRate::new(30, 1).map_err(internal)?,
-            source_emotion_shot: geometry_config.source_shot.clone(),
-            source_emotion_frame: geometry_config
-                .source_frame
-                .and_then(|v| usize::try_from(v).ok())
-                .unwrap_or(0),
-        },
-        geometry_config,
-    ))
+            geometry_config,
+            context.clone(),
+        ),
+    )
     .map_err(internal)?;
     let paths = model.blendshape_paths(0).map_err(internal)?;
     let skin_paths = paths
@@ -504,13 +511,18 @@ pub struct RegressionBackend {
     key: ModelKey,
 }
 impl RegressionBackend {
-    pub async fn load(config: Config, options: RequestOptions) -> Result<Self, Error> {
-        Self::load_cached(config, options, None).await
+    pub async fn load(
+        config: Config,
+        options: RequestOptions,
+        context: crate::Audio2Face3DContext,
+    ) -> Result<Self, Error> {
+        Self::load_cached(config, options, None, context).await
     }
     pub(crate) async fn load_cached(
         config: Config,
         options: RequestOptions,
         reuse: Option<IdleModel>,
+        context: crate::Audio2Face3DContext,
     ) -> Result<Self, Error> {
         let key = ModelKey::new(&options);
         let idle = reuse.as_ref().and_then(|pool| pool.lock().unwrap().take());
@@ -533,7 +545,7 @@ impl RegressionBackend {
             worker
         } else {
             Worker::start(move || {
-                let runtime = load_sync(&config, &options)?;
+                let runtime = load_sync(&config, &options, &context)?;
                 Ok(RegressionState::new(runtime, &config))
             })
             .await?
@@ -624,7 +636,12 @@ mod ownership_profile {
             model: Some(std::env::var_os("A2F_MODEL").expect("A2F_MODEL").into()),
             ..Config::default()
         };
-        let runtime = load_sync(&config, &RequestOptions::default()).unwrap();
+        let runtime = load_sync(
+            &config,
+            &RequestOptions::default(),
+            &crate::Audio2Face3DContext::default(),
+        )
+        .unwrap();
         println!(
             "NATIVE_ORDER channels={} identity={}",
             runtime.order.len(),

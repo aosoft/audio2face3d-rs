@@ -44,6 +44,6 @@ R7 のテストは不正 frame、非連続音声、予算超過、名前変更�
 
 2026-10-10 に次を確認した。
 
-- `session,mock,ui-egui,emotion`: library 18件、再生4件、streaming 3件、推論4件、backend 再利用1件成功。
-- `standalone-app,grpc,mock,emotion`: 最終 library 35件と起動9件成功。全ターゲット Clippy（`-D warnings`）成功。
+- `ui-egui,grpc,mock,emotion`: R7 追加後の library 26件、再生4件、streaming 3件、推論4件、backend 再利用1件、compile-fail doctest 3件成功。
+- `standalone-app,grpc,mock,emotion`: R7 追加後の library 47件と起動9件成功。全ターゲット Clippy（`-D warnings`）成功。
 - グラフ処理を barrier で停止中の音声 lock 取得、payload の Arc 共有、16/48 kHz の block 境界補間、Pause/Seek/Loop、underrun 復帰、旧 ClipId と古い revision の拒否、同じ revision の別 Clip の cache 失効、極小 block 上限を確認した。

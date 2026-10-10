@@ -167,7 +167,9 @@ impl EngineBuilder {
         request: &EngineBuildRequest,
         context: crate::Audio2Face3DContext,
     ) -> Result<(), EngineError> {
-        crate::logging::integration::LogScope::new(context).in_scope(|| self.build(request))
+        let scope = crate::logging::integration::LogScope::new(context.clone());
+        let _scope = scope.enter();
+        self.build_validated_in_context(request, |_| Ok(()), &context)
     }
     pub fn build(&self, request: &EngineBuildRequest) -> Result<(), EngineError> {
         self.build_validated(request, |_| Ok(()))
@@ -180,6 +182,18 @@ impl EngineBuilder {
         request: &EngineBuildRequest,
         validate: impl FnOnce(&Path) -> Result<(), EngineError>,
     ) -> Result<(), EngineError> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        let _scope = scope.enter();
+        self.build_validated_in_context(request, validate, &context)
+    }
+
+    fn build_validated_in_context(
+        &self,
+        request: &EngineBuildRequest,
+        validate: impl FnOnce(&Path) -> Result<(), EngineError>,
+        context: &crate::Audio2Face3DContext,
+    ) -> Result<(), EngineError> {
         if !request.onnx.is_file() {
             return Err(EngineError::MissingOnnx(request.onnx.clone()));
         }
@@ -190,7 +204,7 @@ impl EngineBuilder {
         fs::create_dir_all(parent)?;
         let temp = temporary_path(&request.engine);
         let args = request.command_args(&temp)?;
-        let (status, output) = run_and_relay(&self.executable, &args)?;
+        let (status, output) = run_and_relay(&self.executable, &args, context.native_runtime())?;
         if !status.success() {
             let _ = fs::remove_file(&temp);
             return Err(EngineError::TrtFailed {
@@ -212,22 +226,27 @@ impl EngineBuilder {
         request: &EngineBuildRequest,
         device: std::sync::Arc<crate::cuda::GpuDevice>,
     ) -> Result<(), EngineError> {
-        self.build_validated(request, |temporary| {
-            crate::tensorrt::TensorRtSession::load(std::sync::Arc::clone(&device), temporary)
-                .map(|_| ())
-                .map_err(|error| EngineError::Validation(error.to_string()))
-        })
+        let context = device.runtime_context().clone();
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let _scope = scope.enter();
+        self.build_validated_in_context(
+            request,
+            |temporary| {
+                crate::tensorrt::TensorRtSession::load(std::sync::Arc::clone(&device), temporary)
+                    .map(|_| ())
+                    .map_err(|error| EngineError::Validation(error.to_string()))
+            },
+            &context,
+        )
     }
 }
 
 fn run_and_relay(
     executable: &Path,
     arguments: &[String],
+    runtime: &crate::runtime::NativeRuntimeConfig,
 ) -> io::Result<(std::process::ExitStatus, String)> {
-    let scope = crate::logging::integration::LogScope::capture();
-    let mut command = scope
-        .context()
-        .native_runtime()
+    let mut command = runtime
         .tool_command(crate::runtime::tools::NativeTool::Trtexec, Some(executable))
         .map_err(io::Error::other)?;
     let mut child = command

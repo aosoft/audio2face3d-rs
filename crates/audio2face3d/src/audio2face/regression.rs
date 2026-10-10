@@ -370,6 +370,17 @@ impl RegressionGeometryInteractiveExecutor {
     pub(crate) fn load_sync(
         parameters: RegressionGeometryInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: RegressionGeometryInteractiveExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         if parameters.batch_size == 0 {
             return Err(crate::Error::InvalidArgument {
                 field: "batch_size",
@@ -414,7 +425,7 @@ impl RegressionGeometryInteractiveExecutor {
             &parameters.common.emotions,
             &contract,
         )?;
-        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = GpuDevice::create(parameters.common.device_ordinal, context, scope.clone())?;
         let backend = TensorRtRegressionBackend::load(
             Arc::clone(&device),
             model.engine_path(),
@@ -458,7 +469,7 @@ impl RegressionGeometryInteractiveExecutor {
         let eyes = device.allocate(6)?;
         let core_interrupt = execution.interrupt_handle();
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             execution,
             contract,
             audio,
@@ -968,6 +979,18 @@ impl RegressionGeometryExecutor {
         parameters: RegressionGeometryExecutorCreationParameters,
         override_config: Option<crate::common::GeometryConfig>,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, override_config, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: RegressionGeometryExecutorCreationParameters,
+        override_config: Option<crate::common::GeometryConfig>,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         let model = Model::load(&parameters.model_path)?;
         if model.kind() != ModelKind::Regression {
             return Err(crate::Error::InvalidSchema(
@@ -1001,7 +1024,7 @@ impl RegressionGeometryExecutor {
             parameters.frame_rate.numerator(),
             parameters.frame_rate.denominator(),
         )?;
-        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = GpuDevice::create(parameters.common.device_ordinal, context, scope.clone())?;
         let backend = TensorRtRegressionBackend::load(
             Arc::clone(&device),
             model.engine_path(),
@@ -1049,7 +1072,7 @@ impl RegressionGeometryExecutor {
         let emotion_output = device.allocate(owned_contract.emotion_size)?;
         let result_stream = device.create_stream()?;
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             execution,
             backend,
             postprocessors: processors,
@@ -1418,8 +1441,17 @@ impl RegressionGeometryInteractiveExecutorFactory {
         parameters: RegressionGeometryInteractiveExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryInteractiveExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                RegressionGeometryInteractiveExecutor::load_in_context(
+                    parameters,
+                    context,
+                    worker_scope,
+                )
+            })
+        })))
     }
 }
 
@@ -1430,8 +1462,18 @@ impl RegressionGeometryExecutorFactory {
         config: crate::common::GeometryConfig,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load_with_config(parameters, config))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                RegressionGeometryExecutor::load_in_context(
+                    parameters,
+                    Some(config),
+                    context,
+                    worker_scope,
+                )
+            })
+        })))
     }
 }
 
@@ -1441,8 +1483,13 @@ impl RegressionGeometryExecutorFactory {
         parameters: RegressionGeometryExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                RegressionGeometryExecutor::load_in_context(parameters, None, context, worker_scope)
+            })
+        })))
     }
 }
 

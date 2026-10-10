@@ -56,7 +56,11 @@ struct Direct {
     gate: Mutex<bool>,
 }
 impl Client {
-    async fn direct_inner(config: DirectConfig) -> Result<Self> {
+    async fn direct_inner(
+        config: DirectConfig,
+        context: Audio2Face3DContext,
+        scope: LogScope,
+    ) -> Result<Self> {
         config.validate()?;
         let admission = Admission::new(
             config.max_executions,
@@ -68,7 +72,7 @@ impl Client {
         // Executor ownership travels with initialization; dropping the caller cannot leak it.
         let holder = Arc::new(executor);
         holder.spawn(async move {
-            let result = engine::Factory::prepare(config.engine)
+            let result = engine::Factory::prepare_in_context(config.engine, context, scope)
                 .await
                 .map(|mut factory| {
                     factory.set_reuse_model(config.reuse_model);
@@ -234,14 +238,22 @@ async fn emit_batch(
 impl Client {
     pub async fn direct(config: DirectConfig) -> Result<Self> {
         let scope = LogScope::capture();
-        scope.wrap_future(Self::direct_inner(config)).await
+        scope
+            .wrap_future(Self::direct_inner(
+                config,
+                scope.context().clone(),
+                scope.clone(),
+            ))
+            .await
     }
     pub async fn direct_with_context(
         config: DirectConfig,
         context: Audio2Face3DContext,
     ) -> Result<Self> {
-        let scope = LogScope::new(context);
-        scope.wrap_future(Self::direct_inner(config)).await
+        let scope = LogScope::new(context.clone());
+        scope
+            .wrap_future(Self::direct_inner(config, context, scope.clone()))
+            .await
     }
 }
 

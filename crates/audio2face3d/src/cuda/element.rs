@@ -1,13 +1,14 @@
 //! Element types whose representations may be transferred by CUDA.
 
 mod sealed {
-    pub trait Sealed {}
+    // A specific name keeps diagnostics independent of optional blanket Sealed traits.
+    pub trait DeviceElementSealed {}
 
-    impl Sealed for u8 {}
-    impl Sealed for u32 {}
-    impl Sealed for u64 {}
-    impl Sealed for i32 {}
-    impl Sealed for f32 {}
+    impl DeviceElementSealed for u8 {}
+    impl DeviceElementSealed for u32 {}
+    impl DeviceElementSealed for u64 {}
+    impl DeviceElementSealed for i32 {}
+    impl DeviceElementSealed for f32 {}
 }
 
 /// An audited, plain numeric representation usable in device memory.
@@ -16,7 +17,7 @@ mod sealed {
 /// have no padding, references, or owned resources. This trait is sealed so
 /// downstream crates cannot introduce representations that violate these rules.
 /// It is available without the `cuda` feature, like [`super::DeviceView`].
-pub trait DeviceElement: sealed::Sealed + Copy + Send + Sync + 'static {}
+pub trait DeviceElement: sealed::DeviceElementSealed + Copy + Send + Sync + 'static {}
 
 impl DeviceElement for u8 {}
 impl DeviceElement for u32 {}

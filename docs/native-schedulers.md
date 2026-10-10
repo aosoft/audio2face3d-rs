@@ -11,4 +11,6 @@ Callback suppression is local to one call. Successful inference/state updates an
 
 Validation includes 174 portable library tests with `animation,emotion`, all-feature/all-target compilation and Clippy with warnings denied. Added tests exercise adapter inference/delivery failures, a compact batch with a finished first track, and the shared facade's interrupt/yield/count behavior. Existing traces cover fixed inactive slots, callback resumption, recurrent state, noise and input windows. The `cuda-lifetime` tier also checks native buffers and callback lifetime contracts.
 
-These tests do not establish a performance improvement or bitwise CPU/GPU equality. Real-model and reference comparisons remain separate native integration checks.
+Final R5–R8 integration checks also passed the `tensorrt-model` tier, including acquired Regression, Diffusion and Emotion models. C++ SDK comparisons passed standard execution with two tracks and interactive-all execution with one track for all three pipelines, plus the existing emotion and standalone-teeth cases. Metadata matched exactly and values satisfied the configured component tolerances. See [the validation record](refactoring-r5-r8-validation.md).
+
+These tests do not establish a performance improvement or bitwise CPU/GPU equality.
