@@ -1,4 +1,24 @@
 use super::*;
+
+#[test]
+fn timeline_cache_is_not_reused_for_a_different_clip_with_the_same_revision() {
+    let make_clip = |value| {
+        let mut clip = crate::core::Clip::default();
+        clip.set_names(vec!["JawOpen".into()]).unwrap();
+        clip.push_audio(0, &[0.; 1600]).unwrap();
+        clip.push_frame(0., vec![value]).unwrap();
+        clip
+    };
+    let first = make_clip(0.2);
+    let second = make_clip(0.8);
+    assert_eq!(first.revision, second.revision);
+    let selected = [0].into_iter().collect();
+    let mut timeline = Timeline::default();
+    timeline.prepare(&first, &selected, 100, [0., 0.1]);
+    assert_eq!(timeline.cache[&0][0], Some([0.2, 0.2]));
+    timeline.prepare(&second, &selected, 100, [0., 0.1]);
+    assert_eq!(timeline.cache[&0][0], Some([0.8, 0.8]));
+}
 use egui::{Event, PointerButton, Pos2, Rect, Shape};
 
 #[test]

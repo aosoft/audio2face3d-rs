@@ -24,6 +24,7 @@ pub struct DesktopApp {
     message: String,
     head_info: String,
     audio: crate::audio::AudioOutput,
+    controller: crate::controller::SessionController,
     manual: bool,
     selected: std::collections::BTreeSet<usize>,
     timeline: crate::ui::Timeline,
@@ -51,6 +52,8 @@ impl DesktopApp {
     pub fn with_options(cc: &eframe::CreationContext<'_>, options: Options) -> Self {
         install_host_fonts(&cc.egui_ctx);
         let (logger, logs) = crate::logging::channel(2048, 10_000, LogLevel::Debug);
+        let player = std::sync::Arc::new(std::sync::Mutex::new(crate::playback::Player::default()));
+        let controller = crate::controller::SessionController::new(player.clone());
         let mut app = Self {
             gpu: cc.wgpu_render_state.clone().expect("wgpu host required"),
             renderer: None,
@@ -60,9 +63,8 @@ impl DesktopApp {
             camera: Camera::default(),
             message: "Choose a head GLB".into(),
             head_info: String::new(),
-            audio: crate::audio::AudioOutput::new(std::sync::Arc::new(std::sync::Mutex::new(
-                crate::playback::Player::default(),
-            ))),
+            audio: crate::audio::AudioOutput::new(player),
+            controller,
             manual: !crate::inference::inference_available(),
             selected: [0, 7, 17].into_iter().collect(),
             timeline: Default::default(),
@@ -94,11 +96,7 @@ impl DesktopApp {
         }
         #[cfg(feature = "capture")]
         if crate::inference::inference_available() && std::env::var_os("A2F_GUI_DEMO").is_some() {
-            app.audio
-                .player
-                .lock()
-                .unwrap()
-                .replace(crate::core::demo_clip());
+            app.controller.replace(crate::core::demo_clip());
             app.manual = false;
             app.transport.finished(true, false);
             let _ = app.audio.command(crate::playback::Command::Seek(0.5));
@@ -167,9 +165,9 @@ impl DesktopApp {
             Ok(job) => {
                 self.transport.invalidate();
                 self.audio.stop();
+                self.controller.replace(crate::core::Clip::running());
                 {
                     let mut player = self.audio.player.lock().unwrap();
-                    player.replace(crate::core::Clip::running());
                     player.streaming = self.request.pace_input;
                     player.stream_buffer =
                         std::time::Duration::from_millis(self.request.stream_buffer_ms.into());
@@ -197,51 +195,72 @@ impl DesktopApp {
             events.extend(job.events.try_iter());
         }
         {
-            let mut player = self.audio.player.lock().unwrap();
             for event in events {
                 match event {
                     crate::inference::Event::InputFinished => self.input_finished = true,
                     crate::inference::Event::Ready(clip) => {
                         if !self.user_cancelled {
-                            player.replace(*clip);
+                            self.controller.replace(*clip);
                             self.selected = ["JawOpen", "EyeBlinkLeft", "EyeBlinkRight"]
                                 .iter()
-                                .filter_map(|name| player.clip.names.iter().position(|n| n == name))
+                                .filter_map(|name| {
+                                    self.controller
+                                        .clip()
+                                        .names()
+                                        .iter()
+                                        .position(|n| n == name)
+                                })
                                 .collect();
                         }
                     }
                     crate::inference::Event::Output(event) => {
-                        if matches!(player.clip.session, crate::core::SessionState::Failed(_)) {
+                        if matches!(
+                            *self.controller.clip().session(),
+                            crate::core::SessionState::Failed(_)
+                        ) {
                             continue;
                         }
                         let layout =
                             matches!(&event, audio2face3d::types::OutputEvent::StreamInfo(_));
-                        if let Err(error) = crate::inference::apply_event(&mut player.clip, event) {
-                            player.clip.session =
-                                crate::core::SessionState::Failed(error.to_string());
+                        if let Err(error) = self.controller.apply_event(event) {
+                            self.controller
+                                .set_session(crate::core::SessionState::Failed(error.to_string()));
                             self.message = error.to_string();
                             job.cancel();
                         }
                         if layout {
                             self.selected = ["JawOpen", "EyeBlinkLeft", "EyeBlinkRight"]
                                 .iter()
-                                .filter_map(|name| player.clip.names.iter().position(|n| n == name))
+                                .filter_map(|name| {
+                                    self.controller
+                                        .clip()
+                                        .names()
+                                        .iter()
+                                        .position(|n| n == name)
+                                })
                                 .collect();
                         }
                     }
                 }
             }
         }
+        if let Err(error) = self.controller.publish() {
+            self.controller
+                .set_session(crate::core::SessionState::Failed(error.to_string()));
+            self.message = error.to_string();
+            job.cancel();
+            self.audio.stop();
+        }
         let should_start = {
-            let player = self.audio.player.lock().unwrap();
-            player.streaming
+            self.request.pace_input
                 && !self.stream_started
                 && !self.user_cancelled
-                && (player.clip.ready_until() >= player.stream_buffer.as_secs_f64()
-                    || (player.clip.session == crate::core::SessionState::Completed
-                        && player.clip.ready_until() > 0.))
+                && (self.controller.clip().ready_until()
+                    >= f64::from(self.request.stream_buffer_ms) / 1000.
+                    || (*self.controller.clip().session() == crate::core::SessionState::Completed
+                        && self.controller.clip().ready_until() > 0.))
                 && !matches!(
-                    player.clip.session,
+                    *self.controller.clip().session(),
                     crate::core::SessionState::Failed(_) | crate::core::SessionState::Cancelled
                 )
         };
@@ -257,21 +276,35 @@ impl DesktopApp {
         }
         if let Some(result) = finished {
             self.job = None;
-            let mut player = self.audio.player.lock().unwrap();
             if self.user_cancelled {
-                player.clip.session = crate::core::SessionState::Cancelled;
+                self.controller
+                    .set_session(crate::core::SessionState::Cancelled);
                 self.message = "Cancelled".into();
             } else if let Err(e) = result {
-                player.clip.session = crate::core::SessionState::Failed(e.to_string());
+                self.controller
+                    .set_session(crate::core::SessionState::Failed(e.to_string()));
                 self.message = e.to_string();
-            } else if player.clip.session == crate::core::SessionState::Completed {
+            } else if *self.controller.clip().session() == crate::core::SessionState::Completed {
                 self.message = "Results complete; backend retained".into();
-            } else if !matches!(player.clip.session, crate::core::SessionState::Failed(_)) {
-                player.clip.session =
-                    crate::core::SessionState::Failed("missing completion".into());
+            } else if !matches!(
+                *self.controller.clip().session(),
+                crate::core::SessionState::Failed(_)
+            ) {
+                self.controller
+                    .set_session(crate::core::SessionState::Failed(
+                        "missing completion".into(),
+                    ));
+            }
+            if let Err(error) = self.controller.publish() {
+                self.controller
+                    .set_session(crate::core::SessionState::Failed(error.to_string()));
+                self.message = error.to_string();
             }
             self.logger.write_log(
-                if matches!(player.clip.session, crate::core::SessionState::Failed(_)) {
+                if matches!(
+                    *self.controller.clip().session(),
+                    crate::core::SessionState::Failed(_)
+                ) {
                     LogLevel::Error
                 } else {
                     LogLevel::Info
@@ -279,10 +312,9 @@ impl DesktopApp {
                 LogRecord::new(&self.message).field("source", "gui.inference"),
             );
             let failed = matches!(
-                player.clip.session,
+                *self.controller.clip().session(),
                 crate::core::SessionState::Failed(_) | crate::core::SessionState::Cancelled
             );
-            drop(player);
             if failed {
                 self.audio.stop();
             }
@@ -361,7 +393,7 @@ impl eframe::App for DesktopApp {
             .player
             .lock()
             .unwrap()
-            .snapshot(std::time::Instant::now())
+            .clock_snapshot(std::time::Instant::now())
             .state;
         let settings_editable = self
             .transport
@@ -395,11 +427,7 @@ impl eframe::App for DesktopApp {
                     .clicked()
                 {
                     self.audio.stop();
-                    self.audio
-                        .player
-                        .lock()
-                        .unwrap()
-                        .replace(crate::core::demo_clip());
+                    self.controller.replace(crate::core::demo_clip());
                     self.manual = false;
                     self.request.pace_input = false;
                     self.transport.finished(true, false);
@@ -447,8 +475,7 @@ impl eframe::App for DesktopApp {
             egui::CollapsingHeader::new(format!("Logs ({})", self.logs.entries.len()))
                 .show(ui, |ui| self.log_view.show(ui, &self.logs));
         });
-        let shared = self.audio.player.clone();
-        let (mut names, mut snapshot) = playback_view(&shared);
+        let (mut names, mut snapshot) = playback_view(&self.controller);
         self.selected
             .retain(|i| *i < audio2face3d::types::CURVE_NAMES.len());
         let mut command = None;
@@ -508,9 +535,9 @@ impl eframe::App for DesktopApp {
                         self.timeline.reveal_position(time, snapshot.duration);
                         snapshot.time = time;
                     }
-                    if let Some(time) = self.timeline.show_player(
+                    if let Some(time) = self.timeline.show(
                         ui,
-                        &shared,
+                        self.controller.clip(),
                         &snapshot,
                         &timeline_selection(&names, &self.selected),
                     ) {
@@ -531,7 +558,7 @@ impl eframe::App for DesktopApp {
                 Action::Play => command = Some(crate::playback::Command::Play),
                 Action::Pause => command = Some(crate::playback::Command::Pause),
             }
-            (names, snapshot) = playback_view(&shared);
+            (names, snapshot) = playback_view(&self.controller);
             ctx.request_repaint();
         }
         if let Some(command) = command {
@@ -544,7 +571,7 @@ impl eframe::App for DesktopApp {
             if let Err(e) = self.audio.command(command) {
                 self.message = e.to_string();
             }
-            (names, snapshot) = playback_view(&shared);
+            (names, snapshot) = playback_view(&self.controller);
             ctx.request_repaint();
         }
         if !self.manual {
@@ -679,10 +706,9 @@ impl eframe::App for DesktopApp {
                                 self.request.mode,
                             );
                         });
-                        let player = self.audio.player.lock().unwrap();
                         #[cfg(feature = "emotion")]
                         ui.collapsing("Emotion output (smoothed)", |ui| {
-                            if let Some(values) = player.clip.emotion_at(snapshot.time) {
+                            if let Some(values) = self.controller.clip().emotion_at(snapshot.time) {
                                 ui.horizontal_wrapped(|ui| {
                                     for (name, value) in values {
                                         ui.label(format!("{name}: {value:.3}"));
@@ -695,7 +721,7 @@ impl eframe::App for DesktopApp {
                         ui.label(format!(
                             "Input sent: {} | Result: {:?} | Worker finished: {}",
                             self.input_finished,
-                            player.clip.session,
+                            *self.controller.clip().session(),
                             self.job.is_none()
                         ));
                     });
@@ -783,12 +809,13 @@ impl eframe::App for DesktopApp {
 
 /// Capture names and values from the same clip, including after a restart in this frame.
 fn playback_view(
-    player: &std::sync::Mutex<crate::playback::Player>,
+    controller: &crate::controller::SessionController,
 ) -> (Vec<String>, crate::playback::Snapshot) {
-    let mut player = player.lock().unwrap();
     (
-        player.clip.names.clone(),
-        player.snapshot(std::time::Instant::now()),
+        controller.clip().names().to_vec(),
+        controller
+            .snapshot(std::time::Instant::now())
+            .expect("Desktop owns the current playback clip"),
     )
 }
 

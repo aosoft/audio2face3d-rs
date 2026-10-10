@@ -1,0 +1,27 @@
+# 描画履歴と音声再生の分離（R3）
+
+標準 Desktop は `SessionController` が Clip、曲線、感情履歴を所有する。callback と共有する Player は immutable な PCM block の Arc handle と小さい再生情報を保持する。Player の Clip は旧 API の互換用に残すが、標準 Desktop はそこへ履歴を格納しない。
+
+controller は受信イベントを音声 lock 外で検証・反映し、バッチ終了時に新しい block handle と readiness を publish する。追加 handle の準備は lock 外で行う。最初の置換でも、音声 payload の複製や曲線履歴の移動を lock 内で行わない。
+
+`PlaybackClockSnapshot` は Copy の時計情報。controller は時計の取得後に lock を解放し、ClipId の一致を確認してから曲線を補間する。Timeline は controller の Clip を直接集計し、感情表示にも音声 lock を使わない。旧 ClipId の更新と時計は拒否し、Timeline cache は ClipId と revision の両方で失効する。
+
+## API とメモリ
+
+`Clip.audio` は連続 `Vec<f32>` から `AudioTrack` に変更した。`len`、`is_empty`、`get`、`iter` が利用でき、明示的な連続配列が必要な export などでは `to_vec()` を使う。JSON serialization は従来の平坦な sample 配列を維持する。PCM の decode 後は `push_audio_owned` で payload を一度だけ block 化する。
+
+Player は block cursor を使い、通常の隣接 sample 読取りで全 block を走査しない。Seek の移動先は二分探索し、block 境界でも線形補間を維持する。
+
+payload は一度だけ予算に加算する。共有 handle 配列、block 構造、Arc の overhead も Clip のメモリ検査へ含める。空追加は block を増やさず、極小 block は最大65,536件で制限する。従来の時間・メモリ上限も維持する。
+
+`Player::replace(Clip)`、`snapshot`、`Timeline::show_player` は旧 owned-Clip 利用の互換入口として残る。新しい controller 利用は `clock_snapshot` / `with_view` / `snapshot` と `Timeline::show` または `show_clock` を使う。旧 `show_player` 自体は従来の lock を使うため、同じ改善を保証しない。
+
+command、時計取得、block handle 追加と callback の lock 競合は残る。完全な lock-free 設計や hard realtime の保証は行わない。音声デバイスの実時間測定と長時間の GUI 操作による性能比較は、機能テストの成功とは別に扱う。
+
+## 検証
+
+2026-10-10 に次を確認した。
+
+- `session,mock,ui-egui,emotion`: library 18件、再生4件、streaming 3件、推論4件、backend 再利用1件成功。
+- `standalone-app,grpc,mock,emotion`: 最終 library 35件と起動9件成功。全ターゲット Clippy（`-D warnings`）成功。
+- グラフ処理を barrier で停止中の音声 lock 取得、payload の Arc 共有、16/48 kHz の block 境界補間、Pause/Seek/Loop、underrun 復帰、旧 ClipId と古い revision の拒否、同じ revision の別 Clip の cache 失効、極小 block 上限を確認した。
