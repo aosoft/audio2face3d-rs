@@ -55,6 +55,126 @@ pub enum PumpStatus {
     Interrupted,
 }
 
+// Both host tests and native execution use the same scheduling loop. The
+// adapter owns result preparation and the callback's short-lived borrows.
+trait RegressionBatchExecutor {
+    type Batch;
+
+    fn infer(
+        &mut self,
+        inputs: &[(usize, RegressionFrameInput)],
+        active: &[usize],
+    ) -> Result<Self::Batch>;
+    fn deliver(
+        &mut self,
+        batch: &Self::Batch,
+        metadata: RegressionCallbackMetadata,
+    ) -> Result<bool>;
+}
+
+struct HostRegressionExecutor<'a, B, C> {
+    backend: &'a mut B,
+    callback: C,
+}
+
+impl<B, C> RegressionBatchExecutor for HostRegressionExecutor<'_, B, C>
+where
+    B: RegressionBackend,
+    C: FnMut(RegressionCallbackMetadata, &B::Output) -> bool,
+{
+    type Batch = Vec<B::Output>;
+
+    fn infer(
+        &mut self,
+        inputs: &[(usize, RegressionFrameInput)],
+        _active: &[usize],
+    ) -> Result<Self::Batch> {
+        let outputs = self.backend.infer_batch(inputs)?;
+        if outputs.len() != inputs.len() {
+            return Err(Error::InvalidSchema(
+                "regression backend returned a non-fixed batch size".into(),
+            ));
+        }
+        Ok(outputs)
+    }
+
+    fn deliver(
+        &mut self,
+        batch: &Self::Batch,
+        metadata: RegressionCallbackMetadata,
+    ) -> Result<bool> {
+        Ok((self.callback)(metadata, &batch[metadata.track]))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+struct DeviceRegressionExecutor<'a, C> {
+    contract: &'a RegressionContract,
+    backend: &'a mut crate::animation::TensorRtRegressionBackend,
+    postprocessor: &'a mut crate::animation::GpuRegressionPcaPostprocessor,
+    skin: &'a mut crate::cuda::DeviceBuffer<f32>,
+    tongue: &'a mut crate::cuda::DeviceBuffer<f32>,
+    jaw: &'a mut crate::cuda::DeviceBuffer<f32>,
+    eyes: &'a mut crate::cuda::DeviceBuffer<f32>,
+    callback: C,
+}
+
+#[cfg(feature = "tensorrt")]
+impl<C> RegressionBatchExecutor for DeviceRegressionExecutor<'_, C>
+where
+    C: for<'a> FnMut(
+        RegressionCallbackMetadata,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::CudaStreamRef<'a>,
+    ) -> bool,
+{
+    type Batch = ();
+
+    fn infer(&mut self, inputs: &[(usize, RegressionFrameInput)], active: &[usize]) -> Result<()> {
+        let frames = inputs
+            .iter()
+            .map(|(_, input)| input.clone())
+            .collect::<Vec<_>>();
+        let raw = self.backend.run_device_batch(&frames)?;
+        if !active.is_empty() {
+            let fence = self.postprocessor.enqueue(
+                raw.result_tensor(),
+                active,
+                crate::animation::GpuRegressionOutputs {
+                    skin: self.skin,
+                    tongue: self.tongue,
+                    jaw_transforms: self.jaw,
+                    eyes_rotations: self.eyes,
+                },
+                self.backend.stream(),
+            )?;
+            fence.synchronize()?;
+        }
+        Ok(())
+    }
+
+    fn deliver(&mut self, _batch: &(), metadata: RegressionCallbackMetadata) -> Result<bool> {
+        let track = metadata.track;
+        Ok((self.callback)(
+            metadata,
+            self.skin.view().slice(
+                track * self.contract.result_skin_size,
+                self.contract.result_skin_size,
+            )?,
+            self.tongue.view().slice(
+                track * self.contract.result_tongue_size,
+                self.contract.result_tongue_size,
+            )?,
+            self.jaw.view().slice(track * 16, 16)?,
+            self.eyes.view().slice(track * 6, 6)?,
+            self.backend.stream().as_ref(),
+        ))
+    }
+}
+
 #[derive(Debug)]
 struct RegressionSchedulerState {
     running: bool,
@@ -106,12 +226,20 @@ impl RegressionExecutionState {
         &self,
         tracks: &[RegressionTrack<'_>],
         backend: &mut B,
-        mut callback: C,
+        callback: C,
     ) -> Result<PumpStatus>
     where
         B: RegressionBackend,
         C: FnMut(RegressionCallbackMetadata, &B::Output) -> bool,
     {
+        self.pump_with(tracks, &mut HostRegressionExecutor { backend, callback })
+    }
+
+    fn pump_with<E: RegressionBatchExecutor>(
+        &self,
+        tracks: &[RegressionTrack<'_>],
+        executor: &mut E,
+    ) -> Result<PumpStatus> {
         let mut state = self.lock()?;
         if tracks.len() != state.frames.len() {
             return Err(Error::InvalidSchema(format!(
@@ -128,19 +256,14 @@ impl RegressionExecutionState {
         state.running = true;
         drop(state);
         let _running = RegressionRunningGuard { execution: self };
-        self.pump_inner(tracks, backend, &mut callback)
+        self.pump_inner(tracks, executor)
     }
 
-    fn pump_inner<B, C>(
+    fn pump_inner<E: RegressionBatchExecutor>(
         &self,
         tracks: &[RegressionTrack<'_>],
-        backend: &mut B,
-        callback: &mut C,
-    ) -> Result<PumpStatus>
-    where
-        B: RegressionBackend,
-        C: FnMut(RegressionCallbackMetadata, &B::Output) -> bool,
-    {
+        executor: &mut E,
+    ) -> Result<PumpStatus> {
         let mut callback_active = vec![true; tracks.len()];
         let mut interrupted = false;
         loop {
@@ -200,12 +323,12 @@ impl RegressionExecutionState {
                         )
                 })
                 .collect::<Vec<_>>();
-            let outputs = backend.infer_batch(&inference_inputs)?;
-            if outputs.len() != tracks.len() {
-                return Err(Error::InvalidSchema(
-                    "regression backend returned a non-fixed batch size".into(),
-                ));
-            }
+            let active = pending
+                .iter()
+                .map(|(track, _, _)| *track)
+                .filter(|track| callback_active[*track])
+                .collect::<Vec<_>>();
+            let batch = executor.infer(&inference_inputs, &active)?;
             for (track_index, frame, input) in pending {
                 let metadata = RegressionCallbackMetadata {
                     track: track_index,
@@ -213,7 +336,7 @@ impl RegressionExecutionState {
                     timestamp: input.timestamp,
                     next_timestamp: input.next_timestamp,
                 };
-                if callback_active[track_index] && !callback(metadata, &outputs[track_index]) {
+                if callback_active[track_index] && !executor.deliver(&batch, metadata)? {
                     callback_active[track_index] = false;
                     interrupted = true;
                 }
@@ -237,7 +360,7 @@ impl RegressionExecutionState {
         tongue: &mut crate::cuda::DeviceBuffer<f32>,
         jaw: &mut crate::cuda::DeviceBuffer<f32>,
         eyes: &mut crate::cuda::DeviceBuffer<f32>,
-        mut callback: C,
+        callback: C,
     ) -> Result<PumpStatus>
     where
         C: for<'a> FnMut(
@@ -249,131 +372,19 @@ impl RegressionExecutionState {
             crate::cuda::CudaStreamRef<'a>,
         ) -> bool,
     {
-        let mut state = self.lock()?;
-        if tracks.len() != state.frames.len() {
-            return Err(Error::InvalidSchema(format!(
-                "received {} tracks, expected {}",
-                tracks.len(),
-                state.frames.len()
-            )));
-        }
-        if state.running {
-            return Err(Error::InvalidSchema(
-                "regression executor is already running".into(),
-            ));
-        }
-        state.running = true;
-        drop(state);
-        let _running = RegressionRunningGuard { execution: self };
-        let mut callback_active = vec![true; tracks.len()];
-        let mut interrupted = false;
-        loop {
-            let mut pending = Vec::new();
-            for (track_index, track) in tracks.iter().enumerate() {
-                let frame = {
-                    let state = self.lock()?;
-                    if state.completed[track_index] {
-                        continue;
-                    }
-                    state.frames[track_index]
-                };
-                if self.track_finished(track, frame)? {
-                    self.lock()?.completed[track_index] = true;
-                    continue;
-                }
-                if !self.track_ready(track, frame)? {
-                    continue;
-                }
-                pending.push((
-                    track_index,
-                    frame,
-                    self.contract.prepare_frame(
-                        frame,
-                        track.audio,
-                        track.emotions,
-                        track.implicit_emotion,
-                        track.input_strength,
-                    )?,
-                ));
-            }
-            if pending.is_empty() {
-                let state = self.lock()?;
-                if interrupted {
-                    return Ok(PumpStatus::Interrupted);
-                }
-                if state.completed.iter().all(|completed| *completed) {
-                    return Ok(PumpStatus::Complete);
-                }
-                return Ok(PumpStatus::AwaitingInput);
-            }
-            let inference_inputs = (0..tracks.len())
-                .map(|track| {
-                    pending
-                        .iter()
-                        .find(|(pending_track, _, _)| *pending_track == track)
-                        .map_or_else(
-                            || RegressionFrameInput {
-                                timestamp: 0,
-                                next_timestamp: 0,
-                                audio: vec![0.0; self.contract.audio_size],
-                                emotion: vec![0.0; self.contract.emotion_size],
-                            },
-                            |(_, _, input)| input.clone(),
-                        )
-                })
-                .collect::<Vec<_>>();
-            let raw = backend.run_device_batch(&inference_inputs)?;
-            let active = pending
-                .iter()
-                .map(|(track, _, _)| *track)
-                .filter(|track| callback_active[*track])
-                .collect::<Vec<_>>();
-            if !active.is_empty() {
-                let fence = postprocessor.enqueue(
-                    raw.result_tensor(),
-                    &active,
-                    crate::animation::GpuRegressionOutputs {
-                        skin,
-                        tongue,
-                        jaw_transforms: jaw,
-                        eyes_rotations: eyes,
-                    },
-                    backend.stream(),
-                )?;
-                fence.synchronize()?;
-                drop(fence);
-            }
-            for (track, frame, input) in pending {
-                let metadata = RegressionCallbackMetadata {
-                    track,
-                    frame,
-                    timestamp: input.timestamp,
-                    next_timestamp: input.next_timestamp,
-                };
-                if callback_active[track] {
-                    let keep_going = callback(
-                        metadata,
-                        skin.view().slice(
-                            track * self.contract.result_skin_size,
-                            self.contract.result_skin_size,
-                        )?,
-                        tongue.view().slice(
-                            track * self.contract.result_tongue_size,
-                            self.contract.result_tongue_size,
-                        )?,
-                        jaw.view().slice(track * 16, 16)?,
-                        eyes.view().slice(track * 6, 6)?,
-                        backend.stream().as_ref(),
-                    );
-                    if !keep_going {
-                        callback_active[track] = false;
-                        interrupted = true;
-                    }
-                }
-                self.lock()?.frames[track] += 1;
-                self.drop_consumed(&tracks[track], frame)?;
-            }
-        }
+        self.pump_with(
+            tracks,
+            &mut DeviceRegressionExecutor {
+                contract: &self.contract,
+                backend,
+                postprocessor,
+                skin,
+                tongue,
+                jaw,
+                eyes,
+                callback,
+            },
+        )
     }
 
     fn track_ready(&self, track: &RegressionTrack<'_>, frame: usize) -> Result<bool> {
@@ -599,6 +610,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_failure_does_not_advance_and_releases_running_guard() {
+        struct Fault(bool);
+        impl RegressionBatchExecutor for Fault {
+            type Batch = ();
+            fn infer(&mut self, _: &[(usize, RegressionFrameInput)], _: &[usize]) -> Result<()> {
+                if self.0 {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidSchema("inference failed".into()))
+                }
+            }
+            fn deliver(&mut self, _: &(), _: RegressionCallbackMetadata) -> Result<bool> {
+                Err(Error::InvalidSchema("postprocess failed".into()))
+            }
+        }
+        for postprocess in [false, true] {
+            let state = RegressionExecutionState::new(contract(), 1).unwrap();
+            let (audio, emotions) = input();
+            let tracks = [RegressionTrack {
+                audio: &audio,
+                emotions: &emotions,
+                implicit_emotion: &[0.5],
+                input_strength: 1.0,
+            }];
+            assert!(state.pump_with(&tracks, &mut Fault(postprocess)).is_err());
+            assert_eq!(state.next_frame_index(0).unwrap(), 0);
+            state.reset(0).unwrap();
+        }
+    }
     use crate::common::{RegressionAudioParameters, RegressionParameters};
 
     fn contract() -> RegressionContract {

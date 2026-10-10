@@ -136,6 +136,149 @@ pub enum EmotionExecutionStatus {
     Complete,
 }
 
+trait ClassifierBatchExecutor {
+    type Batch;
+    fn infer(
+        &mut self,
+        inputs: &[(usize, Vec<f32>)],
+        contract: &ClassifierContract,
+    ) -> Result<Self::Batch>;
+    fn deliver(
+        &mut self,
+        batch: &Self::Batch,
+        slot: usize,
+        metadata: EmotionCallbackMetadata,
+        track: &EmotionTrack<'_>,
+        processor: &mut EmotionPostProcessor,
+    ) -> Result<bool>;
+}
+
+struct HostClassifierExecutor<'a, B, C> {
+    backend: &'a mut B,
+    callback: C,
+}
+
+impl<B, C> ClassifierBatchExecutor for HostClassifierExecutor<'_, B, C>
+where
+    B: ClassifierBackend,
+    C: FnMut(EmotionCallbackMetadata, &[f32]) -> bool,
+{
+    type Batch = Vec<Vec<f32>>;
+
+    fn infer(
+        &mut self,
+        inputs: &[(usize, Vec<f32>)],
+        contract: &ClassifierContract,
+    ) -> Result<Self::Batch> {
+        let logits = self.backend.infer_batch(inputs)?;
+        if logits.len() != inputs.len()
+            || logits
+                .iter()
+                .any(|output| output.len() != contract.emotion_length)
+        {
+            return Err(invalid(
+                "classifier backend returned invalid output dimensions",
+            ));
+        }
+        Ok(logits)
+    }
+
+    fn deliver(
+        &mut self,
+        batch: &Self::Batch,
+        slot: usize,
+        metadata: EmotionCallbackMetadata,
+        track: &EmotionTrack<'_>,
+        processor: &mut EmotionPostProcessor,
+    ) -> Result<bool> {
+        let preferred = match track.preferred_emotions {
+            Some(accumulator) if processor.parameters().enable_preferred_emotion => Some(
+                accumulator
+                    .read(metadata.timestamp)
+                    .map_err(|error| invalid(format!("preferred emotion read failed: {error}")))?,
+            ),
+            _ => None,
+        };
+        let output = processor.process_with_preferred(&batch[slot], preferred.as_deref())?;
+        Ok((self.callback)(metadata, &output))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+struct DeviceClassifierExecutor<'a, C> {
+    backend: &'a mut crate::emotion::TensorRtClassifierBackend,
+    processor: &'a mut crate::emotion::GpuEmotionPostProcessor,
+    output: &'a mut crate::cuda::DeviceBuffer<f32>,
+    input_stride: usize,
+    output_stride: usize,
+    callback: C,
+}
+
+#[cfg(feature = "tensorrt")]
+impl<C> ClassifierBatchExecutor for DeviceClassifierExecutor<'_, C>
+where
+    C: for<'a> FnMut(
+        EmotionCallbackMetadata,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::CudaStreamRef<'a>,
+    ) -> bool,
+{
+    type Batch = crate::cuda::DeviceBuffer<f32>;
+
+    fn infer(
+        &mut self,
+        inputs: &[(usize, Vec<f32>)],
+        _contract: &ClassifierContract,
+    ) -> Result<Self::Batch> {
+        let logits = self.backend.run_device_batch(inputs)?;
+        if logits.len() != self.input_stride.saturating_mul(inputs.len()) {
+            return Err(invalid(
+                "classifier backend returned invalid device output dimensions",
+            ));
+        }
+        Ok(logits)
+    }
+
+    fn deliver(
+        &mut self,
+        batch: &Self::Batch,
+        slot: usize,
+        metadata: EmotionCallbackMetadata,
+        track: &EmotionTrack<'_>,
+        _processor: &mut EmotionPostProcessor,
+    ) -> Result<bool> {
+        if self.processor.preferred_enabled(metadata.track)?
+            && let Some(accumulator) = track.preferred_emotions
+        {
+            let preferred = accumulator
+                .read(metadata.timestamp)
+                .map_err(|error| invalid(format!("preferred emotion read failed: {error}")))?;
+            self.processor
+                .set_preferred(metadata.track, &preferred, self.backend.stream())?;
+        }
+        let input = batch
+            .view()
+            .slice(slot * self.input_stride, self.input_stride)?;
+        let fence = self.processor.enqueue_view(
+            input,
+            self.input_stride,
+            self.output,
+            self.output_stride,
+            std::slice::from_ref(&metadata.track),
+            self.backend.stream(),
+        )?;
+        fence.synchronize()?;
+        drop(fence);
+        Ok((self.callback)(
+            metadata,
+            self.output
+                .view()
+                .slice(metadata.track * self.output_stride, self.output_stride)?,
+            self.backend.stream().as_ref(),
+        ))
+    }
+}
+
 struct ClassifierExecutionState {
     contract: ClassifierContract,
     processors: Vec<EmotionPostProcessor>,
@@ -197,7 +340,7 @@ impl ClassifierExecutionState {
         &mut self,
         tracks: &[EmotionTrack<'_>],
         backend: &mut B,
-        mut callback: C,
+        callback: C,
     ) -> Result<EmotionExecutionStatus>
     where
         B: ClassifierBackend,
@@ -214,6 +357,14 @@ impl ClassifierExecutionState {
                 self.processors.len()
             )));
         }
+        self.execute_with(tracks, &mut HostClassifierExecutor { backend, callback })
+    }
+
+    fn execute_with<E: ClassifierBatchExecutor>(
+        &mut self,
+        tracks: &[EmotionTrack<'_>],
+        executor: &mut E,
+    ) -> Result<EmotionExecutionStatus> {
         let mut pending = Vec::new();
         let mut incomplete = false;
         for (track_index, track) in tracks.iter().enumerate() {
@@ -252,26 +403,11 @@ impl ClassifierExecutionState {
             .iter()
             .map(|(track, _, audio)| (*track, audio.clone()))
             .collect::<Vec<_>>();
-        let logits = backend.infer_batch(&backend_inputs)?;
-        if logits.len() != pending.len()
-            || logits
-                .iter()
-                .any(|output| output.len() != self.contract.emotion_length)
-        {
-            return Err(invalid(
-                "classifier backend returned invalid output dimensions",
-            ));
-        }
-
-        let pending = pending
-            .into_iter()
-            .zip(logits)
-            .map(|((track, inference, _), logits)| (track, inference, logits))
-            .collect::<Vec<_>>();
+        let batch = executor.infer(&backend_inputs, &self.contract)?;
         let mut callback_frames = 0;
         let mut callback_active = vec![true; pending.len()];
         for offset in 0..self.contract.frames_per_inference() {
-            for (pending_index, (track, inference, logits)) in pending.iter().enumerate() {
+            for (pending_index, (track, inference, _)) in pending.iter().enumerate() {
                 if !callback_active[pending_index] {
                     continue;
                 }
@@ -285,30 +421,19 @@ impl ClassifierExecutionState {
                     callback_active[pending_index] = false;
                     continue;
                 }
-                let preferred = match tracks[*track].preferred_emotions {
-                    Some(accumulator)
-                        if self.processors[*track]
-                            .parameters()
-                            .enable_preferred_emotion =>
-                    {
-                        Some(accumulator.read(timestamp).map_err(|error| {
-                            invalid(format!("preferred emotion read failed: {error}"))
-                        })?)
-                    }
-                    _ => None,
-                };
-                let output =
-                    self.processors[*track].process_with_preferred(logits, preferred.as_deref())?;
                 callback_frames += 1;
-                if !callback(
+                if !executor.deliver(
+                    &batch,
+                    pending_index,
                     EmotionCallbackMetadata {
                         track: *track,
                         frame,
                         timestamp,
                         next_timestamp: self.contract.frame_timestamp(frame + 1)?,
                     },
-                    &output,
-                ) {
+                    &tracks[*track],
+                    &mut self.processors[*track],
+                )? {
                     callback_active[pending_index] = false;
                 }
             }
@@ -369,7 +494,7 @@ impl ClassifierScheduler {
         backend: &mut crate::emotion::TensorRtClassifierBackend,
         processor: &mut crate::emotion::GpuEmotionPostProcessor,
         output: &mut crate::cuda::DeviceBuffer<f32>,
-        mut callback: C,
+        callback: C,
     ) -> Result<EmotionExecutionStatus>
     where
         C: for<'a> FnMut(
@@ -390,116 +515,18 @@ impl ClassifierScheduler {
         if output.len() != expected_output {
             return Err(invalid("emotion device output dimensions mismatch"));
         }
-
-        let mut pending = Vec::new();
-        let mut incomplete = false;
-        for (track_index, track) in tracks.iter().enumerate() {
-            if !track.input_strength.is_finite() {
-                return Err(invalid("emotion input strength must be finite"));
-            }
-            let inference_index = state.inference_indices[track_index];
-            let window = state.contract.inference_progress.window(inference_index)?;
-            let audio_end = i64::try_from(track.audio.nb_accumulated_samples()).unwrap_or(i64::MAX);
-            if track.audio.is_closed() && window.target >= audio_end {
-                continue;
-            }
-            incomplete = true;
-            let available = state
-                .contract
-                .inference_progress
-                .available_windows(audio_end, track.audio.is_closed())?;
-            if inference_index >= available {
-                continue;
-            }
-            let audio = track.audio.read(
-                window.start,
-                state.contract.buffer_length,
-                track.input_strength,
-            )?;
-            pending.push((track_index, inference_index, audio));
-        }
-        if pending.is_empty() {
-            return Ok(if incomplete {
-                EmotionExecutionStatus::AwaitingInput
-            } else {
-                EmotionExecutionStatus::Complete
-            });
-        }
-
-        let backend_inputs = pending
-            .iter()
-            .map(|(track, _, audio)| (*track, audio.clone()))
-            .collect::<Vec<_>>();
-        let logits = backend.run_device_batch(&backend_inputs)?;
         let input_stride = state.contract.emotion_length;
-        if logits.len() != input_stride.saturating_mul(pending.len()) {
-            return Err(invalid(
-                "classifier backend returned invalid device output dimensions",
-            ));
-        }
-
-        let mut callback_frames = 0;
-        let mut callback_active = vec![true; pending.len()];
-        for offset in 0..state.contract.frames_per_inference() {
-            for (pending_index, (track, inference, _)) in pending.iter().enumerate() {
-                if !callback_active[pending_index] {
-                    continue;
-                }
-                let first_frame = inference * state.contract.frames_per_inference();
-                let frame = first_frame + offset;
-                let timestamp = state.contract.frame_timestamp(frame)?;
-                if timestamp
-                    >= i64::try_from(tracks[*track].audio.nb_accumulated_samples())
-                        .unwrap_or(i64::MAX)
-                {
-                    callback_active[pending_index] = false;
-                    continue;
-                }
-                if processor.preferred_enabled(*track)?
-                    && let Some(accumulator) = tracks[*track].preferred_emotions
-                {
-                    let preferred = accumulator.read(timestamp).map_err(|error| {
-                        invalid(format!("preferred emotion read failed: {error}"))
-                    })?;
-                    processor.set_preferred(*track, &preferred, backend.stream())?;
-                }
-                let input = logits
-                    .view()
-                    .slice(pending_index * input_stride, input_stride)?;
-                let fence = processor.enqueue_view(
-                    input,
-                    input_stride,
-                    output,
-                    output_stride,
-                    std::slice::from_ref(track),
-                    backend.stream(),
-                )?;
-                fence.synchronize()?;
-                drop(fence);
-
-                let values = output.view().slice(*track * output_stride, output_stride)?;
-                callback_frames += 1;
-                if !callback(
-                    EmotionCallbackMetadata {
-                        track: *track,
-                        frame,
-                        timestamp,
-                        next_timestamp: state.contract.frame_timestamp(frame + 1)?,
-                    },
-                    values,
-                    backend.stream().as_ref(),
-                ) {
-                    callback_active[pending_index] = false;
-                }
-            }
-        }
-        for (track, _, _) in &pending {
-            state.inference_indices[*track] += 1;
-        }
-        Ok(EmotionExecutionStatus::Executed {
-            tracks: backend_inputs.len(),
-            frames: callback_frames,
-        })
+        state.execute_with(
+            tracks,
+            &mut DeviceClassifierExecutor {
+                backend,
+                processor,
+                output,
+                input_stride,
+                output_stride,
+                callback,
+            },
+        )
     }
 
     pub fn output_emotion_length(&self) -> usize {
@@ -578,6 +605,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_batch_preserves_track_identity_when_first_track_is_finished() {
+        let (data, parameters) = processor_data();
+        let mut state = ClassifierScheduler::new(contract(1), data, parameters, 2).unwrap();
+        let empty = AudioAccumulator::new(4, 0).unwrap();
+        empty.close().unwrap();
+        let audio = audio();
+        let tracks = [
+            EmotionTrack {
+                audio: &empty,
+                preferred_emotions: None,
+                input_strength: 1.0,
+            },
+            EmotionTrack {
+                audio: &audio,
+                preferred_emotions: None,
+                input_strength: 1.0,
+            },
+        ];
+        let mut inferred = Vec::new();
+        let mut backend = |track: usize, _: &[f32]| {
+            inferred.push(track);
+            Ok(vec![1.0, 0.0, -1.0])
+        };
+        let mut emitted = Vec::new();
+        let status = state
+            .execute(&tracks, &mut backend, |metadata, values| {
+                emitted.push((metadata.track, metadata.frame));
+                assert_eq!(values.len(), 3);
+                true
+            })
+            .unwrap();
+        assert_eq!(inferred, [1]);
+        assert_eq!(emitted, [(1, 0), (1, 1)]);
+        assert_eq!(
+            status,
+            EmotionExecutionStatus::Executed {
+                tracks: 1,
+                frames: 2
+            }
+        );
+    }
 
     fn contract(skip: usize) -> ClassifierContract {
         ClassifierContract::new(8, 8, 3, 4, 1, skip).unwrap()

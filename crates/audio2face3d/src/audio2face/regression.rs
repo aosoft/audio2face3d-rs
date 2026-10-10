@@ -149,11 +149,7 @@ use std::path::PathBuf;
 #[cfg(feature = "tensorrt")]
 use std::cell::Cell;
 #[cfg(feature = "tensorrt")]
-use std::future::Future;
-#[cfg(feature = "tensorrt")]
 use std::ops::ControlFlow;
-#[cfg(feature = "tensorrt")]
-use std::pin::Pin;
 #[cfg(feature = "tensorrt")]
 use std::sync::Arc;
 
@@ -345,27 +341,6 @@ pub struct RegressionGeometryInteractiveExecutor {
     core_interrupt: crate::animation::InteractiveGeometryInterrupt,
     interrupt_handle: crate::audio2x::InteractiveInterruptHandle,
     _not_sync: Cell<()>,
-}
-
-#[cfg(feature = "tensorrt")]
-struct YieldOnce(bool);
-
-#[cfg(feature = "tensorrt")]
-impl Future for YieldOnce {
-    type Output = ();
-
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        if self.0 {
-            std::task::Poll::Ready(())
-        } else {
-            self.0 = true;
-            cx.waker().wake_by_ref();
-            std::task::Poll::Pending
-        }
-    }
 }
 
 #[cfg(feature = "tensorrt")]
@@ -702,20 +677,10 @@ impl RegressionGeometryInteractiveExecutor {
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
         let _scope = self.scope.activate();
-        Box::pin({
-            let scope = self.scope.for_current();
-            scope.wrap_future(async move {
-                let generation = self.interrupt_handle.generation();
-                YieldOnce(false).await;
-                if self.interrupt_handle.is_interrupted_since(generation) {
-                    return Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                        emitted_frames: 0,
-                    });
-                }
-                self.compute_frame_sync_with_generation(frame, callback, generation, false)
-            })
-        })
+        let scope = self.scope.for_current();
+        Box::pin(scope.wrap_future(super::interactive_driver::compute_frame(
+            self, frame, callback,
+        )))
     }
 
     pub fn compute_all_frames<'a>(
@@ -726,44 +691,12 @@ impl RegressionGeometryInteractiveExecutor {
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
         let _scope = self.scope.activate();
-        Box::pin({
-            let scope = self.scope.for_current();
-            scope.wrap_future(async move {
-                let generation = self.interrupt_handle.generation();
-                YieldOnce(false).await;
-                let total = self.total_frames()?;
-                if self.interrupt_handle.is_interrupted_since(generation) {
-                    return Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                        emitted_frames: 0,
-                    });
-                }
-                self.execution.prepare_all()?;
-                let mut emitted_frames = 0;
-                for frame in 0..total {
-                    if self.interrupt_handle.is_interrupted_since(generation) {
-                        return Ok(crate::audio2x::InteractiveExecutionReport {
-                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                            emitted_frames,
-                        });
-                    }
-                    let report =
-                        self.compute_frame_sync_with_generation(frame, callback, generation, true)?;
-                    emitted_frames += report.emitted_frames;
-                    if report.status == crate::audio2x::InteractiveExecutionStatus::Interrupted {
-                        return Ok(crate::audio2x::InteractiveExecutionReport {
-                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                            emitted_frames,
-                        });
-                    }
-                    YieldOnce(false).await;
-                }
-                Ok(crate::audio2x::InteractiveExecutionReport {
-                    status: crate::audio2x::InteractiveExecutionStatus::Complete,
-                    emitted_frames,
-                })
-            })
-        })
+        let scope = self.scope.for_current();
+        Box::pin(
+            scope.wrap_future(super::interactive_driver::compute_all_frames(
+                self, callback,
+            )),
+        )
     }
 }
 
@@ -1510,5 +1443,31 @@ impl RegressionGeometryExecutorFactory {
     ) -> crate::audio2x::ExecutorFuture<'static, RegressionGeometryExecutor> {
         let scope = crate::logging::integration::LogScope::new(context);
         Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl super::interactive_driver::InteractiveGeometryDriver
+    for RegressionGeometryInteractiveExecutor
+{
+    fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        self.interrupt_handle.clone()
+    }
+    fn total_frames(&self) -> crate::Result<usize> {
+        RegressionGeometryInteractiveExecutor::total_frames(self)
+    }
+    fn prepare_all(&mut self) -> crate::Result<()> {
+        self.execution.prepare_all()
+    }
+    fn compute(
+        &mut self,
+        frame: usize,
+        callback: &mut (
+                 dyn for<'r> FnMut(crate::audio2face::GeometryResults<'r>) -> ControlFlow<()> + Send
+             ),
+        generation: u64,
+        stateful: bool,
+    ) -> crate::Result<crate::audio2x::InteractiveExecutionReport> {
+        self.compute_frame_sync_with_generation(frame, callback, generation, stateful)
     }
 }
