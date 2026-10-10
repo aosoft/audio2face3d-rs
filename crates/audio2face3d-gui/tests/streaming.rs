@@ -1,6 +1,6 @@
 #![cfg(feature = "session")]
 use audio2face3d_gui::{
-    core::{Clip, SessionState},
+    core::Clip,
     playback::{Command, PlaybackState, Player},
 };
 use std::time::{Duration, Instant};
@@ -20,40 +20,44 @@ fn start_threshold_underflow_freeze_and_rebuffer_preserve_media_time() {
     let now = Instant::now();
     let mut player = Player::default();
     player.replace(partial(0.05));
-    player.streaming = true;
+    player
+        .set_streaming(true, Duration::from_millis(100))
+        .unwrap();
     player.command(Command::Play, now).unwrap();
-    assert_eq!(player.state, PlaybackState::Buffering);
+    assert_eq!(player.state(), PlaybackState::Buffering);
     player.render_audio(1600, 16000, now, |_, v| assert_eq!(v, 0.));
     assert_eq!(player.snapshot(now + Duration::from_secs(1)).time, 0.);
-    player.clip.push_audio(800, &vec![0.5; 2400]).unwrap();
+    player.append_audio(800, &vec![0.5; 2400]).unwrap();
     for i in 2..=6 {
-        player.clip.push_frame(i as f64 / 30., vec![0.]).unwrap();
+        player.append_frame(i as f64 / 30., vec![0.]).unwrap();
     }
     player.render_audio(4000, 16000, now, |_, _| {});
-    assert_eq!(player.state, PlaybackState::Buffering);
-    assert_eq!(player.underruns, 1);
+    assert_eq!(player.state(), PlaybackState::Buffering);
+    assert_eq!(player.underruns(), 1);
     assert!((player.snapshot(now + Duration::from_secs(1)).time - 0.2).abs() < 1e-6);
     player.render_audio(1600, 16000, now + Duration::from_secs(1), |_, v| {
         assert_eq!(v, 0.)
     });
     assert!((player.snapshot(now + Duration::from_secs(2)).time - 0.2).abs() < 1e-6);
-    player.clip.push_audio(3200, &vec![0.5; 3200]).unwrap();
+    player.append_audio(3200, &vec![0.5; 3200]).unwrap();
     for i in 7..=12 {
-        player.clip.push_frame(i as f64 / 30., vec![0.]).unwrap();
+        player.append_frame(i as f64 / 30., vec![0.]).unwrap();
     }
     player.render_audio(1600, 16000, now + Duration::from_secs(2), |_, v| {
         assert_eq!(v, 0.5)
     });
     assert!((player.snapshot(now + Duration::from_millis(2050)).time - 0.25).abs() < 1e-6);
-    assert_eq!(player.clip.frames[6].time, 0.2);
+    assert_eq!(player.clip().unwrap().frames()[6].time(), 0.2);
 }
 #[test]
 fn completed_short_clip_flushes_but_failed_stream_does_not_autoplay() {
     let now = Instant::now();
     let mut player = Player::default();
     player.replace(partial(0.02));
-    player.streaming = true;
-    player.clip.session = SessionState::Completed;
+    player
+        .set_streaming(true, Duration::from_millis(100))
+        .unwrap();
+    player.finish_collection().unwrap();
     player.command(Command::Play, now).unwrap();
     let mut nonzero = 0;
     player.render_audio(1600, 16000, now, |_, v| {
@@ -62,8 +66,16 @@ fn completed_short_clip_flushes_but_failed_stream_does_not_autoplay() {
         }
     });
     assert_eq!(nonzero, 320);
-    player.clip.session = SessionState::Failed("disconnected".into());
-    assert!(player.command(Command::Play, now).is_err());
+    // A failed session remains unavailable even after its collection completed.
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(Player::default()));
+    let mut controller = audio2face3d_gui::controller::SessionController::new(shared.clone());
+    controller
+        .replace_output(audio2face3d_gui::core::demo_clip())
+        .unwrap();
+    controller
+        .job_finished(Err(audio2face3d_gui::core::Error("disconnected".into())))
+        .unwrap();
+    assert!(shared.lock().unwrap().command(Command::Play, now).is_err());
 }
 #[test]
 fn a_gap_is_not_confused_with_the_largest_received_timestamp() {

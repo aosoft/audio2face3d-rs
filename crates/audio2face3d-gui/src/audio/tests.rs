@@ -22,7 +22,7 @@ fn paused_seek_never_opens_a_device_and_updates_values_immediately() {
         assert_eq!(snapshot.state, PlaybackState::Paused);
         assert_eq!(
             snapshot.values,
-            player.lock().unwrap().clip.values_at(time).0
+            player.lock().unwrap().clip().unwrap().values_at(time).0
         );
     }
     // Join the worker so all pending work finishes before checking device calls.
@@ -253,7 +253,10 @@ fn runtime_fault_reporting_never_needs_player_or_status_locks() {
     assert_eq!(generation, device.epoch.generation);
     assert_eq!(thread, device.epoch.worker_thread.id());
     assert!(lock_free, "stream must be dropped outside the player lock");
-    assert_eq!(harness.player.lock().unwrap().state, PlaybackState::Paused);
+    assert_eq!(
+        harness.player.lock().unwrap().state(),
+        PlaybackState::Paused
+    );
     assert_eq!(
         harness.player.lock().unwrap().snapshot(Instant::now()).time,
         1.
@@ -327,7 +330,10 @@ fn handled_fault_is_not_restarted_and_old_notification_cannot_stop_resume() {
             .handle_failure(old.epoch.generation, "stale status".into(), &mut sentinel)
     );
     assert!(sentinel.is_some());
-    assert_eq!(harness.player.lock().unwrap().state, PlaybackState::Playing);
+    assert_eq!(
+        harness.player.lock().unwrap().state(),
+        PlaybackState::Playing
+    );
     assert!(harness.audio.take_error().is_none());
     assert!(harness.dropped.try_recv().is_err());
     assert_eq!(harness.starts.load(Ordering::Relaxed), 2);
@@ -353,7 +359,7 @@ fn fault_during_start_is_handled_before_the_worker_parks() {
     assert_eq!(generation, device.epoch.generation);
     assert_eq!(thread, device.epoch.worker_thread.id());
     assert!(lock_free);
-    assert_eq!(player.lock().unwrap().state, PlaybackState::Paused);
+    assert_eq!(player.lock().unwrap().state(), PlaybackState::Paused);
     assert!(
         audio
             .take_error()
@@ -395,7 +401,7 @@ fn fault_before_park_keeps_a_wake_token() {
     device.epoch.report_fault(fault("before park"));
     release.send(()).unwrap();
     drops.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert_eq!(player.lock().unwrap().state, PlaybackState::Paused);
+    assert_eq!(player.lock().unwrap().state(), PlaybackState::Paused);
 }
 
 #[test]
@@ -415,7 +421,10 @@ fn writing_fault_wake_is_followed_by_ready_publication_and_another_wake() {
     writes.recv_timeout(Duration::from_secs(2)).unwrap();
     device.epoch.report_fault(fault("repeat while writing"));
     harness.wait_state(device.epoch.generation, WRITING_FAULT, 1);
-    assert_eq!(harness.player.lock().unwrap().state, PlaybackState::Playing);
+    assert_eq!(
+        harness.player.lock().unwrap().state(),
+        PlaybackState::Playing
+    );
     assert!(harness.dropped.try_recv().is_err());
     release.send(()).unwrap();
     callback.join().unwrap();

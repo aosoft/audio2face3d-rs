@@ -98,10 +98,10 @@ fn repeated_jobs_finish_with_audio_curves_and_released_resources() {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(job.id, id);
-        assert_eq!(clip.session, SessionState::Completed);
-        assert_eq!(clip.audio.len(), 32000);
-        assert_eq!(clip.names.len(), 52);
-        assert!(clip.frames.len() >= 59);
+        assert_eq!(*clip.session(), SessionState::Completed);
+        assert_eq!(clip.audio().len(), 32000);
+        assert_eq!(clip.names().len(), 52);
+        assert!(clip.frames().len() >= 59);
     }
     std::fs::remove_file(request.wav).unwrap();
 }
@@ -139,9 +139,9 @@ fn offline_finishes_without_ui_draining_and_publishes_one_complete_clip() {
             Event::InputFinished => {}
             Event::Ready(clip) => {
                 ready += 1;
-                assert_eq!(clip.session, SessionState::Completed);
-                assert_eq!(clip.audio.len(), 32000);
-                assert!(clip.frames.len() >= 59);
+                assert_eq!(*clip.session(), SessionState::Completed);
+                assert_eq!(clip.audio().len(), 32000);
+                assert!(clip.frames().len() >= 59);
             }
             Event::Output(_) => panic!("offline inference must not send partial results"),
         }

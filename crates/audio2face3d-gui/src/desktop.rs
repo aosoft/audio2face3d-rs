@@ -165,12 +165,15 @@ impl DesktopApp {
             Ok(job) => {
                 self.transport.invalidate();
                 self.audio.stop();
-                self.controller.replace(crate::core::Clip::running());
+                self.controller.begin();
                 {
                     let mut player = self.audio.player.lock().unwrap();
-                    player.streaming = self.request.pace_input;
-                    player.stream_buffer =
-                        std::time::Duration::from_millis(self.request.stream_buffer_ms.into());
+                    player
+                        .set_streaming(
+                            self.request.pace_input,
+                            std::time::Duration::from_millis(self.request.stream_buffer_ms.into()),
+                        )
+                        .expect("validated streaming buffer");
                 }
                 self.stream_started = false;
                 self.job = Some(job);
@@ -194,144 +197,122 @@ impl DesktopApp {
         if finished.is_some() {
             events.extend(job.events.try_iter());
         }
-        {
-            for event in events {
-                match event {
-                    crate::inference::Event::InputFinished => self.input_finished = true,
-                    crate::inference::Event::Ready(clip) => {
-                        if !self.user_cancelled {
-                            self.controller.replace(*clip);
-                            self.selected = ["JawOpen", "EyeBlinkLeft", "EyeBlinkRight"]
-                                .iter()
-                                .filter_map(|name| {
-                                    self.controller
-                                        .clip()
-                                        .names()
-                                        .iter()
-                                        .position(|n| n == name)
-                                })
-                                .collect();
-                        }
-                    }
-                    crate::inference::Event::Output(event) => {
-                        if matches!(
-                            *self.controller.clip().session(),
-                            crate::core::SessionState::Failed(_)
-                        ) {
-                            continue;
-                        }
-                        let layout =
-                            matches!(&event, audio2face3d::types::OutputEvent::StreamInfo(_));
-                        if let Err(error) = self.controller.apply_event(event) {
-                            self.controller
-                                .set_session(crate::core::SessionState::Failed(error.to_string()));
+        for event in events {
+            match event {
+                crate::inference::Event::InputFinished => self.input_finished = true,
+                crate::inference::Event::Ready(clip) => {
+                    if !self.user_cancelled && !self.controller.is_unavailable() {
+                        if let Err(error) = self.controller.replace_output(*clip) {
                             self.message = error.to_string();
                             job.cancel();
                         }
-                        if layout {
-                            self.selected = ["JawOpen", "EyeBlinkLeft", "EyeBlinkRight"]
-                                .iter()
-                                .filter_map(|name| {
-                                    self.controller
-                                        .clip()
-                                        .names()
-                                        .iter()
-                                        .position(|n| n == name)
-                                })
-                                .collect();
-                        }
+                        self.selected = ["JawOpen", "EyeBlinkLeft", "EyeBlinkRight"]
+                            .iter()
+                            .filter_map(|name| {
+                                self.controller
+                                    .clip()
+                                    .names()
+                                    .iter()
+                                    .position(|n| n == name)
+                            })
+                            .collect();
+                    }
+                }
+                crate::inference::Event::Output(event) => {
+                    if self.controller.is_unavailable() {
+                        continue;
+                    }
+                    let layout = matches!(&event, audio2face3d::types::OutputEvent::StreamInfo(_));
+                    if let Err(error) = self.controller.apply_event(event) {
+                        self.message = error.to_string();
+                        job.cancel();
+                    }
+                    if layout {
+                        self.selected = ["JawOpen", "EyeBlinkLeft", "EyeBlinkRight"]
+                            .iter()
+                            .filter_map(|name| {
+                                self.controller
+                                    .clip()
+                                    .names()
+                                    .iter()
+                                    .position(|n| n == name)
+                            })
+                            .collect();
                     }
                 }
             }
         }
         if let Err(error) = self.controller.publish() {
-            self.controller
-                .set_session(crate::core::SessionState::Failed(error.to_string()));
+            let _ = self.controller.fail(error.to_string());
             self.message = error.to_string();
             job.cancel();
             self.audio.stop();
         }
-        let should_start = {
-            self.request.pace_input
-                && !self.stream_started
-                && !self.user_cancelled
-                && (self.controller.clip().ready_until()
-                    >= f64::from(self.request.stream_buffer_ms) / 1000.
-                    || (*self.controller.clip().session() == crate::core::SessionState::Completed
-                        && self.controller.clip().ready_until() > 0.))
-                && !matches!(
-                    *self.controller.clip().session(),
-                    crate::core::SessionState::Failed(_) | crate::core::SessionState::Cancelled
-                )
-        };
-        if should_start {
-            self.stream_started = true;
-            if let Err(e) = self.audio.command(crate::playback::Command::Play) {
-                self.message = e.to_string();
-            } else {
-                self.logger.log(LogLevel::Info, || {
-                    LogRecord::new("Streaming playback started").field("source", "gui.playback")
-                });
-            }
-        }
+        // Resolve an available job result before issuing an autoplay command.
+        // Collection completion alone must not hide a cleanup/job failure.
         if let Some(result) = finished {
             self.job = None;
-            if self.user_cancelled {
-                self.controller
-                    .set_session(crate::core::SessionState::Cancelled);
-                self.message = "Cancelled".into();
-            } else if let Err(e) = result {
-                self.controller
-                    .set_session(crate::core::SessionState::Failed(e.to_string()));
-                self.message = e.to_string();
-            } else if *self.controller.clip().session() == crate::core::SessionState::Completed {
-                self.message = "Results complete; backend retained".into();
-            } else if !matches!(
-                *self.controller.clip().session(),
-                crate::core::SessionState::Failed(_)
-            ) {
-                self.controller
-                    .set_session(crate::core::SessionState::Failed(
-                        "missing completion".into(),
-                    ));
-            }
-            if let Err(error) = self.controller.publish() {
-                self.controller
-                    .set_session(crate::core::SessionState::Failed(error.to_string()));
+            let transition = if self.user_cancelled {
+                self.controller.cancel()
+            } else {
+                self.controller.job_finished(result)
+            };
+            if let Err(error) = transition {
+                let _ = self.controller.fail(error.to_string());
                 self.message = error.to_string();
+            } else {
+                self.message = match self.controller.state() {
+                    crate::controller::SessionControllerState::Cancelled => "Cancelled".into(),
+                    crate::controller::SessionControllerState::Failed(error) => error.clone(),
+                    _ => "Results complete; backend retained".into(),
+                };
             }
+            let failed = self.controller.is_unavailable();
             self.logger.write_log(
-                if matches!(
-                    *self.controller.clip().session(),
-                    crate::core::SessionState::Failed(_)
-                ) {
+                if failed {
                     LogLevel::Error
                 } else {
                     LogLevel::Info
                 },
                 LogRecord::new(&self.message).field("source", "gui.inference"),
             );
-            let failed = matches!(
-                *self.controller.clip().session(),
-                crate::core::SessionState::Failed(_) | crate::core::SessionState::Cancelled
-            );
             if failed {
                 self.audio.stop();
             }
             if self.transport.finished(!failed, self.request.pace_input) {
                 self.stream_started = true;
-                if let Err(e) = self.audio.command(crate::playback::Command::Play) {
-                    self.message = e.to_string();
+                if let Err(error) = self.audio.command(crate::playback::Command::Play) {
+                    self.message = error.to_string();
                 }
             }
         }
+        let should_start = self.request.pace_input
+            && !self.stream_started
+            && !self.user_cancelled
+            && !self.controller.is_unavailable()
+            && (self.controller.clip().ready_until()
+                >= f64::from(self.request.stream_buffer_ms) / 1000.
+                || (*self.controller.clip().session() == crate::core::SessionState::Completed
+                    && self.controller.clip().ready_until() > 0.));
+        if should_start {
+            self.stream_started = true;
+            if let Err(error) = self.audio.command(crate::playback::Command::Play) {
+                self.message = error.to_string();
+            } else {
+                self.logger.log(LogLevel::Info, || {
+                    LogRecord::new("Streaming playback started").field("source", "gui.playback")
+                });
+            }
+        }
     }
-
     fn stop_inference(&mut self) {
         if let Some(job) = &self.job {
             job.cancel();
         }
         self.user_cancelled = true;
+        if let Err(error) = self.controller.cancel() {
+            self.message = error.to_string();
+        }
         self.stream_started = true;
         self.transport.invalidate();
         self.audio.stop();
@@ -961,8 +942,8 @@ mod head_tests {
         assert_eq!(names.len(), 52);
         assert_eq!(names[51], "TongueOut");
         assert_eq!(view.values, vec![0.; 52]);
-        assert!(player.clip.names.is_empty());
-        assert!(player.clip.frames.is_empty());
+        assert!(player.clip().unwrap().names().is_empty());
+        assert!(player.clip().unwrap().frames().is_empty());
         snapshot.values = vec![0.7, 0.2, 0.9];
         snapshot.raw_values = vec![0.8, 0.3, 1.];
         let received = vec![

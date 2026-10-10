@@ -67,6 +67,7 @@ struct PlaybackMedia {
     sample_count: usize,
     ready_until: f64,
     complete: bool,
+    job_ready: bool,
     unavailable: bool,
     has_frames: bool,
 }
@@ -74,10 +75,11 @@ impl PlaybackMedia {
     fn from_clip(clip: &Clip) -> Self {
         Self {
             clip_id: clip.id(),
-            revision: clip.revision,
-            sample_count: clip.audio.len(),
+            revision: clip.revision(),
+            sample_count: clip.audio().len(),
             ready_until: clip.ready_until(),
             complete: clip.session() == &SessionState::Completed,
+            job_ready: clip.session() == &SessionState::Completed,
             unavailable: matches!(
                 clip.session(),
                 SessionState::Failed(_) | SessionState::Cancelled
@@ -94,20 +96,29 @@ struct DetachedPlayback {
     media: PlaybackMedia,
     audio: AudioTrack,
 }
+enum PlaybackSource {
+    Owned(Clip),
+    Controller(DetachedPlayback),
+}
 
 /// A prepared update: Arc handles are collected before taking the audio lock.
-pub struct PlaybackUpdate {
+pub(crate) struct PlaybackUpdate {
     media: PlaybackMedia,
     first_block: usize,
     blocks: Vec<std::sync::Arc<AudioBlock>>,
 }
 impl PlaybackUpdate {
-    pub fn from_clip(clip: &Clip, first_block: usize) -> Result<Self> {
+    pub(crate) fn from_clip(clip: &Clip, first_block: usize) -> Result<Self> {
         Ok(Self {
             media: PlaybackMedia::from_clip(clip),
             first_block,
-            blocks: clip.audio.shared_from(first_block)?,
+            blocks: clip.audio().shared_from(first_block)?,
         })
+    }
+    pub(crate) fn session(&mut self, revision: u64, ready: bool, unavailable: bool) {
+        self.media.revision = revision;
+        self.media.job_ready = ready;
+        self.media.unavailable |= unavailable;
     }
 }
 struct Anchor {
@@ -116,25 +127,29 @@ struct Anchor {
     frames: usize,
     rate: u32,
 }
+/// Playback state changes through commands and validated media updates.
+///
+/// ```compile_fail
+/// let mut player = audio2face3d_gui::playback::Player::default();
+/// player.state = audio2face3d_gui::playback::PlaybackState::Playing;
+/// ```
 pub struct Player {
-    /// Legacy owned-Clip entry point. Standard Desktop uses a detached controller.
-    pub clip: Clip,
-    pub state: PlaybackState,
-    pub looping: bool,
-    pub streaming: bool,
+    source: PlaybackSource,
+    state: PlaybackState,
+    looping: bool,
+    streaming: bool,
     /// Media to accumulate before streaming starts or resumes after an underrun.
-    pub stream_buffer: Duration,
-    pub underruns: u64,
+    stream_buffer: Duration,
+    underruns: u64,
     submitted: f64,
     position: f64,
     anchors: VecDeque<Anchor>,
-    detached: Option<DetachedPlayback>,
     audio_cursor: usize,
 }
 impl Default for Player {
     fn default() -> Self {
         Self {
-            clip: Clip::default(),
+            source: PlaybackSource::Owned(Clip::default()),
             state: PlaybackState::Paused,
             looping: false,
             streaming: false,
@@ -143,27 +158,80 @@ impl Default for Player {
             submitted: 0.,
             position: 0.,
             anchors: VecDeque::with_capacity(64),
-            detached: None,
             audio_cursor: 0,
         }
     }
 }
 impl Player {
+    pub fn state(&self) -> PlaybackState {
+        self.state
+    }
+    pub fn underruns(&self) -> u64 {
+        self.underruns
+    }
+    pub fn looping(&self) -> bool {
+        self.looping
+    }
+    pub fn streaming(&self) -> bool {
+        self.streaming
+    }
+    pub fn stream_buffer(&self) -> Duration {
+        self.stream_buffer
+    }
+    pub fn set_streaming(&mut self, enabled: bool, buffer: Duration) -> Result<()> {
+        if buffer.as_secs_f64() > crate::core::MAX_SECONDS {
+            return Err(Error("stream buffer exceeds media limit".into()));
+        }
+        self.streaming = enabled;
+        self.stream_buffer = buffer;
+        Ok(())
+    }
+    /// Read-only compatibility access for the player-owned path.
+    pub fn clip(&self) -> Option<&Clip> {
+        match &self.source {
+            PlaybackSource::Owned(clip) => Some(clip),
+            _ => None,
+        }
+    }
+    fn owned_clip(&mut self) -> Result<&mut Clip> {
+        match &mut self.source {
+            PlaybackSource::Owned(clip) => Ok(clip),
+            _ => Err(Error(
+                "update controller-owned media through SessionController".into(),
+            )),
+        }
+    }
+    pub fn append_audio(&mut self, start: u64, samples: &[f32]) -> Result<()> {
+        self.owned_clip()?.push_audio(start, samples)
+    }
+    pub fn append_frame(&mut self, time: f64, values: Vec<f32>) -> Result<()> {
+        self.owned_clip()?.push_frame(time, values)
+    }
+    pub fn finish_collection(&mut self) -> Result<()> {
+        self.owned_clip()?.finish_collection()
+    }
     /// Prepare shared audio and constant-size media metadata outside the audio lock.
-    pub fn from_clip(clip: &Clip) -> Self {
+    pub(crate) fn from_clip(clip: &Clip) -> Self {
         Self {
-            detached: Some(DetachedPlayback {
+            source: PlaybackSource::Controller(DetachedPlayback {
                 media: PlaybackMedia::from_clip(clip),
-                audio: clip.audio.clone(),
+                audio: clip.audio().clone(),
             }),
             ..Self::default()
         }
     }
-    pub fn apply_update(&mut self, update: PlaybackUpdate) -> Result<()> {
-        let playback = self
-            .detached
-            .as_mut()
-            .ok_or_else(|| Error("player has no controller-owned clip".into()))?;
+    pub(crate) fn for_controller(clip: &Clip, ready: bool, unavailable: bool) -> Self {
+        let mut player = Self::from_clip(clip);
+        if let PlaybackSource::Controller(playback) = &mut player.source {
+            playback.media.job_ready = ready;
+            playback.media.unavailable |= unavailable;
+        }
+        player
+    }
+    pub(crate) fn apply_update(&mut self, update: PlaybackUpdate) -> Result<()> {
+        let PlaybackSource::Controller(playback) = &mut self.source else {
+            return Err(Error("player has no controller-owned clip".into()));
+        };
         if playback.media.clip_id != update.media.clip_id
             || update.media.revision < playback.media.revision
             || update.first_block != playback.audio.block_count()
@@ -176,24 +244,30 @@ impl Player {
             return Err(Error("stale or noncontiguous playback update".into()));
         }
         playback.audio.append_shared(update.blocks)?;
+        let unavailable = playback.media.unavailable || update.media.unavailable;
         playback.media = update.media;
+        playback.media.unavailable = unavailable;
+        if unavailable {
+            self.command(Command::Pause, Instant::now())?;
+        }
         Ok(())
     }
     fn media(&self) -> PlaybackMedia {
-        self.detached.as_ref().map_or_else(
-            || PlaybackMedia::from_clip(&self.clip),
-            |playback| playback.media,
-        )
+        match &self.source {
+            PlaybackSource::Owned(clip) => PlaybackMedia::from_clip(clip),
+            PlaybackSource::Controller(playback) => playback.media,
+        }
     }
     #[cfg(test)]
     pub(crate) fn audio_track(&self) -> &AudioTrack {
-        self.detached
-            .as_ref()
-            .map_or(&self.clip.audio, |playback| &playback.audio)
+        match &self.source {
+            PlaybackSource::Owned(clip) => clip.audio(),
+            PlaybackSource::Controller(playback) => &playback.audio,
+        }
     }
     pub fn replace(&mut self, clip: Clip) {
         *self = Self {
-            clip,
+            source: PlaybackSource::Owned(clip),
             ..Default::default()
         };
     }
@@ -219,7 +293,7 @@ impl Player {
                         "failed/cancelled result: seek to inspect partial data".into(),
                     ));
                 }
-                if !self.streaming && !media.complete {
+                if !self.streaming && !media.job_ready {
                     return Err(Error("wait for successful inference completion".into()));
                 }
                 if media.sample_count == 0 || !media.has_frames {
@@ -264,7 +338,9 @@ impl Player {
         let clock = self.clock_snapshot(now);
         // Compatibility path for an owned Clip. Detached users obtain curves
         // through PlaybackClockSnapshot::with_clip after releasing the lock.
-        let (values, raw_values) = self.clip.values_at(clock.time);
+        let (values, raw_values) = self
+            .clip()
+            .map_or_else(|| (vec![], vec![]), |clip| clip.values_at(clock.time));
         Snapshot {
             time: clock.time,
             duration: clock.duration,
@@ -365,10 +441,10 @@ impl Player {
             }
             let sample = self.submitted * SAMPLE_RATE as f64;
             let index = sample.floor() as usize;
-            let audio = self
-                .detached
-                .as_ref()
-                .map_or(&self.clip.audio, |playback| &playback.audio);
+            let audio = match &self.source {
+                PlaybackSource::Owned(clip) => clip.audio(),
+                PlaybackSource::Controller(playback) => &playback.audio,
+            };
             let a = audio
                 .sample_at(index, &mut self.audio_cursor)
                 .copied()

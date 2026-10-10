@@ -138,7 +138,7 @@ pub fn channel_values(
     selected: &mut std::collections::BTreeSet<usize>,
     filter: &mut String,
 ) {
-    channel_values_for_names(ui, &clip.names, snapshot, selected, filter);
+    channel_values_for_names(ui, clip.names(), snapshot, selected, filter);
 }
 
 pub fn channel_values_for_names(
@@ -212,7 +212,8 @@ pub fn channel_values_for_names(
 #[derive(Default)]
 pub struct Timeline {
     clip_id: Option<crate::core::ClipId>,
-    revision: u64,
+    layout_revision: u64,
+    curve_revision: u64,
     width: usize,
     cache: BTreeMap<usize, Vec<Option<[f32; 2]>>>,
     pub overlay: bool,
@@ -347,7 +348,9 @@ impl Timeline {
             controls,
             |timeline, width, range| {
                 let player = player.lock().unwrap();
-                timeline.prepare(&player.clip, selected, width, range)
+                player.clip().map_or_else(Vec::new, |clip| {
+                    timeline.prepare(clip, selected, width, range)
+                })
             },
         )
     }
@@ -359,23 +362,34 @@ impl Timeline {
         width: usize,
         range: [f64; 2],
     ) -> Vec<String> {
+        if !range[0].is_finite() || !range[1].is_finite() || range[1] <= range[0] {
+            self.cache.clear();
+            self.clip_id = None;
+            return vec![];
+        }
+        let revisions = clip.revisions();
         if self.clip_id != Some(clip.id())
-            || self.revision != clip.revision
+            || self.layout_revision != revisions.layout
+            || self.curve_revision != revisions.curves
             || self.width != width
             || self.range != range
         {
             self.cache.clear();
             self.clip_id = Some(clip.id());
-            self.revision = clip.revision;
+            self.layout_revision = revisions.layout;
+            self.curve_revision = revisions.curves;
             self.width = width;
             self.range = range;
         }
         for &channel in selected {
+            if channel >= clip.names().len() {
+                continue;
+            }
             self.cache
                 .entry(channel)
                 .or_insert_with(|| clip.envelope_range(channel, width, range[0], range[1]));
         }
-        clip.names.clone()
+        clip.names().to_vec()
     }
 
     fn show_prepared(
@@ -428,6 +442,11 @@ impl Timeline {
         self.view_bar(ui, width as f32, duration, playing.then_some(snapshot.time));
         let range = [self.offset, self.offset + duration / self.zoom];
         let names = prepare(self, width, range);
+        let selected = selected
+            .iter()
+            .copied()
+            .filter(|channel| *channel < names.len())
+            .collect::<std::collections::BTreeSet<_>>();
         let seek_sense = if self.seek_disabled {
             egui::Sense::hover()
         } else {

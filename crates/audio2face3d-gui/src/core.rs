@@ -38,23 +38,61 @@ pub enum SessionState {
 }
 #[derive(Debug)]
 pub struct CurveSample {
-    pub time: f64,
-    pub values: Vec<f32>,
+    time: f64,
+    values: Vec<f32>,
+}
+impl CurveSample {
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClipRevision {
+    pub layout: u64,
+    pub audio: u64,
+    pub curves: u64,
+    pub emotions: u64,
+    pub collection: u64,
+}
+enum Change {
+    Layout,
+    Audio,
+    Curves,
+    #[cfg(feature = "emotion")]
+    Emotions,
+    Collection,
 }
 
 #[derive(Debug)]
+/// Validated media. Mutation is restricted to the collection methods.
+///
+/// ```compile_fail
+/// let mut clip = audio2face3d_gui::core::Clip::default();
+/// clip.names.push("unvalidated".into());
+/// ```
+/// ```compile_fail
+/// fn corrupt(clip: &audio2face3d_gui::core::Clip) {
+///     clip.frames()[0].values.clear();
+/// }
+/// ```
 pub struct Clip {
-    pub names: Vec<String>,
-    pub frames: Vec<CurveSample>,
-    pub audio: AudioTrack,
+    names: Vec<String>,
+    frames: Vec<CurveSample>,
+    audio: AudioTrack,
     #[cfg(feature = "emotion")]
-    pub emotions: Vec<audio2face3d::types::EmotionKeyframe>,
-    pub session: SessionState,
-    pub revision: u64,
+    emotions: Vec<audio2face3d::types::EmotionKeyframe>,
+    session: SessionState,
+    revision: u64,
+    revisions: ClipRevision,
     id: ClipId,
     curve_end: f64,
     curve_gap: bool,
     retained: usize,
+    names_bytes: usize,
 }
 impl Default for Clip {
     fn default() -> Self {
@@ -66,14 +104,56 @@ impl Default for Clip {
             emotions: vec![],
             session: SessionState::Idle,
             revision: 0,
+            revisions: ClipRevision::default(),
             id: next_clip_id(),
             curve_end: 0.,
             curve_gap: false,
             retained: 0,
+            names_bytes: 0,
         }
     }
 }
 impl Clip {
+    pub fn audio(&self) -> &AudioTrack {
+        &self.audio
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn revisions(&self) -> ClipRevision {
+        self.revisions
+    }
+    #[cfg(feature = "emotion")]
+    pub fn emotions(&self) -> &[audio2face3d::types::EmotionKeyframe] {
+        &self.emotions
+    }
+    fn ensure_receiving(&self) -> Result<()> {
+        if matches!(self.session, SessionState::Idle | SessionState::Running) {
+            Ok(())
+        } else {
+            Err(Error(
+                "collection already ended; replace the clip before adding media".into(),
+            ))
+        }
+    }
+    fn next_revision(&self, change: Change) -> Result<(u64, ClipRevision)> {
+        let error = || Error("clip revision exhausted".into());
+        let sequence = self.revision.checked_add(1).ok_or_else(error)?;
+        let mut revisions = self.revisions;
+        let counter = match change {
+            Change::Layout => &mut revisions.layout,
+            Change::Audio => &mut revisions.audio,
+            Change::Curves => &mut revisions.curves,
+            #[cfg(feature = "emotion")]
+            Change::Emotions => &mut revisions.emotions,
+            Change::Collection => &mut revisions.collection,
+        };
+        *counter = counter.checked_add(1).ok_or_else(error)?;
+        Ok((sequence, revisions))
+    }
+    fn commit_revision(&mut self, revision: (u64, ClipRevision)) {
+        (self.revision, self.revisions) = revision;
+    }
     pub fn id(&self) -> ClipId {
         self.id
     }
@@ -86,17 +166,45 @@ impl Clip {
     pub fn session(&self) -> &SessionState {
         &self.session
     }
-    pub fn set_session(&mut self, value: SessionState) {
-        if self.session != value {
-            self.session = value;
-            self.revision += 1;
+    /// Compatibility setter for collection state. Job results belong to the controller.
+    pub fn set_session(&mut self, value: SessionState) -> Result<()> {
+        if value == SessionState::Completed {
+            return self.finish_collection();
         }
+        if self.session == value {
+            return Ok(());
+        }
+        self.ensure_receiving()?;
+        if value == SessionState::Idle {
+            return Err(Error("replace the clip to reset collection".into()));
+        }
+        let revision = self.next_revision(Change::Collection)?;
+        self.session = value;
+        self.commit_revision(revision);
+        Ok(())
+    }
+    pub fn finish_collection(&mut self) -> Result<()> {
+        if self.session == SessionState::Completed {
+            return Ok(());
+        }
+        self.ensure_receiving()?;
+        if self.curve_gap
+            || (self.duration() > 0. && self.frames.is_empty())
+            || self.curve_end + 0.05 + 1e-6 < self.duration()
+        {
+            return Err(Error("incomplete curve coverage".into()));
+        }
+        let revision = self.next_revision(Change::Collection)?;
+        self.session = SessionState::Completed;
+        self.commit_revision(revision);
+        Ok(())
     }
     #[cfg(feature = "emotion")]
     pub fn push_emotions(
         &mut self,
         frames: Vec<audio2face3d::types::EmotionKeyframe>,
     ) -> Result<()> {
+        self.ensure_receiving()?;
         let mut previous = self.emotions.last().map_or(0., |f| f.time().as_seconds());
         let mut bytes = 0usize;
         for frame in &frames {
@@ -112,8 +220,10 @@ impl Clip {
             }
         }
         self.check_budget(bytes)?;
+        let revision = self.next_revision(Change::Emotions)?;
         self.retained += bytes;
         self.emotions.extend(frames);
+        self.commit_revision(revision);
         Ok(())
     }
     #[cfg(feature = "emotion")]
@@ -131,6 +241,7 @@ impl Clip {
         }
     }
     pub fn set_names(&mut self, names: Vec<String>) -> Result<()> {
+        self.ensure_receiving()?;
         if names.is_empty()
             || names.len() > 256
             || names.iter().any(|n| n.is_empty() || n.len() > 256)
@@ -141,8 +252,26 @@ impl Clip {
         if !self.frames.is_empty() && self.names != names {
             return Err(Error("channel layout changed within session".into()));
         }
+        if self.names == names {
+            return Ok(());
+        }
+        let bytes = names.iter().fold(
+            names
+                .capacity()
+                .saturating_mul(std::mem::size_of::<String>()),
+            |total, name| total.saturating_add(name.capacity()),
+        );
+        let retained = self.retained - self.names_bytes;
+        if retained.saturating_add(bytes).saturating_mul(2) > MAX_BYTES - 256 * 1024 {
+            return Err(Error(
+                "result memory limit exceeded; partial result retained".into(),
+            ));
+        }
+        let revision = self.next_revision(Change::Layout)?;
         self.names = names;
-        self.revision += 1;
+        self.names_bytes = bytes;
+        self.retained = retained + bytes;
+        self.commit_revision(revision);
         Ok(())
     }
     fn check_budget(&self, bytes: usize) -> Result<()> {
@@ -157,15 +286,14 @@ impl Clip {
     }
     pub fn push_audio(&mut self, start: u64, samples: &[f32]) -> Result<()> {
         let bytes = self.validate_audio(start, samples)?;
-        self.store_audio(samples.to_vec().into_boxed_slice(), bytes);
-        Ok(())
+        self.store_audio(samples.to_vec().into_boxed_slice(), bytes)
     }
     pub fn push_audio_owned(&mut self, start: u64, samples: Vec<f32>) -> Result<()> {
         let bytes = self.validate_audio(start, &samples)?;
-        self.store_audio(samples.into_boxed_slice(), bytes);
-        Ok(())
+        self.store_audio(samples.into_boxed_slice(), bytes)
     }
     fn validate_audio(&self, start: u64, samples: &[f32]) -> Result<usize> {
+        self.ensure_receiving()?;
         if start != self.audio.len() as u64
             || self.audio.len().saturating_add(samples.len())
                 > SAMPLE_RATE as usize * MAX_SECONDS as usize
@@ -182,13 +310,17 @@ impl Clip {
         self.check_budget(bytes)?;
         Ok(bytes)
     }
-    fn store_audio(&mut self, samples: Box<[f32]>, bytes: usize) {
+    fn store_audio(&mut self, samples: Box<[f32]>, bytes: usize) -> Result<()> {
+        let revision = self.next_revision(Change::Audio)?;
         self.retained += bytes;
         self.audio.push(samples);
-        self.revision += 1;
+        self.commit_revision(revision);
+        Ok(())
     }
     pub fn push_frame(&mut self, time: f64, values: Vec<f32>) -> Result<()> {
-        if !time.is_finite()
+        self.ensure_receiving()?;
+        if self.names.is_empty()
+            || !time.is_finite()
             || !(0.0..=MAX_SECONDS).contains(&time)
             || values.len() != self.names.len()
             || values.iter().any(|v| !v.is_finite())
@@ -198,6 +330,7 @@ impl Clip {
         }
         let bytes = values.capacity() * 4 + std::mem::size_of::<CurveSample>();
         self.check_budget(bytes)?;
+        let revision = self.next_revision(Change::Curves)?;
         self.retained += bytes;
         if self
             .frames
@@ -210,7 +343,7 @@ impl Clip {
             self.curve_end = time;
         }
         self.frames.push(CurveSample { time, values });
-        self.revision += 1;
+        self.commit_revision(revision);
         Ok(())
     }
     pub fn duration(&self) -> f64 {
@@ -321,6 +454,9 @@ pub fn demo_clip() -> Clip {
         values[7] = values[0];
         clip.push_frame(i as f64 / 30., values).unwrap();
     }
-    clip.session = SessionState::Completed;
+    clip.finish_collection().unwrap();
     clip
 }
+
+#[cfg(test)]
+mod tests;
