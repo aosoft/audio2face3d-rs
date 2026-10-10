@@ -39,6 +39,7 @@ pub mod blendshape_solver;
 #[cfg(feature = "tensorrt")]
 pub mod bundle;
 pub mod diffusion;
+mod interactive_driver;
 pub mod job_runner;
 #[cfg(feature = "cuda")]
 pub mod noise;

@@ -150,7 +150,7 @@ impl AudioOutput {
         }
         if matches!(command, Command::Play)
             && matches!(
-                player.state,
+                player.state(),
                 PlaybackState::Playing | PlaybackState::Buffering
             )
         {
@@ -160,7 +160,7 @@ impl AudioOutput {
         // Generation and position share the same exclusion boundary as failure handling.
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let running = matches!(
-            player.state,
+            player.state(),
             PlaybackState::Playing | PlaybackState::Buffering
         );
         *self.failure.lock().unwrap() = None;

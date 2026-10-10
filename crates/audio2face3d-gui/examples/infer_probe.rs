@@ -59,18 +59,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(clip.session, SessionState::Completed);
+    assert_eq!(*clip.session(), SessionState::Completed);
     assert!(input_finished);
-    assert!(!clip.frames.is_empty());
+    assert!(!clip.frames().is_empty());
     println!(
         "{mode:?}: {} channels, {} frames, {:.3}s audio, {:.3}s elapsed; resources released",
-        clip.names.len(),
-        clip.frames.len(),
+        clip.names().len(),
+        clip.frames().len(),
         clip.duration(),
         start.elapsed().as_secs_f64()
     );
     if let Some(path) = std::env::var_os("A2F_PROBE_OUTPUT") {
-        let data = serde_json::json!({"names":clip.names,"frames":clip.frames.iter().map(|f|serde_json::json!({"time":f.time,"values":f.values})).collect::<Vec<_>>(),"audio":clip.audio});
+        let data = serde_json::json!({"names":clip.names(),"frames":clip.frames().iter().map(|f|serde_json::json!({"time":f.time(),"values":f.values()})).collect::<Vec<_>>(),"audio":clip.audio()});
         std::fs::write(path, serde_json::to_vec(&data)?)?;
     }
     Ok(())

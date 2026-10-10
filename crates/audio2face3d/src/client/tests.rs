@@ -94,6 +94,50 @@ fn eof(input: Input, reader: &mut Reader) {
     wait(input.finish()).unwrap();
     assert!(wait(reader.recv()).unwrap().is_none());
 }
+
+#[test]
+fn dropped_cleanup_waiters_do_not_release_the_worker_or_shutdown_owner() {
+    let fake = Arc::new(Fake {
+        hold_shutdown: true,
+        ..Fake::default()
+    });
+    let client = Client::with_driver(
+        Limits {
+            max_requests: 1,
+            ..limits()
+        },
+        fake.clone(),
+    )
+    .unwrap();
+    let (input, mut output, control) = client.start(RequestOptions::default()).unwrap().split();
+    let (mut reader, _, guard) = fake.take();
+    eof(input, &mut reader);
+    let mut closed = control.closed();
+    pending(&mut closed);
+    drop(closed);
+    assert!(control.request.core.state.lock().unwrap().bytes > 0);
+    assert!(
+        matches!(client.start(RequestOptions::default()), Err(error) if error.kind() == ErrorKind::QueueFull)
+    );
+    let mut shutdown = client.shutdown();
+    pending(&mut shutdown);
+    drop(shutdown);
+    assert!(fake.shutdown.lock().unwrap().is_some());
+    assert_eq!(control.request.core.state.lock().unwrap().requests.len(), 1);
+    guard.finish(Ok(()));
+    assert_eq!(
+        wait(control.closed()).unwrap_err().kind(),
+        ErrorKind::ShuttingDown
+    );
+    assert_eq!(control.request.core.state.lock().unwrap().bytes, 0);
+    fake.shutdown.lock().unwrap().take().unwrap().finish(Ok(()));
+    wait(client.shutdown()).unwrap();
+    assert_eq!(
+        wait(output.recv()).unwrap_err().kind(),
+        ErrorKind::ShuttingDown
+    );
+    assert!(wait(output.recv()).unwrap().is_none());
+}
 fn until(mut condition: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);
     while !condition() {

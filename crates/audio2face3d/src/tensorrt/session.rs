@@ -210,7 +210,8 @@ impl TensorRtSession {
     pub fn load(device: Arc<GpuDevice>, engine: &Path) -> Result<Self, InferenceError> {
         let scope = crate::logging::integration::LogScope::new(device.runtime_context().clone())
             .for_current();
-        let native = super::api::NativeApi::initialize(scope.context())?;
+        let _scope = scope.enter();
+        let native = super::api::NativeApi::initialize(device.runtime_context())?;
         let _context = device.make_current().map_err(InferenceError::Cuda)?;
         let path = CString::new(engine.to_string_lossy().as_bytes())
             .map_err(|_| InferenceError::InvalidBinding("engine path contains NUL".into()))?;

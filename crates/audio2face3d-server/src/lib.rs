@@ -3,6 +3,7 @@ mod admission;
 pub mod animation;
 pub mod audio;
 pub mod backend;
+mod cleanup;
 pub mod config;
 mod diagnostics;
 pub mod proto;

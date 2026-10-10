@@ -144,9 +144,10 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                             let result = async {
                                 observation.stage = "backend_start";
                                 let mut backend = factory.start(&config, &header).await?;
+                                let success_message = backend.success_message();
                                 observation.stage = "streaming";
                                 let result = request_context
-                                    .run(session::run(
+                                    .run(session::run_streaming(
                                         &mut input,
                                         &mut backend,
                                         &tx,
@@ -155,14 +156,16 @@ impl<A: Authenticator> A2fControllerService for Service<A> {
                                         &mut observation,
                                     ))
                                     .await;
-                                let failure_stage = observation.stage;
-                                observation.stage = "cleanup";
-                                let cleanup = backend.close().await;
-                                observation.cleanup_failed |= cleanup.is_err();
-                                if result.is_err() && cleanup.is_ok() {
-                                    observation.stage = failure_stage;
-                                }
-                                result.and(cleanup)
+                                let result = crate::cleanup::finish(
+                                    request_context,
+                                    result,
+                                    backend.close(),
+                                    session::send_success(&tx, success_message, &config, &shutdown),
+                                    &mut observation,
+                                )
+                                .await;
+                                drop(backend);
+                                result
                             }
                             .await;
                             observation.finish(&result);

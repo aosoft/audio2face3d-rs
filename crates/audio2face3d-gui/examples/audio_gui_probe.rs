@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut timeline = Timeline::default();
     let mut selected = (0..52).collect();
     let mut filter = String::new();
-    let names = shared.lock().unwrap().clip.names.clone();
+    let names = shared.lock().unwrap().clip().unwrap().names().to_vec();
     audio.command(Command::Play)?;
     for _ in 0..240 {
         let frame_start = Instant::now();

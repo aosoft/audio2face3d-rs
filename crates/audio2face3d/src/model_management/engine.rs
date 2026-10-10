@@ -101,10 +101,29 @@ pub struct ModelEngineBuildRequest {
 
 impl ModelEngineBuildRequest {
     pub fn execute(&self) -> Result<EngineBuildReceipt, ModelEngineFailure> {
-        let source_plan = BuildPlan::load(self)?;
         let scope = crate::logging::integration::LogScope::capture();
-        let command = scope
-            .context()
+        let context = scope.context().clone();
+        self.execute_in_context(&context, scope)
+    }
+
+    pub fn execute_with_context(
+        &self,
+        context: &crate::Audio2Face3DContext,
+    ) -> Result<EngineBuildReceipt, ModelEngineFailure> {
+        self.execute_in_context(
+            context,
+            crate::logging::integration::LogScope::new(context.clone()),
+        )
+    }
+
+    fn execute_in_context(
+        &self,
+        context: &crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> Result<EngineBuildReceipt, ModelEngineFailure> {
+        let _scope = scope.enter();
+        let source_plan = BuildPlan::load(self)?;
+        let command = context
             .native_runtime()
             .tool_command(
                 crate::runtime::tools::NativeTool::Trtexec,
@@ -117,18 +136,24 @@ impl ModelEngineBuildRequest {
             .iter()
             .any(|name| self.model_directory.join(name).exists());
         if has_existing && !self.replace {
-            return self.verify_existing_request(&source_plan, &executable);
+            return self.verify_existing_request(
+                &source_plan,
+                &executable,
+                context.native_runtime(),
+            );
         }
 
         self.execute_candidates_with(
             &source_plan,
-            |plan| BuildIdentity::discover(plan, self.device_id, &executable),
+            |plan| {
+                BuildIdentity::discover(plan, self.device_id, &executable, context.native_runtime())
+            },
             |_plan, request| {
                 EngineBuilder {
                     executable: executable.clone(),
                     replace_existing: false,
                 }
-                .build(request)
+                .build_with_context(request, context.clone())
                 .map_err(ModelEngineFailure::Build)
             },
         )
@@ -185,6 +210,7 @@ impl ModelEngineBuildRequest {
         &self,
         source_plan: &BuildPlan,
         executable: &Path,
+        runtime: &crate::runtime::NativeRuntimeConfig,
     ) -> Result<EngineBuildReceipt, ModelEngineFailure> {
         let provenance_path = self.model_directory.join(&source_plan.provenance_name);
         let provenance: EngineProvenance = read_json(&provenance_path)?;
@@ -221,7 +247,7 @@ impl ModelEngineBuildRequest {
                 });
             }
         };
-        let identity = BuildIdentity::discover(&plan, self.device_id, executable)?;
+        let identity = BuildIdentity::discover(&plan, self.device_id, executable, runtime)?;
         verify_existing(&plan, identity).map_err(|reason| {
             ModelEngineFailure::ExistingArtifactsMismatch {
                 directory: self.model_directory.clone(),
@@ -537,6 +563,7 @@ impl BuildIdentity {
         plan: &BuildPlan,
         device_id: u32,
         trtexec: &Path,
+        runtime: &crate::runtime::NativeRuntimeConfig,
     ) -> Result<Self, ModelEngineFailure> {
         Ok(Self {
             network_onnx_sha256: sha256(&plan.onnx)?,
@@ -544,8 +571,8 @@ impl BuildIdentity {
             device_id,
             arguments: plan.arguments.clone(),
             trtexec_sha256: sha256(trtexec)?,
-            trtexec_version: trtexec_version(trtexec),
-            cuda_toolkit: cuda_toolkit_version(),
+            trtexec_version: trtexec_version(trtexec, runtime),
+            cuda_toolkit: cuda_toolkit_version(runtime),
             gpu: gpu_identity(device_id),
         })
     }
@@ -657,8 +684,9 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), ModelEngineFail
     Ok(())
 }
 
-fn trtexec_version(executable: &Path) -> String {
+fn trtexec_version(executable: &Path, runtime: &crate::runtime::NativeRuntimeConfig) -> String {
     let output = native_command_text(
+        runtime,
         crate::runtime::tools::NativeTool::Trtexec,
         Some(executable),
         &[OsStr::new("--help")],
@@ -673,22 +701,21 @@ fn trtexec_version(executable: &Path) -> String {
         .unwrap_or_else(|| summarize_command_output(output))
 }
 
-fn cuda_toolkit_version() -> String {
+fn cuda_toolkit_version(runtime: &crate::runtime::NativeRuntimeConfig) -> String {
     summarize_command_output(native_command_text(
+        runtime,
         crate::runtime::tools::NativeTool::Nvcc,
         None,
         &[OsStr::new("--version")],
     ))
 }
 fn native_command_text(
+    runtime: &crate::runtime::NativeRuntimeConfig,
     tool: crate::runtime::tools::NativeTool,
     executable: Option<&Path>,
     arguments: &[&OsStr],
 ) -> String {
-    let scope = crate::logging::integration::LogScope::capture();
-    match scope
-        .context()
-        .native_runtime()
+    match runtime
         .tool_command(tool, executable)
         .map_err(|e| e.to_string())
         .and_then(|mut command| command.args(arguments).output().map_err(|e| e.to_string()))

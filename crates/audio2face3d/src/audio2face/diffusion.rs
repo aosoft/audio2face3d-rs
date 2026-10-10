@@ -5,11 +5,7 @@ use std::path::PathBuf;
 #[cfg(feature = "tensorrt")]
 use std::cell::Cell;
 #[cfg(feature = "tensorrt")]
-use std::future::Future;
-#[cfg(feature = "tensorrt")]
 use std::ops::ControlFlow;
-#[cfg(feature = "tensorrt")]
-use std::pin::Pin;
 #[cfg(feature = "tensorrt")]
 use std::sync::Arc;
 
@@ -178,27 +174,6 @@ pub struct DiffusionGeometryInteractiveExecutor {
 }
 
 #[cfg(feature = "tensorrt")]
-struct YieldOnce(bool);
-
-#[cfg(feature = "tensorrt")]
-impl Future for YieldOnce {
-    type Output = ();
-
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        if self.0 {
-            std::task::Poll::Ready(())
-        } else {
-            self.0 = true;
-            cx.waker().wake_by_ref();
-            std::task::Poll::Pending
-        }
-    }
-}
-
-#[cfg(feature = "tensorrt")]
 fn validate_diffusion_inputs(
     audio: &crate::audio2x::AudioAccumulator,
     emotions: &crate::audio2x::EmotionAccumulator,
@@ -225,6 +200,17 @@ impl DiffusionGeometryInteractiveExecutor {
     pub(crate) fn load_sync(
         parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         if !parameters.input_strength.is_finite() {
             return Err(crate::Error::InvalidArgument {
                 field: "input_strength",
@@ -265,7 +251,7 @@ impl DiffusionGeometryInteractiveExecutor {
             &parameters.common.emotions,
             &contract,
         )?;
-        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = GpuDevice::create(parameters.common.device_ordinal, context, scope.clone())?;
         let mut backend = TensorRtDiffusionBackend::load(
             Arc::clone(&device),
             model.engine_path(),
@@ -302,7 +288,7 @@ impl DiffusionGeometryInteractiveExecutor {
         let eyes = device.allocate(6)?;
         let core_interrupt = execution.interrupt_handle();
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             execution,
             contract,
             audio,
@@ -522,20 +508,10 @@ impl DiffusionGeometryInteractiveExecutor {
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
         let _scope = self.scope.activate();
-        Box::pin({
-            let scope = self.scope.for_current();
-            scope.wrap_future(async move {
-                let generation = self.interrupt_handle.generation();
-                YieldOnce(false).await;
-                if self.interrupt_handle.is_interrupted_since(generation) {
-                    return Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                        emitted_frames: 0,
-                    });
-                }
-                self.compute_frame_sync_with_generation(frame, callback, generation, false)
-            })
-        })
+        let scope = self.scope.for_current();
+        Box::pin(scope.wrap_future(super::interactive_driver::compute_frame(
+            self, frame, callback,
+        )))
     }
 
     pub fn compute_all_frames<'a>(
@@ -546,44 +522,12 @@ impl DiffusionGeometryInteractiveExecutor {
                 ),
     ) -> crate::audio2x::ExecutorFuture<'a, crate::audio2x::InteractiveExecutionReport> {
         let _scope = self.scope.activate();
-        Box::pin({
-            let scope = self.scope.for_current();
-            scope.wrap_future(async move {
-                let generation = self.interrupt_handle.generation();
-                YieldOnce(false).await;
-                let total = self.total_frames()?;
-                if self.interrupt_handle.is_interrupted_since(generation) {
-                    return Ok(crate::audio2x::InteractiveExecutionReport {
-                        status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                        emitted_frames: 0,
-                    });
-                }
-                self.execution.prepare_all()?;
-                let mut emitted_frames = 0;
-                for frame in 0..total {
-                    if self.interrupt_handle.is_interrupted_since(generation) {
-                        return Ok(crate::audio2x::InteractiveExecutionReport {
-                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                            emitted_frames,
-                        });
-                    }
-                    let report =
-                        self.compute_frame_sync_with_generation(frame, callback, generation, true)?;
-                    emitted_frames += report.emitted_frames;
-                    if report.status == crate::audio2x::InteractiveExecutionStatus::Interrupted {
-                        return Ok(crate::audio2x::InteractiveExecutionReport {
-                            status: crate::audio2x::InteractiveExecutionStatus::Interrupted,
-                            emitted_frames,
-                        });
-                    }
-                    YieldOnce(false).await;
-                }
-                Ok(crate::audio2x::InteractiveExecutionReport {
-                    status: crate::audio2x::InteractiveExecutionStatus::Complete,
-                    emitted_frames,
-                })
-            })
-        })
+        let scope = self.scope.for_current();
+        Box::pin(
+            scope.wrap_future(super::interactive_driver::compute_all_frames(
+                self, callback,
+            )),
+        )
     }
 }
 
@@ -835,6 +779,17 @@ impl DiffusionGeometryExecutor {
     pub(crate) fn load_sync(
         parameters: DiffusionGeometryExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: DiffusionGeometryExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         let model = Model::load(&parameters.model_path)?;
         if model.kind() != ModelKind::Diffusion {
             return Err(crate::Error::InvalidSchema(
@@ -872,7 +827,7 @@ impl DiffusionGeometryExecutor {
         let contract = DiffusionContract::new(model_parameters, audio)?;
         let sample_rate = contract.sample_rate;
         let owned_contract = contract.clone();
-        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = GpuDevice::create(parameters.common.device_ordinal, context, scope.clone())?;
         let mut backend = TensorRtDiffusionBackend::load(
             Arc::clone(&device),
             model.engine_path(),
@@ -916,7 +871,7 @@ impl DiffusionGeometryExecutor {
         let emotion_output = device.allocate(owned_contract.emotion_size)?;
         let result_stream = device.create_stream()?;
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             execution,
             backend,
             postprocessors,
@@ -1301,8 +1256,13 @@ impl DiffusionGeometryExecutorFactory {
         parameters: DiffusionGeometryExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                DiffusionGeometryExecutor::load_in_context(parameters, context, worker_scope)
+            })
+        })))
     }
 }
 
@@ -1312,7 +1272,40 @@ impl DiffusionGeometryInteractiveExecutorFactory {
         parameters: DiffusionGeometryInteractiveExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, DiffusionGeometryInteractiveExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                DiffusionGeometryInteractiveExecutor::load_in_context(
+                    parameters,
+                    context,
+                    worker_scope,
+                )
+            })
+        })))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+impl super::interactive_driver::InteractiveGeometryDriver for DiffusionGeometryInteractiveExecutor {
+    fn interrupt_handle(&self) -> crate::audio2x::InteractiveInterruptHandle {
+        self.interrupt_handle.clone()
+    }
+    fn total_frames(&self) -> crate::Result<usize> {
+        DiffusionGeometryInteractiveExecutor::total_frames(self)
+    }
+    fn prepare_all(&mut self) -> crate::Result<()> {
+        self.execution.prepare_all()
+    }
+    fn compute(
+        &mut self,
+        frame: usize,
+        callback: &mut (
+                 dyn for<'r> FnMut(crate::audio2face::GeometryResults<'r>) -> ControlFlow<()> + Send
+             ),
+        generation: u64,
+        stateful: bool,
+    ) -> crate::Result<crate::audio2x::InteractiveExecutionReport> {
+        self.compute_frame_sync_with_generation(frame, callback, generation, stateful)
     }
 }

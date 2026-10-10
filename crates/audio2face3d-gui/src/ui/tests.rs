@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn audio_only_append_keeps_curve_cache_and_invalid_ranges_or_channels_are_safe() {
+    let mut clip = crate::core::Clip::running();
+    clip.set_names(vec!["JawOpen".into()]).unwrap();
+    clip.push_audio(0, &[0.; 1600]).unwrap();
+    clip.push_frame(0., vec![0.2]).unwrap();
+    let selected = [0, 17].into_iter().collect();
+    let mut timeline = Timeline::default();
+    timeline.prepare(&clip, &selected, 100, [0., 0.1]);
+    assert!(!timeline.cache.contains_key(&17));
+    let allocation = timeline.cache[&0].as_ptr();
+    clip.push_audio(1600, &[0.]).unwrap();
+    timeline.prepare(&clip, &selected, 100, [0., 0.1]);
+    assert_eq!(timeline.cache[&0].as_ptr(), allocation);
+    assert!(
+        timeline
+            .prepare(&clip, &selected, 100, [f64::NAN, 1.])
+            .is_empty()
+    );
+    assert!(timeline.cache.is_empty());
+    let mut player = crate::playback::Player::default();
+    player.replace(clip);
+    let snapshot = player.snapshot(std::time::Instant::now());
+    let ctx = egui::Context::default();
+    let _ = ctx.run(Default::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            timeline.show(
+                ui,
+                player.clip().unwrap(),
+                &snapshot,
+                &[17].into_iter().collect(),
+            );
+        });
+    });
+}
+
+#[test]
 fn timeline_cache_is_not_reused_for_a_different_clip_with_the_same_revision() {
     let make_clip = |value| {
         let mut clip = crate::core::Clip::default();
@@ -11,7 +47,7 @@ fn timeline_cache_is_not_reused_for_a_different_clip_with_the_same_revision() {
     };
     let first = make_clip(0.2);
     let second = make_clip(0.8);
-    assert_eq!(first.revision, second.revision);
+    assert_eq!(first.revision(), second.revision());
     let selected = [0].into_iter().collect();
     let mut timeline = Timeline::default();
     timeline.prepare(&first, &selected, 100, [0., 0.1]);
@@ -26,7 +62,7 @@ fn channels_survive_reinitialization_after_a_completed_result() {
     let ctx = egui::Context::default();
     let mut player = crate::playback::Player::default();
     player.replace(crate::core::demo_clip());
-    let previous_names = player.clip.names.clone();
+    let previous_names = player.clip().unwrap().names().to_vec();
     player.replace(crate::core::Clip::running());
     let snapshot = player.snapshot(std::time::Instant::now());
     assert!(!previous_names.is_empty());
@@ -340,7 +376,12 @@ fn whole_clip_seek_bar_moves_on_mouse_down_and_reveals_target_in_same_frame() {
                         timeline.reveal_position(time, snapshot.duration);
                         snapshot.time = time;
                     }
-                    timeline.show(ui, &player.clip, &snapshot, &[0].into_iter().collect());
+                    timeline.show(
+                        ui,
+                        player.clip().unwrap(),
+                        &snapshot,
+                        &[0].into_iter().collect(),
+                    );
                 });
             },
         );

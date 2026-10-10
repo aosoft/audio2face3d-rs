@@ -31,6 +31,7 @@ pub trait Backend: Send {
 /// Performs a warm load, with optional bounded reuse between requests.
 pub struct Factory {
     scope: LogScope,
+    context: Audio2Face3DContext,
     #[cfg_attr(not(any(feature = "mock", feature = "native")), allow(dead_code))]
     config: Config,
     #[cfg(feature = "native")]
@@ -54,7 +55,11 @@ impl Factory {
         #[cfg(not(feature = "native"))]
         let _ = enabled;
     }
-    async fn prepare_inner(config: Config, scope: LogScope) -> Result<Self> {
+    async fn prepare_inner(
+        config: Config,
+        context: Audio2Face3DContext,
+        scope: LogScope,
+    ) -> Result<Self> {
         let mut observation = crate::logging::operation::Operation::new(
             "inference preparation finished",
             module_path!(),
@@ -80,6 +85,7 @@ impl Factory {
                     crate::inference::regression::RegressionBackend::load(
                         config.clone(),
                         RequestOptions::default(),
+                        context.clone(),
                     )
                     .await?,
                 )
@@ -88,6 +94,7 @@ impl Factory {
             };
             Ok(Self {
                 scope,
+                context,
                 config,
                 #[cfg(feature = "native")]
                 prepared: Mutex::new(prepared),
@@ -108,8 +115,7 @@ impl Factory {
         observation.stage = "cleanup";
         let result = async {
             use crate::logging::Logger;
-            self.scope
-                .context()
+            self.context
                 .logger()
                 .log(crate::logging::LogLevel::Debug, || {
                     crate::logging::LogRecord::new("release prepared inference resources")
@@ -138,7 +144,11 @@ impl Factory {
         result
     }
     #[cfg(any(feature = "mock", feature = "native"))]
-    async fn start_inner(&self, options: RequestOptions) -> Result<Box<dyn Backend>> {
+    async fn start_inner(
+        &self,
+        options: RequestOptions,
+        scope: LogScope,
+    ) -> Result<Box<dyn Backend>> {
         validate_format(options.input_format)?;
         options.validate()?;
         let rate = options.input_format.sample_rate();
@@ -175,6 +185,7 @@ impl Factory {
                                 self.config.clone(),
                                 options,
                                 pool.clone(),
+                                self.context.clone(),
                             )
                             .await?
                         }
@@ -196,7 +207,7 @@ impl Factory {
                 .field("source", module_path!())
         });
         Ok(Box::new(ScopedBackend {
-            scope: LogScope::capture(),
+            scope,
             close_logged: false,
             inner: Box::new(ResamplingBackend {
                 inner,
@@ -208,7 +219,11 @@ impl Factory {
         }))
     }
     #[cfg(not(any(feature = "mock", feature = "native")))]
-    async fn start_inner(&self, _options: RequestOptions) -> Result<Box<dyn Backend>> {
+    async fn start_inner(
+        &self,
+        _options: RequestOptions,
+        _scope: LogScope,
+    ) -> Result<Box<dyn Backend>> {
         Err(Error::new(
             ErrorKind::RuntimeUnavailable,
             "no inference backend is compiled",
@@ -269,17 +284,22 @@ impl Backend for ResamplingBackend {
 impl Factory {
     pub async fn prepare(config: Config) -> Result<Self> {
         let scope = LogScope::capture();
-        scope
-            .wrap_future(Self::prepare_inner(config, scope.clone()))
-            .await
+        Self::prepare_in_context(config, scope.context().clone(), scope).await
     }
     pub async fn prepare_with_context(
         config: Config,
         context: Audio2Face3DContext,
     ) -> Result<Self> {
-        let scope = LogScope::new(context);
+        let scope = LogScope::new(context.clone());
+        Self::prepare_in_context(config, context, scope).await
+    }
+    pub(crate) async fn prepare_in_context(
+        config: Config,
+        context: Audio2Face3DContext,
+        scope: LogScope,
+    ) -> Result<Self> {
         scope
-            .wrap_future(Self::prepare_inner(config, scope.clone()))
+            .wrap_future(Self::prepare_inner(config, context, scope.clone()))
             .await
     }
     pub async fn release_prepared(&self) -> Result<()> {
@@ -287,12 +307,14 @@ impl Factory {
     }
     pub async fn start(&self, options: RequestOptions) -> Result<Box<dyn Backend>> {
         let scope = LogScope::capture();
-        let scope = if scope.context().shares_resources(self.scope.context()) {
+        let scope = if scope.context().shares_resources(&self.context) {
             scope
         } else {
             self.scope.clone()
         };
-        scope.wrap_future(self.start_inner(options)).await
+        scope
+            .wrap_future(self.start_inner(options, scope.clone()))
+            .await
     }
 }
 

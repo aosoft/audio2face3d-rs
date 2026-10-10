@@ -1,10 +1,15 @@
 #![cfg(feature = "session")]
 use audio2face3d_gui::{
-    core::{Clip, SessionState},
+    core::Clip,
     playback::{Command, PlaybackState, Player},
 };
 use std::time::{Duration, Instant};
 fn clip() -> Clip {
+    let mut clip = partial_clip();
+    clip.finish_collection().unwrap();
+    clip
+}
+fn partial_clip() -> Clip {
     let mut clip = Clip::default();
     clip.set_names(vec!["Test".into()]).unwrap();
     clip.push_audio(0, &vec![0.25; 16000]).unwrap();
@@ -12,7 +17,6 @@ fn clip() -> Clip {
         clip.push_frame(i as f64 / 30., vec![if i == 15 { 2. } else { 0. }])
             .unwrap();
     }
-    clip.session = SessionState::Completed;
     clip
 }
 #[test]
@@ -59,7 +63,7 @@ fn peak_aggregation_does_not_clamp_or_mutate_raw_values() {
             .flatten()
             .all(|v| v[1] == 0.)
     );
-    assert_eq!(clip.frames[15].values[0], 2.);
+    assert_eq!(clip.frames()[15].values()[0], 2.);
     assert!(clip.values_at(0.49).0[0] > 1.);
 }
 #[test]
@@ -70,45 +74,45 @@ fn invalid_media_and_future_seek_are_rejected() {
     let mut player = Player::default();
     player.replace(clip);
     assert!(player.command(Command::Seek(2.), Instant::now()).is_err());
-    assert_eq!(player.state, PlaybackState::Paused);
+    assert_eq!(player.state(), PlaybackState::Paused);
 }
 
 #[test]
 fn streaming_buffer_controls_start_recovery_and_short_completed_clips() {
     let now = Instant::now();
     let mut player = Player::default();
-    player.replace(clip());
-    player.clip.session = SessionState::Running;
-    player.streaming = true;
-    player.stream_buffer = Duration::from_millis(1500);
+    player.replace(partial_clip());
+    player
+        .set_streaming(true, Duration::from_millis(1500))
+        .unwrap();
     player.command(Command::Play, now).unwrap();
-    assert_eq!(player.state, PlaybackState::Buffering);
+    assert_eq!(player.state(), PlaybackState::Buffering);
     player.render_audio(1, 16000, now, |_, v| assert_eq!(v, 0.));
-    assert_eq!(player.state, PlaybackState::Buffering);
+    assert_eq!(player.state(), PlaybackState::Buffering);
     // Complete clips shorter than the target must not wait forever.
-    player.clip.session = SessionState::Completed;
+    player.finish_collection().unwrap();
     player.render_audio(1, 16000, now, |_, v| assert_eq!(v, 0.25));
-    assert_eq!(player.state, PlaybackState::Playing);
+    assert_eq!(player.state(), PlaybackState::Playing);
 
-    player.replace(clip());
-    player.clip.session = SessionState::Running;
-    player.streaming = true;
-    player.stream_buffer = Duration::from_millis(300);
+    player.replace(partial_clip());
+    player
+        .set_streaming(true, Duration::from_millis(300))
+        .unwrap();
     player.command(Command::Play, now).unwrap();
-    assert_eq!(player.state, PlaybackState::Playing);
+    assert_eq!(player.state(), PlaybackState::Playing);
     player.render_audio(16001, 16000, now, |_, _| {});
-    assert_eq!(player.state, PlaybackState::Buffering);
-    player.clip.push_audio(16000, &vec![0.25; 4000]).unwrap();
+    assert_eq!(player.state(), PlaybackState::Buffering);
+    player.append_audio(16000, &vec![0.25; 4000]).unwrap();
     for i in 30..38 {
-        player.clip.push_frame(i as f64 / 30., vec![0.]).unwrap();
+        player.append_frame(i as f64 / 30., vec![0.]).unwrap();
     }
     player.render_audio(1, 16000, now, |_, v| assert_eq!(v, 0.));
-    assert_eq!(player.state, PlaybackState::Buffering);
-    player.clip.push_audio(20000, &vec![0.25; 1600]).unwrap();
+    assert_eq!(player.state(), PlaybackState::Buffering);
+    player.append_audio(20000, &vec![0.25; 1600]).unwrap();
     for i in 38..41 {
-        player.clip.push_frame(i as f64 / 30., vec![0.]).unwrap();
+        player.append_frame(i as f64 / 30., vec![0.]).unwrap();
     }
     player.render_audio(1, 16000, now, |_, v| assert_eq!(v, 0.25));
-    assert_eq!(player.state, PlaybackState::Playing);
-    assert_eq!(player.underruns, 1);
+    assert_eq!(player.state(), PlaybackState::Playing);
+    assert_eq!(player.underruns(), 1);
 }

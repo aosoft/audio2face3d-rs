@@ -36,7 +36,7 @@ fn collect(mut job: Job) -> Clip {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(clip.session, SessionState::Completed);
+    assert_eq!(*clip.session(), SessionState::Completed);
     clip
 }
 // Stop only after real output has arrived, while paced input is still active.
@@ -69,12 +69,12 @@ fn stop_during_playback(mut job: Job) {
     }
 }
 fn compare(a: &Clip, b: &Clip) {
-    assert_eq!(a.audio, b.audio);
-    assert_eq!(a.names, b.names);
-    assert_eq!(a.frames.len(), b.frames.len());
-    for (a, b) in a.frames.iter().zip(&b.frames) {
-        assert_eq!(a.time, b.time);
-        for (a, b) in a.values.iter().zip(&b.values) {
+    assert_eq!(a.audio(), b.audio());
+    assert_eq!(a.names(), b.names());
+    assert_eq!(a.frames().len(), b.frames().len());
+    for (a, b) in a.frames().iter().zip(b.frames()) {
+        assert_eq!(a.time(), b.time());
+        for (a, b) in a.values().iter().zip(b.values()) {
             assert!((a - b).abs() < 1e-4, "{a} != {b}");
         }
     }
@@ -254,7 +254,7 @@ fn native_emotion_model_is_optional_and_reusable() {
     let (logger, mut logs) =
         audio2face3d_gui::logging::channel(4096, 10000, audio2face3d::logging::LogLevel::Info);
     let without = collect(engine.start(1, request.clone(), logger.clone()).unwrap());
-    assert!(without.emotions.is_empty());
+    assert!(without.emotions().is_empty());
     request.emotion.model = Some(
         std::env::var_os("A2F_EMOTION_MODEL")
             .expect("A2F_EMOTION_MODEL")
@@ -262,10 +262,10 @@ fn native_emotion_model_is_optional_and_reusable() {
     );
     request.emotion.beginning.insert("joy".into(), 0.8);
     let first = collect(engine.start(2, request.clone(), logger.clone()).unwrap());
-    assert!(!first.emotions.is_empty());
+    assert!(!first.emotions().is_empty());
     let reused = collect(engine.start(3, request.clone(), logger.clone()).unwrap());
     compare(&first, &reused);
-    assert_eq!(first.emotions, reused.emotions);
+    assert_eq!(first.emotions(), reused.emotions());
     stop_during_playback(
         engine
             .start(
@@ -280,7 +280,7 @@ fn native_emotion_model_is_optional_and_reusable() {
     );
     let after_stop = collect(engine.start(5, request.clone(), logger.clone()).unwrap());
     compare(&first, &after_stop);
-    assert_eq!(first.emotions, after_stop.emotions);
+    assert_eq!(first.emotions(), after_stop.emotions());
     request.emotion.model = None;
     let disabled = collect(engine.start(6, request, logger.clone()).unwrap());
     compare(&without, &disabled);

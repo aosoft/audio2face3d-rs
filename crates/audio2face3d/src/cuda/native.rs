@@ -61,6 +61,8 @@ fn check(code: CUresult, operation: &'static str) -> Result<()> {
 #[derive(Debug)]
 pub struct GpuDevice {
     scope: crate::logging::integration::LogScope,
+    #[cfg_attr(not(feature = "tensorrt"), allow(dead_code))]
+    runtime_context: crate::Audio2Face3DContext,
     id: DeviceId,
     api: Arc<CudaApi>,
     raw_device: CUdevice,
@@ -77,9 +79,25 @@ unsafe impl Sync for GpuDevice {}
 
 impl GpuDevice {
     pub fn new(ordinal: i32) -> Result<Arc<Self>> {
-        let id = DeviceId::new(ordinal)?;
         let scope = crate::logging::integration::LogScope::capture();
-        let api = CudaApi::initialize(scope.context())?;
+        let context = scope.context().clone();
+        Self::create(ordinal, context, scope)
+    }
+
+    pub(crate) fn create(
+        ordinal: i32,
+        runtime_context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> Result<Arc<Self>> {
+        // Log fields may be inherited only from the same resource owner.
+        let scope = if scope.context().shares_resources(&runtime_context) {
+            scope
+        } else {
+            crate::logging::integration::LogScope::new(runtime_context.clone())
+        };
+        let _scope = scope.enter();
+        let id = DeviceId::new(ordinal)?;
+        let api = CudaApi::initialize(&runtime_context)?;
         let mut raw_device = 0;
         let mut context = ptr::null_mut();
         // SAFETY: output pointers are valid, and CUDA initialization precedes device access.
@@ -93,7 +111,7 @@ impl GpuDevice {
                 "cuDevicePrimaryCtxRetain",
             )?;
         }
-        scope.context().native_device_ready();
+        runtime_context.native_device_ready();
         crate::logging::integration::log(crate::logging::LogLevel::Debug, || {
             crate::logging::LogRecord::new("retained CUDA primary context")
                 .field("source", module_path!())
@@ -101,6 +119,7 @@ impl GpuDevice {
         });
         Ok(Arc::new(Self {
             scope,
+            runtime_context,
             api,
             id,
             raw_device,
@@ -110,7 +129,7 @@ impl GpuDevice {
 
     #[cfg(feature = "tensorrt")]
     pub(crate) fn runtime_context(&self) -> &crate::Audio2Face3DContext {
-        self.scope.context()
+        &self.runtime_context
     }
 
     pub const fn id(&self) -> DeviceId {
@@ -1310,7 +1329,8 @@ impl GpuDevice {
         ordinal: i32,
         context: crate::Audio2Face3DContext,
     ) -> Result<Arc<Self>> {
-        crate::logging::integration::LogScope::new(context).in_scope(|| Self::new(ordinal))
+        let scope = crate::logging::integration::LogScope::new(context.clone());
+        Self::create(ordinal, context, scope)
     }
 }
 

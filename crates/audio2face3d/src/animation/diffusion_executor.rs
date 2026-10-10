@@ -50,6 +50,158 @@ pub enum DiffusionExecutionStatus {
     Complete,
 }
 
+trait DiffusionBatchExecutor {
+    type Batch;
+    fn infer(&mut self, inputs: &[(usize, DiffusionFrameInput)]) -> Result<Self::Batch>;
+    fn latents<'a>(&self, batch: &'a Self::Batch, track: usize) -> &'a [f32];
+    fn deliver(&mut self, batch: &Self::Batch, metadata: DiffusionCallbackMetadata)
+    -> Result<bool>;
+}
+
+struct HostDiffusionExecutor<'a, B, C> {
+    contract: &'a DiffusionContract,
+    backend: &'a mut B,
+    callback: C,
+}
+
+impl<B, C> DiffusionBatchExecutor for HostDiffusionExecutor<'_, B, C>
+where
+    B: DiffusionBackend,
+    C: FnMut(DiffusionCallbackMetadata, &[f32]) -> bool,
+{
+    type Batch = Vec<DiffusionInferenceOutput>;
+
+    fn infer(&mut self, inputs: &[(usize, DiffusionFrameInput)]) -> Result<Self::Batch> {
+        let outputs = self.backend.infer_batch(inputs)?;
+        if outputs.len() != inputs.len() {
+            return Err(invalid("diffusion backend returned a non-fixed batch size"));
+        }
+        let expected_prediction = self
+            .contract
+            .total_frames()
+            .checked_mul(self.contract.result_layout.total()?)
+            .ok_or_else(|| invalid("diffusion prediction size overflow"))?;
+        let expected_state = self.contract.state_size()?;
+        if outputs.iter().any(|output| {
+            output.prediction.len() != expected_prediction
+                || output.output_latents.len() != expected_state
+        }) {
+            return Err(invalid("diffusion backend output dimensions mismatch"));
+        }
+        Ok(outputs)
+    }
+
+    fn latents<'a>(&self, batch: &'a Self::Batch, track: usize) -> &'a [f32] {
+        &batch[track].output_latents
+    }
+
+    fn deliver(
+        &mut self,
+        batch: &Self::Batch,
+        metadata: DiffusionCallbackMetadata,
+    ) -> Result<bool> {
+        let result_size = self.contract.result_layout.total()?;
+        let prediction_frame =
+            self.contract.left_frames + metadata.frame % self.contract.center_frames;
+        let offset = prediction_frame * result_size;
+        Ok((self.callback)(
+            metadata,
+            &batch[metadata.track].prediction[offset..offset + result_size],
+        ))
+    }
+}
+
+#[cfg(feature = "tensorrt")]
+struct DeviceDiffusionExecutor<'a, C> {
+    contract: &'a DiffusionContract,
+    backend: &'a mut crate::animation::TensorRtDiffusionBackend,
+    postprocessor: &'a mut crate::animation::GpuRegressionPostprocessor,
+    skin: &'a mut crate::cuda::DeviceBuffer<f32>,
+    tongue: &'a mut crate::cuda::DeviceBuffer<f32>,
+    jaw: &'a mut crate::cuda::DeviceBuffer<f32>,
+    eyes: &'a mut crate::cuda::DeviceBuffer<f32>,
+    callback: C,
+}
+
+#[cfg(feature = "tensorrt")]
+impl<C> DiffusionBatchExecutor for DeviceDiffusionExecutor<'_, C>
+where
+    C: for<'a> FnMut(
+        DiffusionCallbackMetadata,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::DeviceView<'a, f32>,
+        crate::cuda::CudaStreamRef<'a>,
+    ) -> bool,
+{
+    type Batch = crate::animation::diffusion_tensorrt_backend::DiffusionDeviceBatch;
+
+    fn infer(&mut self, inputs: &[(usize, DiffusionFrameInput)]) -> Result<Self::Batch> {
+        let batch = self.backend.run_device_batch(inputs)?;
+        let expected_state = self.contract.state_size()?;
+        if batch.state_output.len() != inputs.len()
+            || batch
+                .state_output
+                .iter()
+                .any(|state| state.len() != expected_state)
+        {
+            return Err(invalid("diffusion backend output dimensions mismatch"));
+        }
+        Ok(batch)
+    }
+
+    fn latents<'a>(&self, batch: &'a Self::Batch, track: usize) -> &'a [f32] {
+        &batch.state_output[track]
+    }
+
+    fn deliver(
+        &mut self,
+        batch: &Self::Batch,
+        metadata: DiffusionCallbackMetadata,
+    ) -> Result<bool> {
+        let track = metadata.track;
+        let result_size = self.contract.result_layout.total()?;
+        let input_stride = self
+            .contract
+            .total_frames()
+            .checked_mul(result_size)
+            .ok_or_else(|| invalid("diffusion prediction size overflow"))?;
+        let prediction_frame =
+            self.contract.left_frames + metadata.frame % self.contract.center_frames;
+        let stream = self.backend.stream();
+        let fence = self.postprocessor.enqueue_view(
+            batch.prediction.result_tensor(),
+            input_stride,
+            prediction_frame * result_size,
+            std::slice::from_ref(&track),
+            crate::animation::GpuRegressionOutputs {
+                skin: self.skin,
+                tongue: self.tongue,
+                jaw_transforms: self.jaw,
+                eyes_rotations: self.eyes,
+            },
+            stream,
+        )?;
+        fence.synchronize()?;
+        drop(fence);
+        Ok((self.callback)(
+            metadata,
+            self.skin.view().slice(
+                track * self.contract.result_layout.skin,
+                self.contract.result_layout.skin,
+            )?,
+            self.tongue.view().slice(
+                track * self.contract.result_layout.tongue,
+                self.contract.result_layout.tongue,
+            )?,
+            self.jaw.view().slice(track * 16, 16)?,
+            self.eyes.view().slice(track * 6, 6)?,
+            stream.as_ref(),
+        ))
+    }
+}
+
 #[derive(Debug)]
 struct DiffusionSchedulerState {
     running: bool,
@@ -106,12 +258,27 @@ impl DiffusionExecutionState {
         &self,
         tracks: &[DiffusionTrack<'_>],
         backend: &mut B,
-        mut callback: C,
+        callback: C,
     ) -> Result<DiffusionExecutionStatus>
     where
         B: DiffusionBackend,
         C: FnMut(DiffusionCallbackMetadata, &[f32]) -> bool,
     {
+        self.execute_with(
+            tracks,
+            &mut HostDiffusionExecutor {
+                contract: &self.contract,
+                backend,
+                callback,
+            },
+        )
+    }
+
+    fn execute_with<E: DiffusionBatchExecutor>(
+        &self,
+        tracks: &[DiffusionTrack<'_>],
+        executor: &mut E,
+    ) -> Result<DiffusionExecutionStatus> {
         {
             let mut state = self.state.lock().map_err(|_| poisoned())?;
             if tracks.len() != state.inferences.len() {
@@ -123,19 +290,14 @@ impl DiffusionExecutionState {
             state.running = true;
         }
         let _running = DiffusionRunningGuard { execution: self };
-        self.execute_inner(tracks, backend, &mut callback)
+        self.execute_inner(tracks, executor)
     }
 
-    fn execute_inner<B, C>(
+    fn execute_inner<E: DiffusionBatchExecutor>(
         &self,
         tracks: &[DiffusionTrack<'_>],
-        backend: &mut B,
-        callback: &mut C,
-    ) -> Result<DiffusionExecutionStatus>
-    where
-        B: DiffusionBackend,
-        C: FnMut(DiffusionCallbackMetadata, &[f32]) -> bool,
-    {
+        executor: &mut E,
+    ) -> Result<DiffusionExecutionStatus> {
         let inference_indices = self
             .state
             .lock()
@@ -194,26 +356,11 @@ impl DiffusionExecutionState {
                     )
             })
             .collect::<Vec<_>>();
-        let outputs = backend.infer_batch(&full_batch)?;
-        if outputs.len() != tracks.len() {
-            return Err(invalid("diffusion backend returned a non-fixed batch size"));
-        }
-        let expected_prediction = self
-            .contract
-            .total_frames()
-            .checked_mul(self.contract.result_layout.total()?)
-            .ok_or_else(|| invalid("diffusion prediction size overflow"))?;
-        for output in &outputs {
-            if output.prediction.len() != expected_prediction
-                || output.output_latents.len() != expected_state
-            {
-                return Err(invalid("diffusion backend output dimensions mismatch"));
-            }
-        }
+        let batch = executor.infer(&full_batch)?;
         {
             let updates: Vec<_> = pending
                 .iter()
-                .map(|(track, _)| (*track, outputs[*track].output_latents.as_slice()))
+                .map(|(track, _)| (*track, executor.latents(&batch, *track)))
                 .collect();
             self.recurrent
                 .lock()
@@ -221,7 +368,6 @@ impl DiffusionExecutionState {
                 .commit_tracks(&updates)?;
         }
 
-        let result_size = self.contract.result_layout.total()?;
         let mut callback_active = vec![false; tracks.len()];
         for (track, _) in &pending {
             callback_active[*track] = true;
@@ -231,7 +377,6 @@ impl DiffusionExecutionState {
                 if !callback_active[*track] {
                     continue;
                 }
-                let output = &outputs[*track];
                 let inference = inference_indices[*track];
                 let window = self
                     .contract
@@ -247,9 +392,8 @@ impl DiffusionExecutionState {
                     callback_active[*track] = false;
                     continue;
                 }
-                let prediction_frame = self.contract.left_frames + frame;
-                let offset = prediction_frame * result_size;
-                let keep_going = callback(
+                let keep_going = executor.deliver(
+                    &batch,
                     DiffusionCallbackMetadata {
                         track: *track,
                         inference,
@@ -261,8 +405,7 @@ impl DiffusionExecutionState {
                             .window(inference * self.contract.center_frames + frame + 1)?
                             .target,
                     },
-                    &output.prediction[offset..offset + result_size],
-                );
+                )?;
                 if !keep_going {
                     callback_active[*track] = false;
                 }
@@ -292,7 +435,7 @@ impl DiffusionExecutionState {
         tongue: &mut crate::cuda::DeviceBuffer<f32>,
         jaw: &mut crate::cuda::DeviceBuffer<f32>,
         eyes: &mut crate::cuda::DeviceBuffer<f32>,
-        mut callback: C,
+        callback: C,
     ) -> Result<DiffusionExecutionStatus>
     where
         C: for<'a> FnMut(
@@ -304,178 +447,19 @@ impl DiffusionExecutionState {
             crate::cuda::CudaStreamRef<'a>,
         ) -> bool,
     {
-        {
-            let mut state = self.state.lock().map_err(|_| poisoned())?;
-            if tracks.len() != state.inferences.len() {
-                return Err(invalid("diffusion track count mismatch"));
-            }
-            if state.running {
-                return Err(invalid("diffusion executor is already running"));
-            }
-            state.running = true;
-        }
-        let _running = DiffusionRunningGuard { execution: self };
-        let inference_indices = self
-            .state
-            .lock()
-            .map_err(|_| poisoned())?
-            .inferences
-            .clone();
-        let mut pending = Vec::new();
-        for (track_index, track) in tracks.iter().enumerate() {
-            let inference = inference_indices[track_index];
-            if self.finished(track, inference)? || !self.ready(track, inference)? {
-                continue;
-            }
-            pending.push((
-                track_index,
-                self.prepare_input(track_index, inference, track)?,
-            ));
-        }
-        if pending.is_empty() {
-            return Ok(
-                if tracks
-                    .iter()
-                    .zip(inference_indices)
-                    .all(|(track, inference)| self.finished(track, inference).unwrap_or(false))
-                {
-                    DiffusionExecutionStatus::Complete
-                } else {
-                    DiffusionExecutionStatus::AwaitingInput
-                },
-            );
-        }
-
-        let noise_size = self.contract.noise_size()?;
-        let expected_state = self.contract.state_size()?;
-        let full_batch = (0..tracks.len())
-            .map(|track| {
-                pending
-                    .iter()
-                    .find(|(pending_track, _)| *pending_track == track)
-                    .map_or_else(
-                        || {
-                            (
-                                track,
-                                DiffusionFrameInput {
-                                    audio: vec![0.0; self.contract.audio_size],
-                                    emotions: vec![
-                                        0.0;
-                                        self.contract.center_frames
-                                            * self.contract.emotion_size
-                                    ],
-                                    identity: vec![0.0; self.contract.identity_size],
-                                    noise: vec![0.0; noise_size],
-                                    input_latents: vec![0.0; expected_state],
-                                },
-                            )
-                        },
-                        |(_, input)| (track, input.clone()),
-                    )
-            })
-            .collect::<Vec<_>>();
-        let device_batch = backend.run_device_batch(&full_batch)?;
-        if device_batch.state_output.len() != tracks.len()
-            || device_batch
-                .state_output
-                .iter()
-                .any(|state| state.len() != expected_state)
-        {
-            return Err(invalid("diffusion backend output dimensions mismatch"));
-        }
-        {
-            let updates = pending
-                .iter()
-                .map(|(track, _)| (*track, device_batch.state_output[*track].as_slice()))
-                .collect::<Vec<_>>();
-            self.recurrent
-                .lock()
-                .map_err(|_| poisoned())?
-                .commit_tracks(&updates)?;
-        }
-
-        let result_size = self.contract.result_layout.total()?;
-        let input_stride = self
-            .contract
-            .total_frames()
-            .checked_mul(result_size)
-            .ok_or_else(|| invalid("diffusion prediction size overflow"))?;
-        let stream = backend.stream();
-        let mut callback_active = vec![false; tracks.len()];
-        for (track, _) in &pending {
-            callback_active[*track] = true;
-        }
-        for frame_offset in 0..self.contract.center_frames {
-            for (track, _) in &pending {
-                if !callback_active[*track] {
-                    continue;
-                }
-                let inference = inference_indices[*track];
-                let frame = inference * self.contract.center_frames + frame_offset;
-                let window = self.contract.frame_progress.window(frame)?;
-                if window.target < 0 {
-                    continue;
-                }
-                if window.target
-                    >= i64::try_from(tracks[*track].audio.nb_accumulated_samples())
-                        .unwrap_or(i64::MAX)
-                {
-                    callback_active[*track] = false;
-                    continue;
-                }
-                let prediction_frame = self.contract.left_frames + frame_offset;
-                let fence = postprocessor.enqueue_view(
-                    device_batch.prediction.result_tensor(),
-                    input_stride,
-                    prediction_frame * result_size,
-                    std::slice::from_ref(track),
-                    crate::animation::GpuRegressionOutputs {
-                        skin,
-                        tongue,
-                        jaw_transforms: jaw,
-                        eyes_rotations: eyes,
-                    },
-                    stream,
-                )?;
-                fence.synchronize()?;
-                drop(fence);
-                let skin_view = skin.view().slice(
-                    *track * self.contract.result_layout.skin,
-                    self.contract.result_layout.skin,
-                )?;
-                let tongue_view = tongue.view().slice(
-                    *track * self.contract.result_layout.tongue,
-                    self.contract.result_layout.tongue,
-                )?;
-                let jaw_view = jaw.view().slice(*track * 16, 16)?;
-                let eyes_view = eyes.view().slice(*track * 6, 6)?;
-                if !callback(
-                    DiffusionCallbackMetadata {
-                        track: *track,
-                        inference,
-                        frame,
-                        timestamp: window.target,
-                        next_timestamp: self.contract.frame_progress.window(frame + 1)?.target,
-                    },
-                    skin_view,
-                    tongue_view,
-                    jaw_view,
-                    eyes_view,
-                    stream.as_ref(),
-                ) {
-                    callback_active[*track] = false;
-                }
-            }
-        }
-
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
-        for (track, _) in &pending {
-            state.inferences[*track] += 1;
-            self.drop_consumed(&tracks[*track], state.inferences[*track])?;
-        }
-        Ok(DiffusionExecutionStatus::Executed {
-            tracks: pending.len(),
-        })
+        self.execute_with(
+            tracks,
+            &mut DeviceDiffusionExecutor {
+                contract: &self.contract,
+                backend,
+                postprocessor,
+                skin,
+                tongue,
+                jaw,
+                eyes,
+                callback,
+            },
+        )
     }
 
     fn prepare_input(
@@ -762,6 +746,50 @@ fn poisoned() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_failure_preserves_inference_index_and_releases_running_guard() {
+        struct Fault(bool);
+        impl DiffusionBatchExecutor for Fault {
+            type Batch = Vec<Vec<f32>>;
+            fn infer(&mut self, inputs: &[(usize, DiffusionFrameInput)]) -> Result<Self::Batch> {
+                if self.0 {
+                    Ok(inputs
+                        .iter()
+                        .map(|(_, input)| vec![0.0; input.input_latents.len()])
+                        .collect())
+                } else {
+                    Err(invalid("inference failed"))
+                }
+            }
+            fn latents<'a>(&self, batch: &'a Self::Batch, track: usize) -> &'a [f32] {
+                &batch[track]
+            }
+            fn deliver(&mut self, _: &Self::Batch, _: DiffusionCallbackMetadata) -> Result<bool> {
+                Err(invalid("postprocess failed"))
+            }
+        }
+        for postprocess in [false, true] {
+            let state = DiffusionExecutionState::new(contract(), 1, 0).unwrap();
+            // Inference zero contains only negative timestamps and deliberately
+            // emits no frames. Use the first inference that reaches delivery.
+            state.state.lock().unwrap().inferences[0] = 1;
+            let (audio, emotions) = accumulators();
+            let tracks = [DiffusionTrack {
+                audio: &audio,
+                emotions: &emotions,
+                identity_index: 0,
+                input_strength: 1.0,
+            }];
+            assert!(
+                state
+                    .execute_with(&tracks, &mut Fault(postprocess))
+                    .is_err()
+            );
+            assert_eq!(state.next_inference_index(0).unwrap(), 1);
+            state.reset(0).unwrap();
+        }
+    }
     use crate::common::{DiffusionAudioParameters, DiffusionParameters};
 
     fn contract() -> DiffusionContract {

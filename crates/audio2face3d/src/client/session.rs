@@ -1,7 +1,8 @@
 use crate::client::{
-    core::{Buffered, Outcome, Request},
+    core::{Buffered, Request},
     memory,
     notify::Subscription,
+    state::Received,
     types::*,
 };
 use std::{
@@ -75,20 +76,13 @@ impl Input {
             .core
             .reserve(bytes)
             .map_err(|e| self.request.context(e))?;
-        let item = Buffered {
+        let mut item = Some(Buffered {
             value: chunk,
             lease,
-        };
+        });
         {
             let mut state = self.request.state.lock().unwrap();
-            if let Some(error) = state.error() {
-                return Err(error);
-            }
-            if state.input_finished {
-                return Err(Error::invalid("input already finished"));
-            }
-            assert!(state.pending_input.is_none());
-            state.pending_input = Some(item);
+            state.stage_input(&mut item)?;
         }
         Ok(())
     }
@@ -109,21 +103,10 @@ impl Input {
             }
             chunk.as_ref().unwrap().validate(self.request.format)?;
             let mut state = self.request.state.lock().unwrap();
-            if let Some(error) = state.error() {
-                return Err(error);
-            }
-            if state.input_finished {
-                return Err(Error::invalid("input already finished"));
-            }
             let limits = &self.request.core.limits;
-            if state.input.len() >= limits.input_queue_items
-                || bytes > limits.input_queue_bytes - state.input_bytes
-            {
-                return Err(Error::new(ErrorKind::QueueFull, "input queue full"));
-            }
+            state.check_input(bytes, limits)?;
             let lease = self.request.core.reserve(bytes)?;
-            state.input_bytes += bytes;
-            state.input.push_back(Buffered {
+            state.enqueue_input(Buffered {
                 value: chunk.take().unwrap(),
                 lease,
             });
@@ -169,42 +152,23 @@ impl Future for SendChunk<'_> {
             return Poll::Ready(Err(error));
         }
         let request = self.input.request.clone();
-        let mut state = request.state.lock().unwrap();
-        if let Some(error) = state.error() {
-            self.staged = false;
-            return Poll::Ready(Err(error));
+        let result = request
+            .state
+            .lock()
+            .unwrap()
+            .accept_input(&request.core.limits);
+        if result.is_pending() {
+            return result;
         }
-        let bytes = state
-            .pending_input
-            .as_ref()
-            .expect("send polled after completion")
-            .bytes();
-        let limits = &request.core.limits;
-        if state.input.len() >= limits.input_queue_items
-            || bytes > limits.input_queue_bytes - state.input_bytes
-        {
-            return Poll::Pending;
-        }
-        let item = state.pending_input.take().unwrap();
-        state.input_bytes += bytes;
-        state.input.push_back(item);
-        drop(state);
         self.staged = false;
         request.changed();
-        Poll::Ready(Ok(()))
+        result
     }
 }
 impl Drop for SendChunk<'_> {
     fn drop(&mut self) {
         if self.staged {
-            let item = self
-                .input
-                .request
-                .state
-                .lock()
-                .unwrap()
-                .pending_input
-                .take();
+            let item = self.input.request.state.lock().unwrap().abandon_input();
             drop(item);
             self.input.request.changed();
         }
@@ -220,10 +184,9 @@ impl Future for Finish {
         let mut input = self.input.take().expect("finish polled after completion");
         {
             let mut state = input.request.state.lock().unwrap();
-            if let Some(error) = state.error() {
+            if let Err(error) = state.finish_input() {
                 return Poll::Ready(Err(error));
             }
-            state.input_finished = true;
         }
         input.finished = true;
         input.request.changed();
@@ -268,40 +231,24 @@ impl Future for Receive<'_> {
         }
         self.subscription.register(cx.waker());
         let request = self.output.request.clone();
-        let mut state = request.state.lock().unwrap();
-        if let Some(error) = state.error() {
-            state.terminal_seen = true;
-            drop(state);
-            self.output.ended = true;
-            request.changed();
-            return Poll::Ready(Err(error));
-        }
-        if let Some(item) = state.output.pop_front() {
-            state.output_bytes -= item.bytes();
-            match &item.value {
-                OutputEvent::Audio(a) => {
-                    state.progress.delivered_audio_bytes += a.pcm().as_bytes().len() as u64
-                }
-                OutputEvent::Curves(_) => state.progress.delivered_curve_frames += 1,
-                _ => {}
+        let result = request.state.lock().unwrap().receive();
+        let value = match result {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => {
+                self.output.ended = true;
+                Err(error)
             }
-            drop(state);
-            let Buffered { value, lease } = item;
-            drop(lease);
-            request.changed();
-            return Poll::Ready(Ok(Some(value)));
-        }
-        if matches!(state.outcome, Outcome::Success) {
-            let summary = Summary {
-                progress: state.progress,
-            };
-            state.terminal_seen = true;
-            drop(state);
-            self.output.ended = true;
-            request.changed();
-            return Poll::Ready(Ok(Some(OutputEvent::Completed(summary))));
-        }
-        Poll::Pending
+            Poll::Ready(Ok(Received::Complete(summary))) => {
+                self.output.ended = true;
+                Ok(Some(OutputEvent::Completed(summary)))
+            }
+            Poll::Ready(Ok(Received::Event(Buffered { value, lease }))) => {
+                drop(lease);
+                Ok(Some(value))
+            }
+        };
+        request.changed();
+        Poll::Ready(value)
     }
 }
 #[derive(Clone)]
@@ -318,7 +265,7 @@ impl Control {
             .fail(Error::new(ErrorKind::Cancelled, "request cancelled"));
     }
     pub fn progress(&self) -> Progress {
-        self.request.state.lock().unwrap().progress
+        self.request.state.lock().unwrap().progress()
     }
     /// Cleanup completion, independently of whether successful output has been consumed.
     pub fn closed(&self) -> Closed {
@@ -337,10 +284,6 @@ impl Future for Closed {
     type Output = Result<()>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.subscription.register(cx.waker());
-        let state = self.request.state.lock().unwrap();
-        state
-            .closed
-            .as_ref()
-            .map_or(Poll::Pending, |r| Poll::Ready(r.clone()))
+        self.request.state.lock().unwrap().closed()
     }
 }

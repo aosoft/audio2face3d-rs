@@ -176,6 +176,17 @@ impl ClassifierEmotionExecutor {
     pub(crate) fn load_sync(
         parameters: ClassifierEmotionExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: ClassifierEmotionExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         let model = Model::load(&parameters.model_path)?;
         if model.kind() != ModelKind::Emotion {
             return Err(crate::Error::InvalidSchema(
@@ -213,7 +224,7 @@ impl ClassifierEmotionExecutor {
             parameters.frame_rate.denominator(),
             parameters.inferences_to_skip,
         )?;
-        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = GpuDevice::create(parameters.common.device_ordinal, context, scope.clone())?;
         let backend = TensorRtClassifierBackend::load(
             Arc::clone(&device),
             model.engine_path(),
@@ -246,7 +257,7 @@ impl ClassifierEmotionExecutor {
         let sample_rate = network.audio_params.samplerate;
         let preferred_emotions = parameters.preferred_emotions;
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             execution,
             backend,
             contract,
@@ -330,6 +341,17 @@ impl ClassifierEmotionInteractiveExecutor {
     pub(crate) fn load_sync(
         parameters: ClassifierEmotionInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: ClassifierEmotionInteractiveExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         if parameters.batch_size == 0 {
             return Err(crate::Error::InvalidArgument {
                 field: "batch_size",
@@ -371,7 +393,7 @@ impl ClassifierEmotionInteractiveExecutor {
                 actual: parameters.post_process_data.output_emotion_length,
             });
         }
-        let device = GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = GpuDevice::create(parameters.common.device_ordinal, context, scope.clone())?;
         let (backend, contract) = TensorRtClassifierBackend::load_interactive(
             Arc::clone(&device),
             model.engine_path(),
@@ -401,7 +423,7 @@ impl ClassifierEmotionInteractiveExecutor {
         let output = device.allocate(data.output_emotion_length)?;
         let stream = device.create_stream()?;
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             inner,
             contract,
             audio: Arc::clone(&parameters.common.audio),
@@ -875,8 +897,13 @@ impl ClassifierEmotionExecutorFactory {
         parameters: ClassifierEmotionExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, ClassifierEmotionExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                ClassifierEmotionExecutor::load_in_context(parameters, context, worker_scope)
+            })
+        })))
     }
 }
 
@@ -886,7 +913,16 @@ impl ClassifierEmotionInteractiveExecutorFactory {
         parameters: ClassifierEmotionInteractiveExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, ClassifierEmotionInteractiveExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                ClassifierEmotionInteractiveExecutor::load_in_context(
+                    parameters,
+                    context,
+                    worker_scope,
+                )
+            })
+        })))
     }
 }

@@ -241,6 +241,17 @@ impl PostProcessEmotionExecutor {
     pub(crate) fn load_sync(
         parameters: PostProcessEmotionExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: PostProcessEmotionExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         let track_count = parameters.common.tracks.len();
         if track_count == 0 {
             return Err(crate::Error::InvalidArgument {
@@ -271,11 +282,15 @@ impl PostProcessEmotionExecutor {
             track_count,
         )?;
         execution.set_input_strength(parameters.input_strength)?;
-        let device = crate::cuda::GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = crate::cuda::GpuDevice::create(
+            parameters.common.device_ordinal,
+            context,
+            scope.clone(),
+        )?;
         let stream = device.create_stream()?;
         let output = device.allocate(output_len)?;
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             execution,
             contract,
             tracks: parameters.common.tracks,
@@ -510,6 +525,17 @@ impl PostProcessEmotionInteractiveExecutor {
     pub(crate) fn load_sync(
         parameters: PostProcessEmotionInteractiveExecutorCreationParameters,
     ) -> crate::Result<Self> {
+        let scope = crate::logging::integration::LogScope::capture();
+        let context = scope.context().clone();
+        Self::load_in_context(parameters, context, scope)
+    }
+
+    fn load_in_context(
+        parameters: PostProcessEmotionInteractiveExecutorCreationParameters,
+        context: crate::Audio2Face3DContext,
+        scope: crate::logging::integration::LogScope,
+    ) -> crate::Result<Self> {
+        let _scope = scope.enter();
         if parameters.batch_size == 0 {
             return Err(crate::Error::InvalidArgument {
                 field: "batch_size",
@@ -532,11 +558,15 @@ impl PostProcessEmotionInteractiveExecutor {
             data.clone(),
             into_internal_params(parameters.post_process_params),
         )?;
-        let device = crate::cuda::GpuDevice::new(parameters.common.device_ordinal)?;
+        let device = crate::cuda::GpuDevice::create(
+            parameters.common.device_ordinal,
+            context,
+            scope.clone(),
+        )?;
         let stream = device.create_stream()?;
         let output = device.allocate(data.output_emotion_length)?;
         Ok(Self {
-            scope: crate::logging::integration::LogScope::capture(),
+            scope,
             inner,
             contract,
             audio: parameters.common.audio,
@@ -880,8 +910,13 @@ impl PostProcessEmotionExecutorFactory {
         parameters: PostProcessEmotionExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, PostProcessEmotionExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                PostProcessEmotionExecutor::load_in_context(parameters, context, worker_scope)
+            })
+        })))
     }
 }
 
@@ -891,7 +926,16 @@ impl PostProcessEmotionInteractiveExecutorFactory {
         parameters: PostProcessEmotionInteractiveExecutorCreationParameters,
         context: crate::Audio2Face3DContext,
     ) -> crate::audio2x::ExecutorFuture<'static, PostProcessEmotionInteractiveExecutor> {
-        let scope = crate::logging::integration::LogScope::new(context);
-        Box::pin(scope.wrap_future(scope.in_scope(|| Self::load(parameters))))
+        let scope = crate::logging::integration::LogScope::new(context.clone()).for_current();
+        let worker_scope = scope.clone();
+        Box::pin(scope.wrap_future(scope.in_scope(|| {
+            crate::audio2x::spawn_blocking_factory(move || {
+                PostProcessEmotionInteractiveExecutor::load_in_context(
+                    parameters,
+                    context,
+                    worker_scope,
+                )
+            })
+        })))
     }
 }

@@ -1,8 +1,9 @@
 //! Exercise actual audio output while the shared inference worker still sends input.
 use audio2face3d_gui::{
     audio::AudioOutput,
-    core::{Clip, SessionState},
-    inference::{Event, Job, Mode, Request, apply_event},
+    controller::SessionController,
+    core::SessionState,
+    inference::{Event, Job, Mode, Request},
     playback::{Command, Player},
 };
 use std::{
@@ -33,10 +34,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let mut job = Job::start(1, request, Arc::new(audio2face3d::logging::NoopLogger))?;
-    let mut player = Player::default();
-    player.replace(Clip::running());
-    player.streaming = true;
-    let shared = Arc::new(Mutex::new(player));
+    let shared = Arc::new(Mutex::new(Player::default()));
+    let mut controller = SessionController::new(shared.clone());
+    controller.begin();
+    shared
+        .lock()
+        .unwrap()
+        .set_streaming(true, Duration::from_millis(100))?;
     let mut audio = AudioOutput::new(shared.clone());
     let start = Instant::now();
     let mut sent = false;
@@ -52,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         for event in events {
             match event {
-                Event::Ready(clip) => shared.lock().unwrap().replace(*clip),
+                Event::Ready(clip) => controller.replace_output(*clip)?,
                 Event::InputFinished => sent = true,
                 Event::Output(event) => {
                     if matches!(&event, audio2face3d::types::OutputEvent::Curves(_))
@@ -60,14 +64,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         first = Some(start.elapsed().as_secs_f64());
                     }
-                    apply_event(&mut shared.lock().unwrap().clip, event)?;
+                    controller.apply_event(event)?;
                 }
             }
         }
+        controller.publish()?;
         let ready = {
-            let p = shared.lock().unwrap();
-            p.clip.ready_until() >= 0.1
-                || (p.clip.session == SessionState::Completed && p.clip.ready_until() > 0.)
+            let clip = controller.clip();
+            clip.ready_until() >= 0.1
+                || (*clip.session() == SessionState::Completed && clip.ready_until() > 0.)
         };
         if play.is_none() && ready {
             audio.command(Command::Play)?;
@@ -77,7 +82,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             heard_before_end = true;
         }
         if let Some(result) = result {
-            result?;
+            let failure = result.as_ref().err().map(ToString::to_string);
+            controller.job_finished(result)?;
+            if let Some(error) = failure {
+                return Err(error.into());
+            }
             finished = true;
         }
         if start.elapsed() > Duration::from_secs(180) {
@@ -85,14 +94,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    let duration = shared.lock().unwrap().clip.duration();
+    let duration = controller.clip().duration();
     while shared.lock().unwrap().snapshot(Instant::now()).time + 0.001 < duration {
         if start.elapsed() > Duration::from_secs(180) {
             return Err("playback timeout".into());
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    let underruns = shared.lock().unwrap().underruns;
+    let underruns = shared.lock().unwrap().underruns();
     audio.stop();
     println!(
         "{mode:?}: first frame {first:?}s, playback start {play:?}s, total {:.3}s, duration {duration:.3}s, underruns {underruns}, audible before EndOfAudio: {heard_before_end}",
