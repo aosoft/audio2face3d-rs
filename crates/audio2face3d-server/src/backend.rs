@@ -24,22 +24,6 @@ pub(crate) fn status(error: Error) -> Status {
         _ => Status::internal(error.message()),
     }
 }
-fn engine_config(config: &Config) -> Result<inference::Config, Status> {
-    inference::Config::builder(match config.backend {
-        BackendKind::Mock => inference::BackendKind::Mock,
-        BackendKind::Regression => inference::BackendKind::Regression,
-    })
-    .optional_model(config.model.clone())
-    .optional_emotion_model(config.emotion_model.clone())
-    .device(config.device)
-    .max_audio_seconds(config.max_audio_seconds)
-    .mock_pattern(config.mock_pattern.into())
-    .optional_mock_curve(config.mock_curve.clone())
-    .optional_mock_value(config.mock_value)
-    .optional_mock_jaw_open(config.mock_jaw_open)
-    .build()
-    .map_err(status)
-}
 
 pub struct Factory {
     inner: inference::Factory,
@@ -48,7 +32,7 @@ impl Factory {
     pub async fn prepare(config: &Config) -> Result<Self, Status> {
         config.validate().map_err(Status::invalid_argument)?;
         Ok(Self {
-            inner: inference::Factory::prepare(engine_config(config)?)
+            inner: inference::Factory::prepare(config.engine().clone())
                 .await
                 .map_err(status)?
                 .with_model_reuse(),
@@ -62,7 +46,7 @@ impl Factory {
         config: &Config,
         header: &AudioStreamHeader,
     ) -> Result<Backend, Status> {
-        let options = if config.backend == BackendKind::Mock {
+        let options = if config.backend() == BackendKind::Mock {
             if header.face_params.is_some()
                 || header.blendshape_params.is_some()
                 || header.emotion_params.is_some()
@@ -93,8 +77,8 @@ impl Factory {
         Ok(Backend {
             inner,
             format,
-            kind: config.backend,
-            max_seconds: f64::from(config.max_audio_seconds),
+            kind: config.backend(),
+            max_seconds: f64::from(config.max_audio_seconds()),
         })
     }
 }
@@ -229,10 +213,7 @@ mod tests {
     #[cfg(feature = "mock")]
     #[tokio::test]
     async fn mock_keeps_ignoring_unsupported_settings_and_emotion_keys() {
-        let config = Config {
-            backend: BackendKind::Mock,
-            ..Config::default()
-        };
+        let config = Config::builder(BackendKind::Mock).build().unwrap();
         let factory = Factory::prepare(&config).await.unwrap();
         let mut header = AudioStreamHeader {
             audio_header: Some(crate::proto::audio::AudioHeader {

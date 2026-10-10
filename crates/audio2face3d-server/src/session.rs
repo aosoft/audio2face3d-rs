@@ -254,10 +254,10 @@ mod tests {
 
     #[tokio::test]
     async fn full_queue_times_out_and_error_bypasses_queued_data() {
-        let config = Config {
-            output_timeout_ms: 20,
-            ..Config::default()
-        };
+        let config = Config::builder(crate::config::BackendKind::Mock)
+            .output_timeout_ms(20)
+            .build_settings()
+            .unwrap();
         let shutdown = CancellationToken::new();
         let slots = Admission::new(1, 1, std::time::Duration::ZERO).unwrap();
         let permit = Arc::new(slots.acquire(&Cancellation::new()).await.unwrap());

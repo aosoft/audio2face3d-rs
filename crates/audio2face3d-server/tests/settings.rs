@@ -15,6 +15,7 @@ pub fn try_config(
             "--backend" => config = config.backend(v.parse().unwrap()),
             "--model" => config = config.optional_model(Some(v.into())),
             "--emotion-model" => config = config.optional_emotion_model(Some(v.into())),
+            "--device" => config = config.device(v.parse().unwrap()),
             "--mock-curve" => config = config.optional_mock_curve(Some(v.clone())),
             "--mock-value" => config = config.optional_mock_value(Some(v.parse().unwrap())),
             "--mock-jaw-open" => config = config.optional_mock_jaw_open(Some(v.parse().unwrap())),

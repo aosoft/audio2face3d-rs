@@ -83,7 +83,7 @@ async fn run_inner<A: Authenticator>(
     sender: tokio::sync::oneshot::Sender<lifecycle::Overdue>,
 ) -> Result<ShutdownReport, ServerError> {
     let mut sender = Some(sender);
-    let timeout = Duration::from_millis(config.shutdown_timeout_ms);
+    let timeout = Duration::from_millis(config.shutdown_timeout_ms());
     let prepared = crate::backend::Factory::prepare(&config);
     tokio::pin!(prepared);
     let prepared = tokio::select! {
@@ -122,8 +122,8 @@ async fn run_inner<A: Authenticator>(
             Err(error) => outcome = Err(ServerError::Prepare(error)),
             Ok(service) => {
                 let service = A2fControllerServiceServer::new(service)
-                    .max_decoding_message_size(config.max_message_bytes)
-                    .max_encoding_message_size(config.max_message_bytes);
+                    .max_decoding_message_size(config.max_message_bytes())
+                    .max_encoding_message_size(config.max_message_bytes());
                 let cancel = shutdown.clone();
                 let stopping = async move {
                     cancel.cancelled().await;
@@ -147,7 +147,7 @@ async fn run_inner<A: Authenticator>(
                         audio2face3d::logging::LogRecord::new("serving")
                             .field("source", module_path!())
                             .field("address", format!("{:?}", listener.local_addr()))
-                            .field("backend", format!("{:?}", config.backend))
+                            .field("backend", format!("{:?}", config.backend()))
                     },
                 );
                 // This scope drops a timed-out transport before waiting for workers.
