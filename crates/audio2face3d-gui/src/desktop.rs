@@ -588,7 +588,7 @@ impl eframe::App for DesktopApp {
         ) {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
-        if let Some(error) = self.audio.errors.lock().unwrap().take() {
+        if let Some(error) = self.audio.take_error() {
             self.message = error;
         }
         let settings_editable = self
